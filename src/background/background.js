@@ -94,8 +94,25 @@ if (typeof importScripts === "function") {
     schedulePersist();
   }
 
+  // ---- in-flight fetch 中断 (復元/再翻訳で無駄なネットワーク・課金枠を切る) ----
+  // タブ単位で進行中の AbortController を保持し、translatePage/restorePage 開始時に中断する。
+  const inflightByTab = new Map(); // tabId -> Set<AbortController>
+  function trackController(tabId, controller) {
+    if (tabId == null) return () => {};
+    let set = inflightByTab.get(tabId);
+    if (!set) { set = new Set(); inflightByTab.set(tabId, set); }
+    set.add(controller);
+    return () => { const s = inflightByTab.get(tabId); if (s) { s.delete(controller); if (!s.size) inflightByTab.delete(tabId); } };
+  }
+  function abortTab(tabId) {
+    const set = inflightByTab.get(tabId);
+    if (!set) return;
+    for (const c of set) { try { c.abort(); } catch (_e) { /* noop */ } }
+    inflightByTab.delete(tabId);
+  }
+
   // ---- 翻訳代理 fetch (核心) ----
-  async function translateBatch(settings, texts) {
+  async function translateBatch(settings, texts, signal) {
     const providerId = settings.provider;
     const provider = Providers.get(providerId);
     const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
@@ -104,7 +121,7 @@ if (typeof importScripts === "function") {
 
     // バッチ非対応プロバイダ (MyMemory 等) は 1 テキストずつ並列処理する
     if (provider && provider.batch === false) {
-      return translateEach(settings, provider, texts, apiKey);
+      return translateEach(settings, provider, texts, apiKey, signal);
     }
 
     await ensureMem(); // 初回のみ storage 読み込み (以降は同期メモリ操作)
@@ -129,8 +146,10 @@ if (typeof importScripts === "function") {
         method: req.method,
         headers: req.headers,
         body: JSON.stringify(req.body),
+        signal,
       });
     } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "network", message: String((e && e.message) || e) };
     }
     const durationMs = Date.now() - t0;
@@ -170,7 +189,7 @@ if (typeof importScripts === "function") {
   }
 
   // バッチ非対応プロバイダ用: 1 テキストずつ並列 GET (MyMemory など)。usage は集計しない。
-  async function translateEach(settings, provider, texts, apiKey) {
+  async function translateEach(settings, provider, texts, apiKey, signal) {
     const providerId = provider.id;
     const maxBytes = provider.maxBytes || Infinity;
     const encoder = new TextEncoder();
@@ -201,7 +220,7 @@ if (typeof importScripts === "function") {
           continue;
         }
         try {
-          const res = await fetch(req.url, { method: req.method, headers: req.headers });
+          const res = await fetch(req.url, { method: req.method, headers: req.headers, signal });
           if (!res.ok) { firstError = firstError || { error: "http", status: res.status }; translations[i] = text; continue; }
           const json = await res.json();
           // MyMemory は本文 200 でも responseStatus に実ステータス (403/429 等) を入れる
@@ -374,7 +393,9 @@ if (typeof importScripts === "function") {
   function isForbiddenImageUrl(rawUrl) {
     let u;
     try { u = new URL(rawUrl); } catch (_e) { return true; }
-    if (u.protocol !== "http:" && u.protocol !== "https:") return true;
+    // https のみ許可 (http を弾く)。MV3 に DNS 解決 API が無く公開ホスト名→プライベートIP の解決を検証できないため、
+    // plain-http の内部ターゲット (http://internal, http://127.0.0.1 等) を入口で遮断して DNS リバインディングを軽減する。
+    if (u.protocol !== "https:") return true;
     let h = u.hostname.toLowerCase();
     if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1); // IPv6 リテラル
     if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
@@ -416,7 +437,7 @@ if (typeof importScripts === "function") {
     return null;
   }
 
-  async function translateImage(settings, imageUrl) {
+  async function translateImage(settings, imageUrl, signal) {
     const providerId = settings.provider;
     const provider = Providers.get(providerId);
     if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
@@ -428,7 +449,7 @@ if (typeof importScripts === "function") {
     // 画像を取得して base64 化 (host_permissions により CORS を回避)
     let b64, mime;
     try {
-      const r = await fetch(imageUrl);
+      const r = await fetch(imageUrl, { signal });
       // リダイレクト後の最終 URL も検証する (公開 URL → 30x で localhost/private へ飛ばす SSRF を防ぐ。
       // 取得済みでも、禁止先なら base64 化せず LLM へ送らないことで内部コンテンツの外部流出を止める)。
       if (r.url && r.url !== imageUrl && isForbiddenImageUrl(r.url)) return { ok: false, error: "forbidden_target" };
@@ -449,6 +470,7 @@ if (typeof importScripts === "function") {
       }
       b64 = base64FromBytes(bytes);
     } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "image_fetch", message: String((e && e.message) || e) };
     }
 
@@ -467,8 +489,9 @@ if (typeof importScripts === "function") {
 
     let res;
     try {
-      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body) });
+      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal });
     } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "network", message: String((e && e.message) || e) };
     }
     if (!res.ok) {
@@ -500,6 +523,7 @@ if (typeof importScripts === "function") {
   // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId) {
+    abortTab(tabId); // 再翻訳: このタブの前回の in-flight fetch を中断 (古い設定の無駄リクエストを切る)
     const settings = await getSettings();
     await injectTranslator(tabId);
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
@@ -507,6 +531,7 @@ if (typeof importScripts === "function") {
   }
 
   async function restorePage(tabId) {
+    abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
     try {
       await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_RESTORE_CS });
     } catch (_e) {
@@ -537,7 +562,11 @@ if (typeof importScripts === "function") {
             const settings = msg.settings
               ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
               : stored;
-            sendResponse(await translateBatch(settings, msg.texts || []));
+            // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録
+            const controller = new AbortController();
+            const untrack = trackController(sender.tab && sender.tab.id, controller);
+            try { sendResponse(await translateBatch(settings, msg.texts || [], controller.signal)); }
+            finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_IMAGE: {
@@ -545,7 +574,10 @@ if (typeof importScripts === "function") {
             const settings = msg.settings
               ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
               : stored;
-            sendResponse(await translateImage(settings, msg.imageUrl));
+            const controller = new AbortController();
+            const untrack = trackController(sender.tab && sender.tab.id, controller);
+            try { sendResponse(await translateImage(settings, msg.imageUrl, controller.signal)); }
+            finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_PAGE: {
