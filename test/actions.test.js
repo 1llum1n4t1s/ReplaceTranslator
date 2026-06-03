@@ -24,13 +24,6 @@ test("normalize falls back to default provider on invalid value", () => {
   assert.equal(SettingsSchema.normalize(null).provider, SettingsSchema.DEFAULTS.provider);
 });
 
-test("normalize clamps batchSize into [1,100]", () => {
-  assert.equal(SettingsSchema.normalize({ batchSize: 9999 }).batchSize, 100);
-  assert.equal(SettingsSchema.normalize({ batchSize: 0 }).batchSize, 1);
-  assert.equal(SettingsSchema.normalize({ batchSize: "abc" }).batchSize, 30);
-  assert.equal(SettingsSchema.normalize({ batchSize: 25 }).batchSize, 25);
-});
-
 test("normalize preserves provided apiKeys/models and fills the rest", () => {
   const s = SettingsSchema.normalize({
     apiKeys: { openai: "sk-x" },

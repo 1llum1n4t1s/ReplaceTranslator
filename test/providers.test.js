@@ -69,16 +69,20 @@ test("OpenAI は reasoning_effort をモデル別の最小値に、旧モデル�
   const rNew = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4-nano", apiKey: "k" });
   assert.equal(rNew.body.reasoning_effort, "none");
   assert.ok(!("temperature" in rNew.body));
+  assert.equal(rNew.body.verbosity, "low"); // gpt-5 系は出力を簡潔化
   // gpt-5.0 系: none 非対応 → "minimal"
   const r50 = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5-mini", apiKey: "k" });
   assert.equal(r50.body.reasoning_effort, "minimal");
-  // o 系: none/minimal 非対応 → "low"
+  assert.equal(r50.body.verbosity, "low");
+  // o 系: none/minimal 非対応 → "low"。verbosity は付けない
   const ro = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "o4-mini", apiKey: "k" });
   assert.equal(ro.body.reasoning_effort, "low");
-  // 旧来モデル(gpt-4 系): temperature:0、reasoning_effort なし
+  assert.ok(!("verbosity" in ro.body));
+  // 旧来モデル(gpt-4 系): temperature:0、reasoning_effort / verbosity なし
   const r4 = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-4o-mini", apiKey: "k" });
   assert.equal(r4.body.temperature, 0);
   assert.ok(!("reasoning_effort" in r4.body));
+  assert.ok(!("verbosity" in r4.body));
   // xAI(Grok) 非 reasoning は temperature:0 維持
   const rx = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model: "grok-4", apiKey: "k" });
   assert.equal(rx.body.temperature, 0);

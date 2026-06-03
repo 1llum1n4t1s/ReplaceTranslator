@@ -120,7 +120,6 @@
       xai: "grok-4-1-fast-non-reasoning",
       mymemory: null,
     }),
-    batchSize: 30,
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     imageTranslate: false,       // 画像内テキストの翻訳 (オプション・vision)
   });
@@ -142,16 +141,12 @@
         ? modelsIn[id]
         : Providers[id].defaultModel;
     }
-    let batchSize = Number(r.batchSize);
-    if (!Number.isFinite(batchSize)) batchSize = DEFAULT_SETTINGS.batchSize;
-    batchSize = Math.min(100, Math.max(1, Math.round(batchSize)));
     return {
       provider,
       sourceLang: (typeof r.sourceLang === "string" && r.sourceLang) ? r.sourceLang : DEFAULT_SETTINGS.sourceLang,
       targetLang: (typeof r.targetLang === "string" && r.targetLang) ? r.targetLang : DEFAULT_SETTINGS.targetLang,
       apiKeys,
       models,
-      batchSize,
       autoTranslate: Boolean(r.autoTranslate),
       imageTranslate: Boolean(r.imageTranslate),
     };

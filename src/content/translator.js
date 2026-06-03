@@ -238,8 +238,9 @@
         (e === "http" && res.status >= 500) ||
         (e === "http" && res.status === 429 && !isNmt);
       if (transient && attempt < MAX_RETRY) {
-        if (res.status === 429) currentBatchSize = Math.max(5, Math.floor((currentBatchSize || 25) / 2));
-        await sleep(700 * (attempt + 1));
+        // 429 時のバッチ縮小は background(BatchTuner) を単一ソースにし、res.nextBatchSize で反映する
+        // (クライアント側の自前半減は廃止 = 二重管理の解消)。ジッタで 10 並列ワーカーの同時リトライを分散。
+        await sleep(700 * (attempt + 1) + Math.floor(Math.random() * 300));
         continue;
       }
       return res || { ok: false, error: "empty" };
@@ -312,9 +313,10 @@
         cursor += batch.length;
         const res = await sendBatchWithRetry(batch.map((b) => b.text), myRun);
         if (myRun !== runId) return;
+        // バッチサイズ自動学習は background(tuningMem) を単一ソースとし、ok/エラー問わず nextBatchSize を採用する。
+        if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
         if (res && res.ok && Array.isArray(res.translations)) {
           applyTranslations(batch, res.translations);
-          if (res.nextBatchSize) currentBatchSize = res.nextBatchSize; // 自動学習を反映
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;

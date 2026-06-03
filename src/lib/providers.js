@@ -64,6 +64,8 @@
       if (/^gpt-5\.\d/i.test(m)) effort = "none";  // gpt-5.1 以降 (推論OFF)
       else if (/^o[1-9]/i.test(m)) effort = "low"; // o 系 (none/minimal 非対応)
       body.reasoning_effort = effort;
+      // gpt-5 系は verbosity:"low" で出力を簡潔化 (翻訳は前置き不要・出力トークン削減で生成短縮)。o 系には付けない。
+      if (/^gpt-5/i.test(m)) body.verbosity = "low";
       return body;
     }
     if (providerId === "xai" && /reasoning/i.test(m) && !/non-reasoning/i.test(m)) {
