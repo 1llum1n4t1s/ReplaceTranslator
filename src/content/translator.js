@@ -47,8 +47,9 @@
   let currentBatchSize = 0;
   const queue = [];                     // 翻訳待ち {node, text}
 
-  // ビューポートの先読みマージン。見えている所＋上下これだけ先まで翻訳しておく。
-  const PREFETCH_MARGIN = "1200px";
+  // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
+  const PREFETCH_PX = 1200;
+  const PREFETCH_MARGIN = `${PREFETCH_PX}px`;
   // 同時に投げるバッチ数 (高速化の主因。Immersive 同様に複数リクエストを並列処理)
   const CONCURRENCY = 10;
   // 1 バッチの一時エラー時の最大リトライ回数 (指数バックオフ)
@@ -138,19 +139,44 @@
     return out;
   }
 
+  // ブロックがビューポート(+先読みマージン)内にあるか。rootMargin "1200px 0px" 相当(縦に先読み)。
+  // IntersectionObserver の初期通知に依存せず、初期表示分を確実に即翻訳するための判定。
+  function isNearViewport(el) {
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) return false; // 非表示/0サイズは IO に委ねる
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      return r.top <= vh + PREFETCH_PX && r.bottom >= -PREFETCH_PX && r.left < vw && r.right > 0;
+    } catch (_e) { return false; }
+  }
+
   // root 配下を翻訳対象に取り込む:
-  //   未監視ブロック → IntersectionObserver に登録 (可視化されたら翻訳)
+  //   可視(+先読み)ブロック → IO の初期通知を待たず即キュー (初期表示を確実に翻訳)
+  //   画面外ブロック       → IntersectionObserver に登録 (スクロールで可視化されたら翻訳)
   //   可視化済みブロック内への追加 → 即キュー (動的追加の追従)
   function ingest(root) {
     if (!io) return;
-    const newBlocks = new Set();
+    const toObserve = new Set();
+    const nearCache = new Map(); // block→bool: 同一ブロックの getBoundingClientRect 重複読みを避ける
     let immediate = false;
     for (const node of collectNodes(root)) {
       const block = blockAncestor(node);
-      if (flushedBlocks.has(block)) { enqueue(node); immediate = true; }
-      else if (!observedBlocks.has(block)) newBlocks.add(block);
+      if (flushedBlocks.has(block)) { enqueue(node); immediate = true; continue; }
+      if (observedBlocks.has(block)) continue; // 監視中(画面外)ブロックは IO 発火を待つ
+      let near = nearCache.get(block);
+      if (near === undefined) { near = isNearViewport(block); nearCache.set(block, near); }
+      if (near) {
+        // 既に可視(+先読み)圏内 → IO の初期通知に頼らず即翻訳に回す(スクロールしないと訳されない問題の解消)
+        flushedBlocks.add(block);
+        observedBlocks.add(block);
+        enqueue(node);
+        immediate = true;
+      } else {
+        toObserve.add(block);
+      }
     }
-    for (const block of newBlocks) { observedBlocks.add(block); io.observe(block); }
+    for (const block of toObserve) { observedBlocks.add(block); io.observe(block); }
     if (immediate) scheduleFlush();
   }
 
