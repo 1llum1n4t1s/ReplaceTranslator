@@ -221,7 +221,14 @@ if (typeof importScripts === "function") {
     }
 
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, texts.length || 1) }, worker));
-    if (firstError) return Object.assign({ ok: false, translations }, firstError);
+    if (firstError) {
+      // 1 件でも訳せていれば部分成功として translations を返す (呼び出し側が適用)。
+      // 全件失敗 (クォータ枯渇等で全テキストが原文のまま) のときは translations を返さず allFailed を立て、
+      // 呼び出し側が「無言で done」にせずエラー表示できるようにする。
+      const anySuccess = translations.some((t, i) => t !== texts[i]);
+      if (!anySuccess) return Object.assign({ ok: false, allFailed: true }, firstError);
+      return Object.assign({ ok: false, translations }, firstError);
+    }
     return { ok: true, translations, usage: { input: 0, output: 0 } };
   }
 

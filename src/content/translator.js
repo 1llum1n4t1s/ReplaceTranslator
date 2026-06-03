@@ -323,6 +323,10 @@
           // 見えるため、no_api_key 同様に全体中断して popup/FAB に設定問題を通知する (NMT は per-text 制限なので除外)。
           fatal = res;
           return;
+        } else if (res && res.allFailed) {
+          // バッチ全件失敗 (MyMemory クォータ枯渇等で 1 件も訳せず)。無言で done にせずエラー通知し原因を見せる。
+          fatal = res;
+          return;
         } else if (res && Array.isArray(res.translations)) {
           // 一時エラーでも部分的に成功した訳文は適用する (MyMemory は 1 件の 429/通信失敗で
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので

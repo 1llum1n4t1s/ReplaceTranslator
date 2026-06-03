@@ -199,8 +199,12 @@
   try {
     chrome.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg.action !== "string") return undefined;
-      if (msg.action === A.APPLY_TRANSLATE_CS && enabled) translateAllImages();
-      else if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
+      if (msg.action === A.APPLY_TRANSLATE_CS) {
+        // 起動レース対策: storage 由来の enabled が未確定でも、メッセージ同梱の公開設定で判定する
+        // (fab.js が先に TRANSLATE_PAGE を送り、こちらの flag ロードが間に合わないと画像一括が飛ぶため)。
+        const on = (msg.settings && typeof msg.settings.imageTranslate === "boolean") ? msg.settings.imageTranslate : enabled;
+        if (on) translateAllImages();
+      } else if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
       return undefined;
     });
   } catch (_e) { /* noop */ }
