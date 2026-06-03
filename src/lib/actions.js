@@ -120,8 +120,7 @@
       mymemory: null,
     }),
     batchSize: 30,
-    useBuiltinDetector: false,   // Chrome 内蔵 LanguageDetector で target 言語を事前除外 (任意・既定 OFF)
-    autoTranslate: false,        // ページを開いたら自動翻訳 (将来用フラグ)
+    autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     imageTranslate: false,       // 画像内テキストの翻訳 (オプション・vision)
   });
 
@@ -152,7 +151,6 @@
       apiKeys,
       models,
       batchSize,
-      useBuiltinDetector: Boolean(r.useBuiltinDetector),
       autoTranslate: Boolean(r.autoTranslate),
       imageTranslate: Boolean(r.imageTranslate),
     };

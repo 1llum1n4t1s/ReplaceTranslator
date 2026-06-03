@@ -43,8 +43,8 @@ test("normalize preserves provided apiKeys/models and fills the rest", () => {
 });
 
 test("normalize coerces boolean flags", () => {
-  const s = SettingsSchema.normalize({ useBuiltinDetector: "yes", autoTranslate: 0 });
-  assert.equal(s.useBuiltinDetector, true);
+  const s = SettingsSchema.normalize({ imageTranslate: "yes", autoTranslate: 0 });
+  assert.equal(s.imageTranslate, true);
   assert.equal(s.autoTranslate, false);
 });
 

@@ -129,7 +129,7 @@
         // shadow root 内部の動的更新も拾えるよう MutationObserver に登録する (翻訳中のみ)
         if (mo && !observedShadowRoots.has(node.shadowRoot)) {
           observedShadowRoots.add(node.shadowRoot);
-          mo.observe(node.shadowRoot, { childList: true, subtree: true, characterData: false });
+          mo.observe(node.shadowRoot, { childList: true, subtree: true, characterData: true });
         }
       }
       const kids = node.childNodes;
@@ -351,6 +351,13 @@
       return;
     }
     for (const m of mutations) {
+      if (m.type === "characterData") {
+        // サイトが既存テキストノードを書き換えたケース (SPA/チャット等の文言差し替え)。
+        // 自分の翻訳適用 (translatedNodes) は除外して二重発火/再翻訳ループを防ぎつつ、
+        // まだ未訳のノードの新テキストだけ取り込む。
+        if (!translatedNodes.has(m.target)) ingest(m.target.parentNode || m.target);
+        continue;
+      }
       for (const node of m.addedNodes) ingest(node);
     }
   }
@@ -373,7 +380,7 @@
     }
     if (!mo) {
       mo = new MutationObserver(onMutate);
-      mo.observe(document.body || document.documentElement, { childList: true, subtree: true, characterData: false });
+      mo.observe(document.body || document.documentElement, { childList: true, subtree: true, characterData: true });
     }
     lastHref = location.href;
     window.removeEventListener("popstate", onPopState);

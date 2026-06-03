@@ -217,12 +217,12 @@
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("image-translate").checked = Boolean(state.settings.imageTranslate);
-    $("builtin-detector").checked = Boolean(state.settings.useBuiltinDetector);
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
     updateKeyWarning();
     reflectKeys();
+    updateQtDir();
     loadModels(false);
   }
 
@@ -239,6 +239,81 @@
     return tab;
   }
   const setStatus = (t) => { $("status").textContent = t || ""; };
+
+  // ---- クイック翻訳 (ちょっとだけ訳す。上部の翻訳元⇄翻訳先を流用し TRANSLATE_BATCH に 1 件投げる) ----
+  function langShort(coderef) {
+    if (coderef === "auto") return msg("qtAuto", "自動");
+    const l = Lang.get(coderef);
+    return l ? l.native : coderef;
+  }
+  function updateQtDir() {
+    const d = $("qt-dir");
+    if (d && state.settings) d.textContent = `${langShort(state.settings.sourceLang)} → ${langShort(state.settings.targetLang)}`;
+  }
+  function setupQuickTranslate() {
+    const qt = $("qt"), head = $("qt-head"), inEl = $("qt-in"), outEl = $("qt-out");
+    const countEl = $("qt-count"), copyBtn = $("qt-copy"), clearBtn = $("qt-clear");
+    const MAX = 5000;
+    let timer = null, reqId = 0;
+
+    inEl.placeholder = msg("qtPlaceholder", "ここに入力 / 貼り付け（このページは翻訳しません）");
+    outEl.setAttribute("data-ph", msg("qtOutPlaceholder", "訳文がここに出ます"));
+
+    function setCount() {
+      const n = inEl.value.length;
+      countEl.textContent = `${n.toLocaleString()} / 5,000`;
+      countEl.classList.toggle("over", n > MAX);
+    }
+    function render(text, isErr) {
+      outEl.classList.toggle("err", Boolean(isErr));
+      outEl.replaceChildren();
+      if (text) { const s = document.createElement("span"); s.className = "txt"; s.textContent = text; outEl.appendChild(s); }
+    }
+    function run() {
+      const text = inEl.value.trim();
+      if (!text) { qt.classList.remove("busy"); render(""); return; }
+      if (text.length > MAX) { qt.classList.remove("busy"); render(msg("qtTooLong", "5000文字を超えています"), true); return; }
+      const myReq = ++reqId;
+      qt.classList.add("busy");
+      // texts のみ送る。provider / 言語 / API キーは background が保管値を使う (キーは content/popup に出さない)。
+      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_BATCH, texts: [text] }, (res) => {
+        if (myReq !== reqId) return; // 入力が進んで別リクエストになっていたら破棄
+        qt.classList.remove("busy");
+        if (chrome.runtime.lastError) { render(msg("qtError", "翻訳できませんでした"), true); return; }
+        if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) render(res.translations[0]);
+        else if (res && res.error === "no_api_key") render(msg("qtNoKey", "このサービスの API キーが未設定です"), true);
+        else render(msg("qtError", "翻訳できませんでした"), true);
+      });
+    }
+    function schedule() {
+      setCount();
+      window.clearTimeout(timer);
+      if (!inEl.value.trim()) { qt.classList.remove("busy"); reqId++; render(""); return; }
+      timer = window.setTimeout(run, 550); // debounce
+    }
+
+    inEl.addEventListener("input", schedule);
+    inEl.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); window.clearTimeout(timer); run(); }
+    });
+    clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; setCount(); render(""); inEl.focus(); });
+    copyBtn.addEventListener("click", () => {
+      const t = outEl.textContent || "";
+      if (!t || outEl.classList.contains("err")) return;
+      try { navigator.clipboard.writeText(t); } catch (_e) { /* noop */ }
+      const orig = msg("qtCopy", "コピー");
+      copyBtn.classList.add("done");
+      copyBtn.textContent = msg("qtCopied", "✓ コピー");
+      window.clearTimeout(copyBtn._t);
+      copyBtn._t = window.setTimeout(() => { copyBtn.classList.remove("done"); copyBtn.textContent = orig; }, 1300);
+    });
+    head.addEventListener("click", () => {
+      const collapsed = qt.classList.toggle("collapsed");
+      head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (!collapsed) inEl.focus();
+    });
+    setCount();
+  }
 
   function init() {
     applyI18n();
@@ -258,8 +333,8 @@
     });
     moveInk(document.querySelector(".tab.is-active"));
 
-    $("source").addEventListener("change", (e) => save({ sourceLang: e.target.value }));
-    $("target").addEventListener("change", (e) => save({ targetLang: e.target.value }));
+    $("source").addEventListener("change", (e) => { save({ sourceLang: e.target.value }); updateQtDir(); });
+    $("target").addEventListener("change", (e) => { save({ targetLang: e.target.value }); updateQtDir(); });
 
     $("translate").addEventListener("click", async () => {
       const tab = await getActiveTab();
@@ -281,9 +356,11 @@
       h.addEventListener("click", () => selectProvider(h.dataset.provider));
     });
 
-    // 全ページ自動翻訳トグル: ON でこのページを翻訳 + グローバル保存、OFF で復元
+    // 全ページ自動翻訳トグル: 永続フラグ(autoTranslate)を保存してから現在ページを翻訳/復元する。
+    // ワンショットの「翻訳」ボタン/FAB/右クリックとは独立 — このトグルだけが autoTranslate を変える。
     $("auto-translate").addEventListener("change", async (e) => {
       const on = e.target.checked;
+      save({ autoTranslate: on }); // background はワンショット翻訳で保存しなくなったため popup 側で永続化
       const tab = await getActiveTab();
       if (!tab) return;
       setStatus(on ? msg("statusStarting", "Starting…") : "");
@@ -292,11 +369,11 @@
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
     $("image-translate").addEventListener("change", (e) => save({ imageTranslate: e.target.checked }));
-    $("builtin-detector").addEventListener("change", (e) => save({ useBuiltinDetector: e.target.checked }));
 
     // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
     $("refresh-models").addEventListener("click", () => loadModels(true));
 
+    setupQuickTranslate();
     bindKeyAutosave();
     document.querySelectorAll(".toggle").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -309,18 +386,11 @@
 
     chrome.runtime.onMessage.addListener((m) => {
       if (!m || m.action !== Actions.TRANSLATION_PROGRESS) return;
-      if (m.state === "progress") {
-        // 進捗は FAB の処理中リングで示すので、popup には「翻訳中」テキストを出さない
-        setStatus("");
-      } else if (m.state === "done") {
-        setStatus(msg("statusDone", "Done"));
-        $("auto-translate").checked = true;
-      } else if (m.state === "error") {
-        setStatus(msg("statusError", "Error"));
-      } else if (m.state === "restored") {
-        setStatus("");
-        $("auto-translate").checked = false;
-      }
+      // auto-translate トグルは永続 autoTranslate 設定を表す。ワンショット翻訳の進捗で勝手に切り替えない。
+      if (m.state === "progress") setStatus("");          // 進捗は FAB のシマーで示すので popup は無表示
+      else if (m.state === "done") setStatus(msg("statusDone", "Done"));
+      else if (m.state === "error") setStatus(msg("statusError", "Error"));
+      else if (m.state === "restored") setStatus("");
     });
   }
 

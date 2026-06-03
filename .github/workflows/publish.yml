@@ -123,20 +123,19 @@ jobs:
           fi
           echo "::add-mask::${token_response}"
           echo "::add-mask::${access_token}"
-          draft_response=$(curl -fsS \
+          # DRAFT projection の uploadState は「直近アップロードの状態」であって審査提出済みかは表さない。
+          # uploadState != FAILURE だけで skip すると、アップロード成功後に publish が失敗/タイムアウトした版を
+          # 次回も skip してしまい、未提出の下書きのまま放置される。
+          # → PUBLISHED(公開中) バージョンが manifest と一致するときだけ skip。それ以外は publish step に委ね、
+          #    publish step 側で「審査中で更新不可」を検出して安全に終了する。
+          pub_response=$(curl -fsS \
             -H "Authorization: Bearer ${access_token}" \
             -H "x-goog-api-version: 2" \
-            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}?projection=DRAFT") || draft_response=""
-          if [ -z "$draft_response" ]; then
-            echo "::warning::CWS pre-flight: Items.get 失敗 → publish step に判定を委ねる"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          draft_version=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("crxVersion",""))' 2>/dev/null <<< "$draft_response" || echo "")
-          draft_state=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("uploadState",""))' 2>/dev/null <<< "$draft_response" || echo "")
-          echo "📊 CWS draft: version=${draft_version:-(unknown)} state=${draft_state:-(unknown)} / manifest: ${MANIFEST_VERSION}"
-          if [ -n "$draft_version" ] && [ "$draft_version" = "$MANIFEST_VERSION" ] && [ "$draft_state" != "FAILURE" ]; then
-            echo "::notice::CWS は既に v${MANIFEST_VERSION} を保持。CWS publish step を skip"
+            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}?projection=PUBLISHED") || pub_response=""
+          pub_version=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("crxVersion",""))' 2>/dev/null <<< "$pub_response" || echo "")
+          echo "📊 CWS published=${pub_version:-(unknown)} / manifest: ${MANIFEST_VERSION}"
+          if [ -n "$pub_version" ] && [ "$pub_version" = "$MANIFEST_VERSION" ]; then
+            echo "::notice::CWS は既に v${MANIFEST_VERSION} を公開中。CWS publish step を skip"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -167,17 +166,24 @@ jobs:
           echo "::add-mask::${access_token}"
 
           echo "📤 Step 1/2: Chrome Web Store に ZIP をアップロード中..."
-          upload_response=$(curl -fsS \
+          # -f は使わず HTTP コードと本文を捕捉する。審査中(更新不可)なら「既に提出済み」とみなして正常終了し、
+          # 公開中バージョン未一致でも審査待ちのケースで CI を赤にしない。
+          upload_http=$(curl -sS -o /tmp/cws_upload.json -w '%{http_code}' \
             -X PUT \
             -H "Authorization: Bearer ${access_token}" \
             -H "x-goog-api-version: 2" \
             -H "Content-Type: application/zip" \
             --data-binary @replace-translator.zip \
-            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}")
-          upload_state=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("uploadState","UNKNOWN"))' 2>/dev/null <<< "$upload_response")
-          echo "📊 uploadState: ${upload_state}"
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}" || echo "000")
+          upload_response=$(cat /tmp/cws_upload.json 2>/dev/null || echo "")
+          upload_state=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("uploadState","UNKNOWN"))' 2>/dev/null <<< "$upload_response" || echo "UNKNOWN")
+          echo "📊 uploadState: ${upload_state} (HTTP ${upload_http})"
           if [ "$upload_state" != "SUCCESS" ]; then
-            echo "::error::アップロードが SUCCESS ではないため publish を中止します (state=${upload_state})"
+            if printf '%s' "$upload_response" | grep -qiE "pending review|in review|not.?updatable|being reviewed|review in progress"; then
+              echo "::notice::アイテムは審査中で更新不可。既に提出済みとみなして正常終了します。"
+              exit 0
+            fi
+            echo "::error::アップロードが SUCCESS ではないため publish を中止します (state=${upload_state}, http=${upload_http})"
             echo "Response: $upload_response"
             exit 1
           fi

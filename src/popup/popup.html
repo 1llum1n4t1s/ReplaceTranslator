@@ -44,13 +44,9 @@
         <div class="switch-field">
           <div class="switch-text">
             <label class="switch-label" for="image-translate" data-i18n="optImageTranslate">画像内テキストの翻訳</label>
-            <div class="switch-desc" data-i18n="optImageTranslateDesc">画像にホバーして「訳」を押すと、画像内の文字を翻訳して重ねます。vision 対応 LLM のみ。</div>
+            <div class="switch-desc" data-i18n="optImageTranslateDesc">ページ翻訳時に画像内の文字も一括翻訳します（画像にホバーして「訳」で個別翻訳も可）。vision 対応 LLM のみ・MyMemory 不可。</div>
           </div>
           <input id="image-translate" type="checkbox">
-        </div>
-        <div class="switch-field">
-          <label class="switch-label" for="builtin-detector" data-i18n="optBuiltinDetector">Chrome 内蔵の言語検出で事前フィルタ</label>
-          <input id="builtin-detector" type="checkbox">
         </div>
       </div>
 
@@ -65,6 +61,32 @@
       </div>
 
       <div id="status" class="status" aria-live="polite"></div>
+
+      <!-- クイック翻訳: ちょっとだけ訳したい人向け。上部の翻訳元⇄翻訳先を流用。既定で折りたたみ。 -->
+      <div class="qt collapsed" id="qt">
+        <button class="qt-head" id="qt-head" type="button" aria-expanded="false" aria-controls="qt-body">
+          <svg class="qt-chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="qt-title" data-i18n="qtTitle">クイック翻訳</span>
+          <span class="qt-note" data-i18n="qtNote">この欄だけ訳す</span>
+          <span class="qt-dir" id="qt-dir" aria-hidden="true"></span>
+        </button>
+        <div class="qt-body" id="qt-body">
+          <div class="qt-wrap">
+            <textarea class="qt-in" id="qt-in" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
+            <div class="qt-mid" aria-hidden="true">
+              <span class="qt-arrow">↓</span>
+              <span class="qt-spin"></span>
+            </div>
+            <div class="qt-out" id="qt-out" data-ph="訳文がここに出ます" aria-live="polite"></div>
+            <div class="qt-foot">
+              <span class="qt-count" id="qt-count">0 / 5,000</span>
+              <span class="grow"></span>
+              <button class="qt-mini" id="qt-clear" type="button" data-i18n="qtClear">クリア</button>
+              <button class="qt-mini copy" id="qt-copy" type="button" data-i18n="qtCopy">コピー</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- API設定タブ (サービス選択 + API キー + モデルを統合) -->

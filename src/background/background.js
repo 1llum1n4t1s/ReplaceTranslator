@@ -456,18 +456,10 @@ if (typeof importScripts === "function") {
     });
   }
 
-  // 翻訳 ON/OFF をグローバルに保存 (autoTranslate)。ON ならページ遷移時に fab.js が自動翻訳する。
-  async function setAutoTranslate(on) {
-    const data = await chrome.storage.local.get(StorageKeys.SETTINGS);
-    const s = SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
-    if (Boolean(s.autoTranslate) !== on) {
-      s.autoTranslate = on;
-      await chrome.storage.local.set({ [StorageKeys.SETTINGS]: s });
-    }
-  }
-
+  // ページ翻訳/復元はワンショット動作。全ページ自動翻訳 (autoTranslate) の永続フラグはここでは変更しない。
+  // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
+  // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId) {
-    await setAutoTranslate(true);
     const settings = await getSettings();
     await injectTranslator(tabId);
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
@@ -475,7 +467,6 @@ if (typeof importScripts === "function") {
   }
 
   async function restorePage(tabId) {
-    await setAutoTranslate(false);
     try {
       await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_RESTORE_CS });
     } catch (_e) {
