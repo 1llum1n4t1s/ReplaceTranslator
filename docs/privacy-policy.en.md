@@ -19,6 +19,10 @@ Replace Translator does not collect, store, or transmit any personal information
   - MyMemory (Translated): https://mymemory.translated.net/doc/en/tos.php
 - No page text is ever sent to any server operated by the extension's developer (the only destination is the provider's API you chose).
 
+## Image translation (optional)
+- When image translation is enabled, the image you select (or images on the page) are fetched and sent as image data to the vision-capable provider you selected, in order to read and translate the text inside the image.
+- This is governed by the same provider privacy policies and terms listed above. MyMemory does not support image translation. The feature is off by default.
+
 ## Token usage
 - Token usage counts are stored only inside your browser (`chrome.storage.local`), per month. They are never transmitted anywhere.
 

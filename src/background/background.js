@@ -336,6 +336,14 @@ if (typeof importScripts === "function") {
     return btoa(bin);
   }
 
+  // IPv4 がループバック/プライベート/リンクローカル/CGNAT かどうか (先頭2オクテットで判定)
+  function isPrivateV4(a, b) {
+    return a === 0 || a === 127 || a === 10 ||
+      (a === 192 && b === 168) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b >= 64 && b <= 127);
+  }
   // ページが任意に指定できる imageUrl を外部 LLM へ中継する前の SSRF/内部リソース流出対策。
   // http/https 以外のスキームと、localhost / プライベート IP / リンクローカル宛先を拒否する。
   function isForbiddenImageUrl(rawUrl) {
@@ -346,15 +354,19 @@ if (typeof importScripts === "function") {
     if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1); // IPv6 リテラル
     if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
     if (h === "::1" || h === "::" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true; // IPv6 loopback/link-local/ULA
-    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (m) {
-      const a = +m[1], b = +m[2];
-      if (a === 0 || a === 127 || a === 10 ||
-          (a === 192 && b === 168) ||
-          (a === 172 && b >= 16 && b <= 31) ||
-          (a === 169 && b === 254) ||
-          (a === 100 && b >= 64 && b <= 127)) return true; // ループバック/プライベート/リンクローカル/CGNAT
+    // IPv4-mapped IPv6 (::ffff:127.0.0.1 / ::ffff:7f00:1) は埋め込み IPv4 へ展開してプライベート判定する
+    const mapped = h.match(/^::ffff:(.+)$/i);
+    if (mapped) {
+      const tail = mapped[1];
+      const dq = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (dq) { if (isPrivateV4(+dq[1], +dq[2])) return true; }
+      else {
+        const hx = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+        if (hx) { const hi = parseInt(hx[1], 16); if (isPrivateV4((hi >> 8) & 0xff, hi & 0xff)) return true; }
+      }
     }
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (m && isPrivateV4(+m[1], +m[2])) return true;
     return false;
   }
 

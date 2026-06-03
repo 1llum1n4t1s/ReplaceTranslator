@@ -61,6 +61,11 @@
     const p = globalThis.Providers && settings && Providers.get(settings.provider);
     return (p && p.batch === false) ? 1 : CONCURRENCY;
   }
+  // バッチ非対応プロバイダ (MyMemory 等の NMT) か。401/403 を恒久エラー扱いにするかの分岐に使う。
+  function isNmtProvider() {
+    const p = globalThis.Providers && settings && Providers.get(settings.provider);
+    return Boolean(p && p.batch === false);
+  }
 
   // インライン要素。テキストノードからブロック祖先を求めるとき、これらは透過して上に辿る。
   const INLINE_TAGS = new Set([
@@ -276,6 +281,11 @@
           if (res.nextBatchSize) currentBatchSize = res.nextBatchSize; // 自動学習を反映
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
+          return;
+        } else if (res && res.error === "http" && (res.status === 401 || res.status === 403) && !isNmtProvider()) {
+          // LLM のキー無効/失効(401/403)は恒久エラー。skip して done になると「翻訳済みなのに原文のまま」に
+          // 見えるため、no_api_key 同様に全体中断して popup/FAB に設定問題を通知する (NMT は per-text 制限なので除外)。
+          fatal = res;
           return;
         } else if (res && Array.isArray(res.translations)) {
           // 一時エラーでも部分的に成功した訳文は適用する (MyMemory は 1 件の 429/通信失敗で
