@@ -460,18 +460,20 @@
   function revertTranslations() {
     for (const node of translatedNodes) {
       const orig = originalMap.get(node);
-      if (orig != null && node.isConnected) node.nodeValue = orig;
+      if (orig != null) node.nodeValue = orig; // 切断中ノードも戻す (仮想化 DOM の再アタッチで旧訳が復活しないように)
+      originalMap.delete(node);  // 次回翻訳で最新の原文を取り直せるようメタを破棄 (古い原文での誤上書き防止)
+      writtenValue.delete(node);
     }
     translatedNodes.clear();
   }
 
   function startTranslate(newSettings) {
     settings = newSettings;
+    // 2 回目以降の翻訳 (言語/provider 変更で再実行) は先に原文へ戻す。前回の訳が残ると accept() が既訳ノードを
+    // 全弾きし、iframe では frameHasEnoughText() が 0 字と誤判定して再翻訳されないため、閾値判定より前に revert する。
+    revertTranslations();
     // 広告等の小さな iframe は翻訳しない (メインフレームは常に対象)
     if (!frameHasEnoughText()) return Promise.resolve();
-    // 2 回目以降の翻訳 (言語/provider を変えて再実行) で前回の訳が残ると accept() が既訳ノードを
-    // 全弾きして新設定が反映されないため、まず原文へ戻して翻訳済みマークをクリアする。
-    revertTranslations();
     translating = true;
     runId += 1;
     const myRun = runId;

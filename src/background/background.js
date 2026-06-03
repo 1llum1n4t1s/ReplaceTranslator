@@ -378,7 +378,16 @@ if (typeof importScripts === "function") {
     let h = u.hostname.toLowerCase();
     if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1); // IPv6 リテラル
     if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
-    if (h === "::1" || h === "::" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true; // IPv6 loopback/link-local/ULA
+    // IPv6 リテラル (":" を含む) のときだけ範囲判定する。fc/fd を裸の startsWith で見ると "fcbarcelona.com" 等の
+    // 通常ホストを誤ブロックするため、先頭ヘクステットを数値化して fe80::/10 と fc00::/7 全域を弾く。
+    if (h.includes(":")) {
+      if (h === "::1" || h === "::") return true;          // loopback / unspecified
+      const hx = parseInt(h.split(":")[0], 16);
+      if (Number.isFinite(hx)) {
+        if ((hx & 0xffc0) === 0xfe80) return true;         // fe80::/10 link-local (fe80–febf)
+        if ((hx & 0xfe00) === 0xfc00) return true;         // fc00::/7 ULA (fc00–fdff)
+      }
+    }
     // IPv4-mapped IPv6 (::ffff:127.0.0.1 / ::ffff:7f00:1) は埋め込み IPv4 へ展開してプライベート判定する
     const mapped = h.match(/^::ffff:(.+)$/i);
     if (mapped) {
