@@ -120,15 +120,20 @@
     const userContent = JSON.stringify(o.texts || []);
 
     if (providerId === "openai" || providerId === "xai") {
-      // xAI(Grok) は OpenAI 互換なので chat/completions 形式を共有する
-      const body = tuneReasoning(providerId, model, {
+      // xAI(Grok) は OpenAI 互換なので chat/completions 形式を共有する。
+      // 出力上限を付け、prompt injection / format drift で verbose 化したときの遅延・課金枠浪費を防ぐ。
+      // OpenAI の gpt-5/o 系は max_tokens 非対応のため max_completion_tokens を使う。
+      const cap = providerId === "openai"
+        ? { max_completion_tokens: MAX_OUTPUT_TOKENS }
+        : { max_tokens: MAX_OUTPUT_TOKENS };
+      const body = tuneReasoning(providerId, model, Object.assign({
         model,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: system },
           { role: "user", content: userContent },
         ],
-      });
+      }, cap));
       return {
         url: provider.endpoint,
         method: "POST",

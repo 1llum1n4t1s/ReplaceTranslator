@@ -327,6 +327,7 @@ if (typeof importScripts === "function") {
   }
 
   // ---- 画像内テキストの翻訳 (vision・オプション) ----
+  const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB: 巨大画像でメモリspike/過大リクエストを防ぐ上限
   function base64FromBytes(bytes) {
     let bin = "";
     const chunk = 0x8000;
@@ -395,7 +396,13 @@ if (typeof importScripts === "function") {
     let b64, mime;
     try {
       const r = await fetch(imageUrl);
+      // リダイレクト後の最終 URL も検証する (公開 URL → 30x で localhost/private へ飛ばす SSRF を防ぐ。
+      // 取得済みでも、禁止先なら base64 化せず LLM へ送らないことで内部コンテンツの外部流出を止める)。
+      if (r.url && r.url !== imageUrl && isForbiddenImageUrl(r.url)) return { ok: false, error: "forbidden_target" };
+      const cl = Number(r.headers.get("content-length") || 0);
+      if (cl && cl > MAX_IMAGE_BYTES) return { ok: false, error: "image_too_large", size: cl };
       const blob = await r.blob();
+      if (blob.size > MAX_IMAGE_BYTES) return { ok: false, error: "image_too_large", size: blob.size };
       const bytes = new Uint8Array(await blob.arrayBuffer());
       // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
       // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
@@ -523,7 +530,12 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.APPLY_SETTINGS: {
-            const saved = await saveSettings(msg.settings);
+            // patch (変更分) を保管中の設定にマージしてから保存する。popup が開いたまま別経路で設定が
+            // 変わった場合に、古い全体設定で上書きして巻き戻すのを防ぐ (msg.settings は後方互換で受理)。
+            const base = await getSettings();
+            const incoming = (msg.patch && typeof msg.patch === "object") ? msg.patch
+              : ((msg.settings && typeof msg.settings === "object") ? msg.settings : {});
+            const saved = await saveSettings(Object.assign({}, base, incoming));
             sendResponse({ ok: true, settings: saved });
             break;
           }

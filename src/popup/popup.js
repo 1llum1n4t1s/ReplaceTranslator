@@ -227,8 +227,9 @@
   }
 
   function save(patch, after) {
-    state.settings = Object.assign({}, state.settings, patch);
-    chrome.runtime.sendMessage({ action: Actions.APPLY_SETTINGS, settings: state.settings }, (res) => {
+    state.settings = Object.assign({}, state.settings, patch); // 楽観更新 (UI 即応)
+    // 全体ではなく patch (変更分) だけ送り、background が保管値にマージする (他経路の変更を巻き戻さない)
+    chrome.runtime.sendMessage({ action: Actions.APPLY_SETTINGS, patch }, (res) => {
       if (res && res.settings) state.settings = res.settings;
       if (after) after();
     });
