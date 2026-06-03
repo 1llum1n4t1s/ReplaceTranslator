@@ -6,7 +6,7 @@ Last updated: 2026-06-03
 Replace Translator does not collect, store, or transmit any personal information. It uses no analytics and no tracking.
 
 ## API keys
-- Your API keys for each LLM provider (OpenAI / Anthropic / Google) are stored only inside your browser (`chrome.storage.local`).
+- Your API keys for each LLM provider (OpenAI / Anthropic / Google / xAI) are stored only inside your browser (`chrome.storage.local`). MyMemory needs no key.
 - A key is sent only to its own provider's API for authentication when you translate. It is never sent to the extension's developer or any other third party.
 
 ## Page text
@@ -15,10 +15,12 @@ Replace Translator does not collect, store, or transmit any personal information
   - OpenAI: https://openai.com/policies/
   - Anthropic: https://www.anthropic.com/legal
   - Google AI: https://ai.google.dev/gemini-api/terms
+  - xAI (Grok): https://x.ai/legal/privacy-policy
+  - MyMemory (Translated): https://mymemory.translated.net/doc/en/tos.php
 - No page text is ever sent to any server operated by the extension's developer (the only destination is the provider's API you chose).
 
 ## Token usage
-- The token usage shown in the popup is stored only inside your browser (`chrome.storage.local`), per month. It is never transmitted anywhere.
+- Token usage counts are stored only inside your browser (`chrome.storage.local`), per month. They are never transmitted anywhere.
 
 ## Why each permission is used
 - `storage`: store settings, API keys, and token usage locally

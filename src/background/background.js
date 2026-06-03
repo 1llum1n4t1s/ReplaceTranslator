@@ -24,9 +24,30 @@ if (typeof importScripts === "function") {
     return SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
   }
 
+  // 設定の SW メモリキャッシュ。TRANSLATE_BATCH/IMAGE で API キーを bg 側から引く際に使う
+  // (content が送ってくる設定の apiKeys は信用せず、ここの保管値で上書きする)。storage 変更で破棄。
+  let settingsMem = null;
+  async function getSettingsCached() {
+    if (!settingsMem) settingsMem = await getSettings();
+    return settingsMem;
+  }
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[StorageKeys.SETTINGS]) settingsMem = null;
+    });
+  } catch (_e) { /* noop */ }
+
+  // content script に渡す設定から秘密情報 (apiKeys) を除く。
+  // content は翻訳対象テキストを TRANSLATE_BATCH で送るだけで、API キーは bg 側でのみ保持・使用する。
+  function publicSettings(s) {
+    const { apiKeys: _omit, ...rest } = s;
+    return rest;
+  }
+
   async function saveSettings(raw) {
     const normalized = SettingsSchema.normalize(raw);
     await chrome.storage.local.set({ [StorageKeys.SETTINGS]: normalized });
+    settingsMem = normalized; // キャッシュを最新化 (onChanged より先に確定させる)
     return normalized;
   }
 
@@ -356,7 +377,8 @@ if (typeof importScripts === "function") {
     try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
     const blocks = ProviderApi.parseImageBlocks(providerId, json);
     const usage = ProviderApi.parseUsage(providerId, json);
-    await recordUsage(providerId, usage);
+    await ensureMem(); // 既存の月次 usage を読み込んでから加算 (cold start の初回が画像翻訳でも上書きしない)
+    recordUsage(providerId, usage);
     return { ok: true, blocks };
   }
 
@@ -385,7 +407,8 @@ if (typeof importScripts === "function") {
     await setAutoTranslate(true);
     const settings = await getSettings();
     await injectTranslator(tabId);
-    await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_TRANSLATE_CS, settings });
+    // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
+    await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_TRANSLATE_CS, settings: publicSettings(settings) });
   }
 
   async function restorePage(tabId) {
@@ -415,12 +438,19 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.TRANSLATE_BATCH: {
-            const settings = msg.settings || (await getSettings());
+            // content が送ってきた設定の apiKeys は信用せず、必ず bg 保管値で上書きする (キー漏洩防止)
+            const stored = await getSettingsCached();
+            const settings = msg.settings
+              ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
+              : stored;
             sendResponse(await translateBatch(settings, msg.texts || []));
             break;
           }
           case Actions.TRANSLATE_IMAGE: {
-            const settings = msg.settings || (await getSettings());
+            const stored = await getSettingsCached();
+            const settings = msg.settings
+              ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
+              : stored;
             sendResponse(await translateImage(settings, msg.imageUrl));
             break;
           }

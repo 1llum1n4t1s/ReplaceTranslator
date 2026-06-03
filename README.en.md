@@ -12,7 +12,6 @@ A Chrome / Firefox extension that translates the page you are viewing **in place
 - **Infinite scroll friendly** — content loaded later is translated automatically
 - **Image text translation (experimental)** — hover an image and click 訳 to translate the text inside it and overlay the result (vision-capable LLMs)
 - **Multilingual** — pick the source (auto-detect available) and target language freely
-- **Token usage display** — current-month token usage per provider (auto-resets each month, persists across browser restarts)
 - **Privacy-first** — API keys stay local in your browser; text is sent only to the provider you chose
 
 ## 🔑 About API keys
@@ -34,8 +33,9 @@ Get an API key here:
 
 ### Load the development build (current method)
 1. Download / clone this repository
-2. Open `chrome://extensions` in Chrome and turn on "Developer mode"
-3. Click "Load unpacked" and select this folder
+2. Install deps and generate the icons: `npm install && npm run build` (writes `icons/icon-*.png` from the SVG — without them the unpacked load fails icon validation)
+3. Open `chrome://extensions` in Chrome and turn on "Developer mode"
+4. Click "Load unpacked" and select this folder
 
 Store links (Chrome Web Store / Firefox Add-ons) will be added once published.
 
@@ -50,14 +50,11 @@ Store links (Chrome Web Store / Firefox Add-ons) will be added once published.
 - **Source** — leave it on "Detect language" and only text that differs from the target gets translated (great for mixed-language pages). You can also pin a specific source language.
 - **Target** — pick the language you want.
 
-## 📊 Token usage
-The popup shows current-month token usage per provider and a total. It restarts from zero when the month changes (past months are kept locally).
-
 ## 🌐 Supported languages
 Japanese, English, Chinese (Simplified / Traditional), Korean, Spanish, French, German, Portuguese, Russian, Italian and other major languages.
 
 ## 🔒 Privacy
-- API keys and token usage are stored **only inside your browser**
+- API keys are stored **only inside your browser**
 - Page text is sent **only to the provider API you selected** when translating (never to the extension developer's servers)
 - See the [Privacy Policy](docs/privacy-policy.en.md) for details
 

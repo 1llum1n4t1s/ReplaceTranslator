@@ -277,8 +277,13 @@
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
+        } else if (res && Array.isArray(res.translations)) {
+          // 一時エラーでも部分的に成功した訳文は適用する (MyMemory は 1 件の 429/通信失敗で
+          // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
+          // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
+          applyTranslations(batch, res.translations);
         } else {
-          // 一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける
+          // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける
           for (const b of batch) translatedNodes.add(b.node);
         }
       }

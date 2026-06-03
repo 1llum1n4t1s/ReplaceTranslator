@@ -18,7 +18,7 @@
     // popup / options → background
     TRANSLATE_PAGE: "TRANSLATE_PAGE",       // アクティブタブの翻訳を開始
     RESTORE_PAGE: "RESTORE_PAGE",           // 原文に復元
-    GET_STATE: "GET_STATE",                 // 設定 + 当月 usage を取得
+    GET_STATE: "GET_STATE",                 // 設定を取得 (usage はメモリ集計のみで UI 非表示)
     APPLY_SETTINGS: "APPLY_SETTINGS",       // 設定を保存
     GET_MODELS: "GET_MODELS",               // プロバイダのモデル一覧を動的取得 (新しい順10件 + 価格)
     // content → background
