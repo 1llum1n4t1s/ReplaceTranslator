@@ -1,0 +1,22 @@
+node_modules/
+# 生成物 (generate-icons.js が SVG から書き出す PNG)
+icons/icon-*.png
+temp-build/
+temp-build-*/
+*.zip
+.serena/
+.claude/
+temp/
+# Firefox AMO ビルド成果物
+firefox-build/
+web-ext-artifacts/
+*.xpi
+# 認証情報のうっかり commit を防ぐ defense-in-depth (AMO_JWT_* / CWS_* OAuth refresh token 等)
+.env
+.env.*
+secrets.json
+secrets.local.json
+credentials.json
+credentials.local.json
+*.pem
+*.key

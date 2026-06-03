@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+  <title>Replace Translator</title>
+</head>
+<body>
+  <header class="hdr">
+    <div class="mark" aria-hidden="true">訳</div>
+    <div class="hdr-text">
+      <h1 class="hdr-title" data-i18n="headerTitle">Replace Translator</h1>
+      <p class="hdr-sub" data-i18n="headerTagline">各社 LLM で、ページを置換翻訳</p>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" type="button" role="tab" data-tab="translate" aria-selected="true" data-i18n="tabTranslate">翻訳</button>
+    <button class="tab" type="button" role="tab" data-tab="api" aria-selected="false" data-i18n="tabApi">API設定</button>
+    <span class="tab-ink" aria-hidden="true"></span>
+  </nav>
+
+  <main class="body">
+    <!-- 翻訳タブ -->
+    <section class="pane is-active" data-pane="translate">
+      <div class="auto-row">
+        <span class="auto-label" data-i18n="optAutoTranslate">全ページ自動翻訳</span>
+        <label class="switch"><input id="auto-translate" type="checkbox"><span class="track"></span></label>
+      </div>
+
+      <div class="row two">
+        <div class="col">
+          <label class="lbl" for="source" data-i18n="labelSource">翻訳元</label>
+          <select id="source" class="sel"></select>
+        </div>
+        <div class="swap" aria-hidden="true">→</div>
+        <div class="col">
+          <label class="lbl" for="target" data-i18n="labelTarget">翻訳先</label>
+          <select id="target" class="sel"></select>
+        </div>
+      </div>
+
+      <div class="opts">
+        <div class="switch-field">
+          <div class="switch-text">
+            <div class="switch-label" data-i18n="optImageTranslate">画像内テキストの翻訳</div>
+            <div class="switch-desc" data-i18n="optImageTranslateDesc">画像にホバーして「訳」を押すと、画像内の文字を翻訳して重ねます。vision 対応 LLM のみ。</div>
+          </div>
+          <input id="image-translate" type="checkbox">
+        </div>
+        <div class="switch-field">
+          <div class="switch-label" data-i18n="optBuiltinDetector">Chrome 内蔵の言語検出で事前フィルタ</div>
+          <input id="builtin-detector" type="checkbox">
+        </div>
+      </div>
+
+      <div id="key-warning" class="warn hidden">
+        <span data-i18n="warnNoKey">このサービスの API キーが未設定です。</span>
+        <button id="warn-keys" class="link-btn" type="button" data-i18n="warnSetKey">API設定へ</button>
+      </div>
+
+      <div class="actions">
+        <button id="translate" class="btn primary" type="button" data-i18n="btnTranslate">翻訳</button>
+        <button id="restore" class="btn ghost" type="button" data-i18n="btnRestore">原文に戻す</button>
+      </div>
+
+      <div id="status" class="status" aria-live="polite"></div>
+    </section>
+
+    <!-- API設定タブ (サービス選択 + API キー + モデルを統合) -->
+    <section class="pane" data-pane="api">
+      <p class="note" data-i18n="optionsLead">キーはこのブラウザ内にのみ保存され、翻訳時に該当サービスの API にだけ送信されます。フォーカスを外すと自動保存します。</p>
+
+      <div id="provider-list" class="provider-list" role="radiogroup" aria-label="翻訳サービス">
+        <!-- OpenAI -->
+        <div class="provider-card" data-provider="openai">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="openai">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">OpenAI</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+              <button class="toggle" type="button" data-target="key-openai" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-openai" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Anthropic -->
+        <div class="provider-card" data-provider="anthropic">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="anthropic">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">Anthropic (Claude)</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+              <button class="toggle" type="button" data-target="key-anthropic" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-anthropic" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Google Gemini -->
+        <div class="provider-card" data-provider="gemini">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="gemini">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">Google Gemini</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-gemini" type="password" autocomplete="off" spellcheck="false" placeholder="AIza...">
+              <button class="toggle" type="button" data-target="key-gemini" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-gemini" target="_blank" rel="noopener" data-i18n="optGetKeyFree">無料 API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- xAI (Grok) -->
+        <div class="provider-card" data-provider="xai">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="xai">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">xAI (Grok)</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-xai" type="password" autocomplete="off" spellcheck="false" placeholder="xai-...">
+              <button class="toggle" type="button" data-target="key-xai" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-xai" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- MyMemory (キー不要) -->
+        <div class="provider-card" data-provider="mymemory">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="mymemory">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">MyMemory</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-mymemory" type="email" autocomplete="off" spellcheck="false" placeholder="you@example.com (任意)">
+            </div>
+            <div class="pc-foot">
+              <span class="hint" data-i18n="optMyMemoryNote">キー不要。メールを入れると無料枠が増えます。</span>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row hidden" id="model-row">
+        <div class="model-head">
+          <span class="lbl" data-i18n="labelModel">モデル</span>
+          <button id="refresh-models" class="refresh-btn" type="button" data-i18n-title="modelRefreshTitle" title="最新モデルを取得">
+            <span class="refresh-ico" aria-hidden="true">↻</span>
+            <span data-i18n="modelRefresh">更新</span>
+          </button>
+        </div>
+        <div id="model-list" class="model-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="../lib/actions.js"></script>
+  <script src="../lib/lang.js"></script>
+  <script src="../lib/model-pricing.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

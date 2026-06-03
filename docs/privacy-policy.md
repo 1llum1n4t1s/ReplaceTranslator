@@ -1,0 +1,29 @@
+# プライバシーポリシー — リプレース翻訳
+
+最終更新: 2026-06-03
+
+## 収集する情報
+リプレース翻訳は、利用者の個人情報を収集・保存・外部送信しません。解析ツールやトラッキングも一切使用しません。
+
+## API キーの扱い
+- 各 LLM プロバイダ（OpenAI / Anthropic / Google）の API キーは、お使いのブラウザ内（`chrome.storage.local`）にのみ保存されます。
+- API キーは、翻訳実行時に該当プロバイダの API へ認証目的でのみ送信されます。本拡張機能の開発者を含む第三者には一切送信されません。
+
+## 翻訳対象テキストの扱い
+- 「翻訳」を実行したとき、ページ上のテキストは、利用者が選択したプロバイダの API にのみ送信され、翻訳結果を受け取ります。
+- 送信先での扱いは、各プロバイダのプライバシーポリシー・利用規約に従います:
+  - OpenAI: https://openai.com/policies/
+  - Anthropic: https://www.anthropic.com/legal
+  - Google AI: https://ai.google.dev/gemini-api/terms
+- 本拡張機能の開発者が運営するサーバーには、テキストを一切送信しません（送信先は利用者が選んだプロバイダの API のみ）。
+
+## トークン使用量
+- ポップアップに表示するトークン使用量は、お使いのブラウザ内（`chrome.storage.local`）に月別で保存されるだけで、外部には送信されません。
+
+## 権限の用途
+- `storage`: 設定・API キー・トークン使用量のローカル保存
+- `scripting` / `activeTab` / `host_permissions`: 翻訳対象ページへのスクリプト注入と、選択したプロバイダ API への通信
+- `contextMenus`: 右クリックメニューからの翻訳 / 原文復元
+
+## お問い合わせ
+GitHub Issues: https://github.com/1llum1n4t1s/ReplaceTranslator/issues

@@ -1,0 +1,70 @@
+{
+  "appName": {
+    "message": "Replace Translator",
+    "description": "Extension name shown in chrome://extensions and the stores"
+  },
+  "appDescription": {
+    "message": "Translate the current page in-place with cloud LLMs (OpenAI, Anthropic, Gemini, Grok) using your own API key.",
+    "description": "Short description (manifest.description)"
+  },
+  "defaultTitle": {
+    "message": "Replace Translator",
+    "description": "Toolbar icon tooltip"
+  },
+
+  "headerTitle": { "message": "Replace Translator" },
+  "headerTagline": { "message": "Replace any page with cloud LLMs" },
+  "tabTranslate": { "message": "Translate" },
+  "tabKeys": { "message": "Keys" },
+  "tabApi": { "message": "API settings" },
+  "fabTranslate": { "message": "Translate this page" },
+  "fabRestore": { "message": "Restore original" },
+  "openOptions": { "message": "Settings" },
+  "warnNoKey": { "message": "No API key set for this provider." },
+  "warnSetKey": { "message": "Open API settings" },
+  "labelProvider": { "message": "Provider" },
+  "labelProviders": { "message": "Translation service" },
+  "badgeKeyRequired": { "message": "Key" },
+  "badgeFree": { "message": "No key" },
+  "optAutoTranslate": { "message": "Auto-translate every page" },
+  "labelModel": { "message": "Model" },
+  "modelRefresh": { "message": "Refresh" },
+  "modelRefreshTitle": { "message": "Fetch the latest models (API key required)" },
+  "labelSource": { "message": "From" },
+  "labelTarget": { "message": "To" },
+  "btnTranslate": { "message": "Translate" },
+  "btnRestore": { "message": "Restore" },
+  "statusStarting": { "message": "Starting…" },
+  "statusError": { "message": "Error" },
+  "statusDone": { "message": "Done" },
+
+  "ctxTranslate": { "message": "Translate this page" },
+  "ctxRestore": { "message": "Restore original" },
+
+  "toastTranslating": { "message": "Translating" },
+  "toastNoKey": { "message": "Set an API key in options" },
+  "toastApiError": { "message": "API error" },
+  "toastNetwork": { "message": "Network error" },
+  "toastFailed": { "message": "Translation failed" },
+  "toastNothing": { "message": "Nothing to translate" },
+  "toastDone": { "message": "Done" },
+  "toastRestored": { "message": "Restored original" },
+
+  "optionsTitle": { "message": "Replace Translator — Settings" },
+  "optionsLead": { "message": "Enter your own API key for each provider. Keys are stored locally in this browser and are sent only to that provider's API when translating." },
+  "optKeysTitle": { "message": "API keys" },
+  "optShow": { "message": "Show" },
+  "optHide": { "message": "Hide" },
+  "optGetKey": { "message": "Get an API key ↗" },
+  "optGetKeyFree": { "message": "Get a free API key ↗" },
+  "optAdvancedTitle": { "message": "Advanced" },
+  "optMyMemoryNote": { "message": "No key needed. Add an email to raise the free daily limit (anonymous 5k / with email 50k chars/day). NMT engine, max 500 bytes per text." },
+  "optBuiltinDetector": { "message": "Pre-filter with Chrome's built-in language detector" },
+  "optImageTranslate": { "message": "Translate text inside images" },
+  "optImageTranslateDesc": { "message": "Hover an image and click 訳 to translate its text and overlay the result. Vision-capable LLMs only (not MyMemory)." },
+  "imgBtn": { "message": "Translate text in image" },
+  "optBuiltinDetectorDesc": { "message": "When available, skip text already in the target language locally to save tokens (optional)." },
+  "optBatchSize": { "message": "Batch size (texts per request)" },
+  "optSave": { "message": "Save" },
+  "optSaved": { "message": "Saved" }
+}

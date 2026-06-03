@@ -1,0 +1,155 @@
+/* フローティング翻訳ボタン (content script で全ページに常駐) */
+/* 拡張リソースとして注入されるためページ CSP の影響を受けない。       */
+/* id プレフィックス + all:initial でページ CSS と完全に隔離する。      */
+/* デザイン: パステル・モダン (テーマ色の朱/墨/生成りは維持し、トーンを柔らかく)。 */
+
+#__rt_fab {
+  all: initial;
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483646;
+  /* 46px の 80% = 約 37px */
+  width: 37px;
+  height: 37px;
+  border-radius: 50%;
+  cursor: grab;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Segoe UI", system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  /* パステル朱: 明るいコーラルの艶 → 朱 (テーマ色の朱を核に残す) */
+  background: radial-gradient(135% 135% at 30% 22%, #ffb6a3 0%, #f5876c 44%, #e0573b 100%);
+  box-shadow:
+    0 6px 16px rgba(216, 70, 43, .26),
+    0 1px 4px rgba(0, 0, 0, .08),
+    inset 0 1px 0 rgba(255, 255, 255, .6);
+  transition:
+    transform .28s cubic-bezier(.2, .9, .3, 1.3),
+    box-shadow .28s ease,
+    background .3s ease;
+}
+
+#__rt_fab:hover {
+  transform: translateY(-2px) scale(1.07);
+  box-shadow:
+    0 10px 22px rgba(216, 70, 43, .32),
+    0 2px 6px rgba(0, 0, 0, .1),
+    inset 0 1px 0 rgba(255, 255, 255, .65);
+}
+#__rt_fab:active { transform: scale(.93); }
+#__rt_fab.__rt-dragging { transition: none; cursor: grabbing; transform: scale(1.05); }
+#__rt_fab:focus-visible { outline: 2px solid #1b2330; outline-offset: 3px; }
+
+/* ---- グリフ (訳 = これから翻訳 / 原 = 原文に戻す) ---- */
+#__rt_fab .__rt-fab-glyph {
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 700;
+  color: #fffaf4;
+  letter-spacing: .02em;
+  text-shadow: 0 1px 1.5px rgba(150, 45, 25, .4);
+  transition: opacity .2s ease, color .3s ease;
+  z-index: 1;
+}
+
+/* ---- ホバーで滑り出るラベル (フロスト調のパステル) ---- */
+#__rt_fab .__rt-fab-label {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  white-space: nowrap;
+  background: rgba(255, 252, 247, .94);
+  color: #2b3340;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  padding: 6px 11px;
+  border-radius: 11px;
+  box-shadow: 0 6px 18px rgba(40, 35, 30, .16);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(7px);
+  transition: opacity .2s ease, transform .2s ease;
+}
+#__rt_fab .__rt-fab-label::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-left-color: rgba(255, 252, 247, .94);
+}
+#__rt_fab:hover .__rt-fab-label {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* ---- 翻訳済み (ON) = やわらかい墨の球 + 生成りのグリフ「原」 ---- */
+#__rt_fab.__rt-on {
+  background: radial-gradient(135% 135% at 30% 22%, #44506180 0%, #2b3645 45%, #1b2330 100%);
+  box-shadow:
+    0 6px 16px rgba(27, 35, 48, .34),
+    0 1px 4px rgba(0, 0, 0, .12),
+    inset 0 1px 0 rgba(255, 255, 255, .18);
+}
+#__rt_fab.__rt-on .__rt-fab-glyph { color: #ffe2cf; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+
+/* ---- 処理中 = ボタン「表面」を斜めの光沢が流れるシマー (周囲は光らせない) ---- */
+#__rt_fab::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;                 /* 光沢を円形の表面内にクリップ */
+  background: linear-gradient(115deg,
+    transparent 28%,
+    rgba(255, 255, 255, .15) 42%,
+    rgba(255, 255, 255, .62) 50%,
+    rgba(255, 255, 255, .15) 58%,
+    transparent 72%);
+  background-size: 230% 230%;
+  background-position: 175% 0;
+  opacity: 0;
+  pointer-events: none;
+}
+#__rt_fab.__rt-loading { cursor: progress; pointer-events: none; }
+#__rt_fab.__rt-loading::after { opacity: 1; animation: __rt-shimmer 1.25s ease-in-out infinite; }
+#__rt_fab.__rt-loading .__rt-fab-glyph { opacity: .85; }
+@keyframes __rt-shimmer {
+  0% { background-position: 175% 0; }
+  100% { background-position: -75% 0; }
+}
+
+/* ON 切替時の波紋 */
+#__rt_fab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  color: #f5876c;
+  opacity: 0;
+  pointer-events: none;
+}
+#__rt_fab.__rt-on::before { color: #ffe2cf; }
+#__rt_fab.__rt-pulse::before { animation: __rt-ripple .6s ease-out; }
+@keyframes __rt-ripple {
+  0% { opacity: .5; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #__rt_fab,
+  #__rt_fab .__rt-fab-glyph,
+  #__rt_fab .__rt-fab-label { transition: none; }
+  #__rt_fab.__rt-loading::after { animation: none; opacity: .5; }
+  #__rt_fab.__rt-pulse::before { animation: none; }
+}

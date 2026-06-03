@@ -1,0 +1,32 @@
+{
+  "name": "replace-translator",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "Chrome/Firefox extension that translates the current page in-place using cloud LLMs (OpenAI, Anthropic, Google Gemini) via your own API key.",
+  "scripts": {
+    "ci:install": "npm ci",
+    "generate-icons": "node scripts/generate-icons.js",
+    "build": "npm run generate-icons",
+    "test": "node --test",
+    "lint": "eslint src/ test/ scripts/"
+  },
+  "devDependencies": {
+    "chrome-webstore-upload-cli": "^4.0.0",
+    "eslint": "^10.4.0",
+    "globals": "^17.6.0",
+    "sharp": "0.34.5",
+    "web-ext": "^10.3.0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "firefox-extension",
+    "translation",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "page-translator"
+  ],
+  "author": "",
+  "license": "MIT"
+}

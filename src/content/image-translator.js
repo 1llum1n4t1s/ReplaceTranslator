@@ -1,0 +1,191 @@
+"use strict";
+
+/**
+ * image-translator.js — 画像内テキストの翻訳 (オプション・LLM vision)
+ *
+ * 設定 imageTranslate が ON のとき、画像ホバーで「訳」ボタンを出し、クリックで background の
+ * TRANSLATE_IMAGE (vision) に投げ、返ってきた {translation, box} を画像の上にオーバーレイする。
+ * Immersive Translate の画像翻訳を参考にした実験的機能。actions.js が先に注入される前提。
+ */
+
+(function () {
+  if (window.__rtImgLoaded) return;
+  window.__rtImgLoaded = true;
+  if (window.top !== window.self) return; // トップフレームのみ
+
+  const A = globalThis.Actions;
+  const SKEY = (globalThis.StorageKeys && globalThis.StorageKeys.SETTINGS) || "settings";
+  if (!A) return;
+
+  let enabled = false;
+  let btn = null;
+  let target = null;
+
+  const tr = (k, f) => {
+    try { return (chrome.i18n && chrome.i18n.getMessage(k)) || f; } catch (_e) { return f; }
+  };
+
+  function applyEnabled(s) {
+    enabled = Boolean(s && s.imageTranslate);
+    if (!enabled && btn) btn.style.display = "none";
+  }
+  try { chrome.storage.local.get(SKEY, (d) => applyEnabled(d && d[SKEY])); } catch (_e) { /* noop */ }
+  try {
+    chrome.storage.onChanged.addListener((c, area) => {
+      if (area === "local" && c[SKEY]) applyEnabled(c[SKEY].newValue);
+    });
+  } catch (_e) { /* noop */ }
+
+  function eligible(el) {
+    return el && el.tagName === "IMG" && el.clientWidth >= 80 && el.clientHeight >= 60 && (el.currentSrc || el.src);
+  }
+
+  function ensureBtn() {
+    if (btn) return btn;
+    btn = document.createElement("button");
+    btn.className = "__rt-img-btn";
+    btn.type = "button";
+    btn.textContent = "訳";
+    btn.title = tr("imgBtn", "画像内のテキストを翻訳");
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (target) translateImg(target);
+    });
+    document.documentElement.appendChild(btn);
+    return btn;
+  }
+
+  function placeBtn(img) {
+    const b = ensureBtn();
+    const r = img.getBoundingClientRect();
+    b.style.left = `${Math.round(r.right - 32)}px`;
+    b.style.top = `${Math.round(r.top + 6)}px`;
+    b.style.display = "block";
+    b.textContent = "訳";
+  }
+
+  document.addEventListener("mouseover", (e) => {
+    if (!enabled) return;
+    if (eligible(e.target)) { target = e.target; placeBtn(e.target); }
+  }, true);
+
+  document.addEventListener("mouseout", (e) => {
+    if (!enabled || !btn) return;
+    const to = e.relatedTarget;
+    if (to === btn || to === target || eligible(to)) return;
+    btn.style.display = "none";
+  }, true);
+
+  window.addEventListener("scroll", () => { if (btn) btn.style.display = "none"; }, true);
+
+  function ensureWrap(img) {
+    const p = img.parentElement;
+    if (p && p.classList.contains("__rt-img-wrap")) return p;
+    const wrap = document.createElement("span");
+    wrap.className = "__rt-img-wrap";
+    img.parentNode.insertBefore(wrap, img);
+    wrap.appendChild(img);
+    return wrap;
+  }
+
+  function renderBlocks(img, blocks) {
+    const wrap = ensureWrap(img);
+    let layer = wrap.querySelector(".__rt-img-layer");
+    if (!layer) {
+      layer = document.createElement("div");
+      layer.className = "__rt-img-layer";
+      wrap.appendChild(layer);
+    }
+    layer.replaceChildren();
+    // 元のフォントサイズに追従させるため、画像の表示高さ × ブロック高さ から字サイズを推定する
+    const rect = img.getBoundingClientRect();
+    const imgH = rect.height || img.clientHeight || 0;
+    blocks.forEach((blk) => {
+      const el = document.createElement("div");
+      el.className = "__rt-img-block";
+      el.textContent = blk.translation;
+      if (blk.original) el.title = blk.original;
+      el.style.left = `${blk.box.x * 100}%`;
+      el.style.top = `${blk.box.y * 100}%`;
+      el.style.width = `${Math.max(0.04, blk.box.w) * 100}%`;
+      el.style.minHeight = `${Math.max(0.03, blk.box.h) * 100}%`;
+      // ブロック高さ(box.h)×画像高さ ≒ その文字の縦サイズ。1行ぶんに寄せて係数(やや小さめ 0.7)を掛け、極端値をクランプ。
+      if (imgH > 0) {
+        const fs = Math.max(9, Math.min(36, Math.round(imgH * Math.max(0.02, blk.box.h) * 0.7)));
+        el.style.fontSize = `${fs}px`;
+      }
+      layer.appendChild(el);
+    });
+  }
+
+  function translateImg(img) {
+    const url = img.currentSrc || img.src;
+    if (!url) return;
+    if (btn) btn.textContent = "…";
+    try {
+      chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
+        if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
+        if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
+          renderBlocks(img, res.blocks);
+          if (btn) btn.style.display = "none";
+        } else if (btn) {
+          btn.textContent = "×";
+          window.setTimeout(() => { if (btn) btn.textContent = "訳"; }, 1500);
+        }
+      });
+    } catch (_e) { if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
+  }
+
+  // ---- 一括並列翻訳 (複数画像を同時に投げて体感を上げる) ----
+  // 並列度 (ゆろさん指定で 10)。vision は重く各社レートも厳しめなので 429 に注意。
+  const BATCH_CONCURRENCY = 10;
+
+  // 既にオーバーレイ済みか (二重翻訳・再 OCR を防ぐ)
+  function isTranslated(img) {
+    const p = img.parentElement;
+    return Boolean(p && p.classList.contains("__rt-img-wrap") && p.querySelector(".__rt-img-block"));
+  }
+
+  // 1 画像を翻訳してオーバーレイを描く (ボタン UI なし版・完了を Promise で返す)
+  function translateOne(img) {
+    return new Promise((resolve) => {
+      const url = img.currentSrc || img.src;
+      if (!url) { resolve(); return; }
+      try {
+        chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
+          if (!chrome.runtime.lastError && res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
+            renderBlocks(img, res.blocks);
+          }
+          resolve();
+        });
+      } catch (_e) { resolve(); } // context 失効 (Extension context invalidated) は静かに無視
+    });
+  }
+
+  // ページ内の対象画像をまとめて並列翻訳する (テキスト翻訳と並行で走る)
+  async function translateAllImages() {
+    const imgs = Array.from(document.images).filter((im) => eligible(im) && !isTranslated(im));
+    if (!imgs.length) return;
+    let cursor = 0;
+    async function worker() {
+      while (cursor < imgs.length) { await translateOne(imgs[cursor++]); }
+    }
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, imgs.length) }, worker));
+  }
+
+  // 画像オーバーレイをすべて消す (原文復元と連動)
+  function clearAllImages() {
+    document.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
+  }
+
+  // ページ翻訳/復元に追従する (background が tabs.sendMessage で送る)
+  try {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg || typeof msg.action !== "string") return undefined;
+      if (msg.action === A.APPLY_TRANSLATE_CS && enabled) translateAllImages();
+      else if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
+      return undefined;
+    });
+  } catch (_e) { /* noop */ }
+})();

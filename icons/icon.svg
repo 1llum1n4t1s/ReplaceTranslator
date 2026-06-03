@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Replace Translator icon">
+  <defs>
+    <filter id="lift" x="-18%" y="-18%" width="136%" height="142%">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#20262f" flood-opacity=".28"/>
+    </filter>
+    <linearGradient id="source" x1="18" y1="11" x2="111" y2="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2b333f"/>
+      <stop offset="1" stop-color="#171d26"/>
+    </linearGradient>
+    <linearGradient id="target" x1="15" y1="55" x2="111" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f06b50"/>
+      <stop offset="1" stop-color="#b2381f"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#lift)" stroke="#fff8eb" stroke-width="6" stroke-linejoin="round">
+    <path
+      fill="url(#source)"
+      d="M19 29h47V15c0-8 10-12 16-7l38 29c5 4 5 12 0 16L82 82c-6 5-16 1-16-7V61H19C10 61 3 54 3 45s7-16 16-16z"/>
+    <path
+      fill="url(#target)"
+      d="M109 99H62v14c0 8-10 12-16 7L8 91c-5-4-5-12 0-16l38-29c6-5 16-1 16 7v14h47c9 0 16 7 16 16s-7 16-16 16z"/>
+  </g>
+
+</svg>

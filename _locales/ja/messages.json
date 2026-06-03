@@ -1,0 +1,70 @@
+{
+  "appName": {
+    "message": "リプレース翻訳",
+    "description": "拡張機能名 (chrome://extensions およびストア表示)"
+  },
+  "appDescription": {
+    "message": "OpenAI・Anthropic・Gemini・Grok などのクラウド LLM を自分の API キーで使い、表示中のページをその場で置換翻訳します。",
+    "description": "拡張機能の短い説明 (manifest.description)"
+  },
+  "defaultTitle": {
+    "message": "リプレース翻訳",
+    "description": "ツールバーアイコンの hover ツールチップ"
+  },
+
+  "headerTitle": { "message": "リプレース翻訳" },
+  "headerTagline": { "message": "各社 LLM で、ページを置換翻訳" },
+  "tabTranslate": { "message": "翻訳" },
+  "tabKeys": { "message": "キー" },
+  "tabApi": { "message": "API設定" },
+  "fabTranslate": { "message": "ページを翻訳" },
+  "fabRestore": { "message": "原文に戻す" },
+  "openOptions": { "message": "設定" },
+  "warnNoKey": { "message": "このプロバイダの API キーが未設定です。" },
+  "warnSetKey": { "message": "API設定へ" },
+  "labelProvider": { "message": "プロバイダ" },
+  "labelProviders": { "message": "翻訳サービス" },
+  "badgeKeyRequired": { "message": "要キー" },
+  "badgeFree": { "message": "キー不要" },
+  "optAutoTranslate": { "message": "全ページ自動翻訳" },
+  "labelModel": { "message": "モデル" },
+  "modelRefresh": { "message": "更新" },
+  "modelRefreshTitle": { "message": "最新モデルを取得（API キー必須）" },
+  "labelSource": { "message": "翻訳元" },
+  "labelTarget": { "message": "翻訳先" },
+  "btnTranslate": { "message": "翻訳" },
+  "btnRestore": { "message": "原文に戻す" },
+  "statusStarting": { "message": "開始中…" },
+  "statusError": { "message": "エラー" },
+  "statusDone": { "message": "完了" },
+
+  "ctxTranslate": { "message": "このページを翻訳" },
+  "ctxRestore": { "message": "原文に戻す" },
+
+  "toastTranslating": { "message": "翻訳中" },
+  "toastNoKey": { "message": "設定で API キーを入力してください" },
+  "toastApiError": { "message": "API エラー" },
+  "toastNetwork": { "message": "通信エラー" },
+  "toastFailed": { "message": "翻訳に失敗しました" },
+  "toastNothing": { "message": "翻訳対象がありません" },
+  "toastDone": { "message": "完了" },
+  "toastRestored": { "message": "原文に戻しました" },
+
+  "optionsTitle": { "message": "リプレース翻訳 — 設定" },
+  "optionsLead": { "message": "各プロバイダの API キーを入力してください。キーはこのブラウザ内にローカル保存され、翻訳時に該当プロバイダの API にのみ送信されます。" },
+  "optKeysTitle": { "message": "API キー" },
+  "optShow": { "message": "表示" },
+  "optHide": { "message": "隠す" },
+  "optGetKey": { "message": "API キーを取得 ↗" },
+  "optGetKeyFree": { "message": "無料 API キーを取得 ↗" },
+  "optAdvancedTitle": { "message": "詳細設定" },
+  "optMyMemoryNote": { "message": "キー不要。メールを入れると無料枠が増えます（匿名 5千 / メール登録 5万字/日）。NMT エンジン・1テキスト最大500バイト。" },
+  "optBuiltinDetector": { "message": "Chrome 内蔵の言語検出で事前フィルタ" },
+  "optImageTranslate": { "message": "画像内テキストの翻訳" },
+  "optImageTranslateDesc": { "message": "画像にホバーして「訳」を押すと、画像内の文字を翻訳して重ねます。vision 対応 LLM のみ・MyMemory 不可。" },
+  "imgBtn": { "message": "画像内のテキストを翻訳" },
+  "optBuiltinDetectorDesc": { "message": "利用可能な場合、すでに翻訳先言語のテキストをローカルで除外してトークンを節約します（任意）。" },
+  "optBatchSize": { "message": "バッチサイズ（1 リクエストあたりのテキスト数）" },
+  "optSave": { "message": "保存" },
+  "optSaved": { "message": "保存しました" }
+}
