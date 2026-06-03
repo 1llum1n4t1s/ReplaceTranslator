@@ -317,23 +317,15 @@ body {
 .switch-text { flex: 1; }
 .switch-desc { font-size: 11px; color: var(--ink-soft); margin-top: 3px; line-height: 1.45; }
 
-/* ---- クイック翻訳 (翻訳タブ末尾・既定で折りたたみ) ---- */
+/* ---- クイック翻訳 (翻訳タブ末尾・常時表示) ---- */
 .qt { border-top: 1px dashed var(--rule); margin-top: 4px; padding-top: 13px; }
-.qt-head {
-  width: 100%; display: flex; align-items: center; gap: 8px; cursor: pointer;
-  background: transparent; border: 0; font: inherit; color: var(--ink); text-align: left; padding: 2px 2px 0;
-}
-.qt-chev { width: 14px; height: 14px; flex: 0 0 auto; color: var(--coral); transition: transform .25s ease; }
-.qt.collapsed .qt-chev { transform: rotate(-90deg); }
+.qt-head { display: flex; align-items: center; gap: 8px; color: var(--ink); padding: 2px 2px 0; }
 .qt-title { font-size: 12.5px; font-weight: 700; letter-spacing: .01em; }
 .qt-note { font-size: 10.5px; color: var(--ink-soft); font-weight: 500; }
 .qt-dir { margin-left: auto; font-size: 10.5px; font-weight: 600; color: var(--vermilion);
   background: var(--wash); border: 1px solid var(--coral-soft); padding: 3px 8px; border-radius: 99px; white-space: nowrap; }
 
-.qt-body { display: grid; grid-template-rows: 1fr; opacity: 1; margin-top: 11px;
-  transition: grid-template-rows .28s ease, opacity .2s ease, margin .28s ease; }
-.qt.collapsed .qt-body { grid-template-rows: 0fr; opacity: 0; margin-top: 0; pointer-events: none; }
-.qt-wrap { overflow: hidden; }
+.qt-body { margin-top: 11px; }
 
 .qt-in {
   font: inherit; font-size: 13px; line-height: 1.55; color: var(--ink); resize: none; width: 100%; min-height: 60px;
@@ -385,7 +377,7 @@ body {
 .qt-mini:hover { color: var(--ink); border-color: var(--coral-soft); }
 .qt-mini.copy.done { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
 @media (prefers-reduced-motion: reduce) {
-  .qt-chev, .qt-body, .qt-out .txt { transition: none !important; animation: none !important; }
+  .qt-out .txt { transition: none !important; animation: none !important; }
   .qt.busy .qt-spin { animation: none; }
   .qt.busy .qt-out::after { animation: none; opacity: .4; }
 }

@@ -254,7 +254,7 @@
     if (d && state.settings) d.textContent = `${langShort(state.settings.sourceLang)} → ${langShort(state.settings.targetLang)}`;
   }
   function setupQuickTranslate() {
-    const qt = $("qt"), head = $("qt-head"), inEl = $("qt-in"), outEl = $("qt-out");
+    const qt = $("qt"), inEl = $("qt-in"), outEl = $("qt-out");
     const countEl = $("qt-count"), copyBtn = $("qt-copy"), clearBtn = $("qt-clear");
     const MAX = 5000;
     let timer = null, reqId = 0;
@@ -310,11 +310,6 @@
       copyBtn.textContent = msg("qtCopied", "✓ コピー");
       window.clearTimeout(copyBtn._t);
       copyBtn._t = window.setTimeout(() => { copyBtn.classList.remove("done"); copyBtn.textContent = orig; }, 1300);
-    });
-    head.addEventListener("click", () => {
-      const collapsed = qt.classList.toggle("collapsed");
-      head.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      if (!collapsed) inEl.focus();
     });
     setCount();
   }

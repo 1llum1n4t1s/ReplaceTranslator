@@ -63,13 +63,12 @@
       <div id="status" class="status" aria-live="polite"></div>
 
       <!-- クイック翻訳: ちょっとだけ訳したい人向け。上部の翻訳元⇄翻訳先を流用。既定で折りたたみ。 -->
-      <div class="qt collapsed" id="qt">
-        <button class="qt-head" id="qt-head" type="button" aria-expanded="false" aria-controls="qt-body">
-          <svg class="qt-chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="qt" id="qt">
+        <div class="qt-head">
           <span class="qt-title" data-i18n="qtTitle">クイック翻訳</span>
           <span class="qt-note" data-i18n="qtNote">この欄だけ訳す</span>
           <span class="qt-dir" id="qt-dir" aria-hidden="true"></span>
-        </button>
+        </div>
         <div class="qt-body" id="qt-body">
           <div class="qt-wrap">
             <textarea class="qt-in" id="qt-in" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
