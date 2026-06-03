@@ -329,15 +329,18 @@ if (typeof importScripts === "function") {
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     cacheAll[providerId] = { models: top, fetchedAt: Date.now() };
     await chrome.storage.local.set({ [StorageKeys.MODELS_CACHE]: cacheAll });
-    await migrateModel(providerId, top);
+    await migrateModel(providerId, top, normalized.map((m) => m.id));
     return { ok: true, models: top };
   }
-  // 選択中モデルが新リストから消えたら最新(先頭)へ載せ替える (要件: マイグレーション)
-  async function migrateModel(providerId, models) {
+  // 選択中モデルが「取得した全モデル」に無いときだけ最新(先頭)へ載せ替える (要件: マイグレーション)。
+  // 判定は表示用 top10 ではなく allIds (全取得リスト) で行い、ユーザーが選んだ古め/安めの有効モデル
+  // (top10 圏外) を勝手に最新へ差し替えないようにする。
+  async function migrateModel(providerId, models, allIds) {
     if (!models || !models.length) return;
+    const valid = (allIds && allIds.length) ? allIds : models.map((m) => m.id);
     const data = await chrome.storage.local.get(StorageKeys.SETTINGS);
     const settings = SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
-    if (!models.some((m) => m.id === settings.models[providerId])) {
+    if (!valid.includes(settings.models[providerId])) {
       settings.models[providerId] = models[0].id;
       await chrome.storage.local.set({ [StorageKeys.SETTINGS]: SettingsSchema.normalize(settings) });
     }
@@ -550,9 +553,13 @@ if (typeof importScripts === "function") {
         switch (msg.action) {
           case Actions.TRANSLATION_PROGRESS: {
             // content(translator) の進捗を同じタブの fab.js へ中継する
-            // (content script 間は runtime.sendMessage が直接届かないため background が転送)
+            // (content script 間は runtime.sendMessage が直接届かないため background が転送)。
+            // ただしトップフレーム(frameId 0)の進捗だけを中継する。子 iframe の done が先に届くと
+            // メインフレーム翻訳中に FAB/popup が Done/On へ早期に切り替わってしまうのを防ぐ。
             const tabId = sender.tab && sender.tab.id;
-            if (tabId != null) chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ });
+            if (tabId != null && sender.frameId === 0) {
+              chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ });
+            }
             sendResponse({ ok: true });
             break;
           }

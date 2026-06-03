@@ -145,6 +145,7 @@
   // ---- 一括並列翻訳 (複数画像を同時に投げて体感を上げる) ----
   // 並列度 (ゆろさん指定で 10)。vision は重く各社レートも厳しめなので 429 に注意。
   const BATCH_CONCURRENCY = 10;
+  let imgRunId = 0; // 一括翻訳の世代。復元/再翻訳で ++ し、進行中ワーカーの新規送信と遅延描画を止める
 
   // 既にオーバーレイ済みか (二重翻訳・再 OCR を防ぐ)
   function isTranslated(img) {
@@ -153,13 +154,14 @@
   }
 
   // 1 画像を翻訳してオーバーレイを描く (ボタン UI なし版・完了を Promise で返す)
-  function translateOne(img) {
+  function translateOne(img, myRun) {
     return new Promise((resolve) => {
       const url = img.currentSrc || img.src;
       if (!url) { resolve(); return; }
       try {
         chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
-          if (!chrome.runtime.lastError && res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
+          // 復元/再翻訳で世代が変わっていたら描画しない (クリア後にオーバーレイが再出現するのを防ぐ)
+          if (myRun === imgRunId && !chrome.runtime.lastError && res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
             renderBlocks(img, res.blocks);
           }
           resolve();
@@ -170,11 +172,15 @@
 
   // ページ内の対象画像をまとめて並列翻訳する (テキスト翻訳と並行で走る)
   async function translateAllImages() {
+    const myRun = ++imgRunId; // この一括翻訳の世代 (復元/再翻訳で無効化される)
     const imgs = Array.from(document.images).filter((im) => eligible(im) && !isTranslated(im));
     if (!imgs.length) return;
     let cursor = 0;
     async function worker() {
-      while (cursor < imgs.length) { await translateOne(imgs[cursor++]); }
+      while (cursor < imgs.length) {
+        if (myRun !== imgRunId) return; // 復元/再翻訳で無効化されたら新規送信を止める (overlay 再出現・無駄なquota消費を防ぐ)
+        await translateOne(imgs[cursor++], myRun);
+      }
     }
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, imgs.length) }, worker));
   }
@@ -182,6 +188,7 @@
   // 画像オーバーレイをすべて消し、ensureWrap で挿入した span.__rt-img-wrap も解除して
   // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
+    imgRunId++; // 進行中の一括翻訳を無効化 (復元後に新規 OCR を送らない / 遅延描画もしない)
     document.querySelectorAll(".__rt-img-wrap").forEach((wrap) => {
       const img = wrap.querySelector("img");
       const parent = wrap.parentNode;

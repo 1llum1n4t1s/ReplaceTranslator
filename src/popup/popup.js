@@ -383,8 +383,9 @@
       });
     });
 
-    chrome.runtime.onMessage.addListener((m) => {
+    chrome.runtime.onMessage.addListener((m, sender) => {
       if (!m || m.action !== Actions.TRANSLATION_PROGRESS) return;
+      if (sender && sender.frameId > 0) return; // 子 iframe の進捗は無視 (トップフレームのみが UI 状態を駆動)
       // auto-translate トグルは永続 autoTranslate 設定を表す。ワンショット翻訳の進捗で勝手に切り替えない。
       if (m.state === "progress") setStatus("");          // 進捗は FAB のシマーで示すので popup は無表示
       else if (m.state === "done") setStatus(msg("statusDone", "Done"));
