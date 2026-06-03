@@ -34,7 +34,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - **Shadow DOM**: `collectNodes` は TreeWalker でなく**開いた shadowRoot を辿る DFS**。辿った shadow root は MutationObserver にも登録し内部の動的更新も拾う（closed shadow は仕様上不可）
 - **iframe**: `allFrames:true` 注入で各フレームが独立翻訳。広告枠対策に `frameHasEnoughText()`（サブフレームは翻訳対象 50 字未満なら訳さない＝Immersive の mainFrameMinTextCount 相当。メインフレームは常時）
 - **SPA 追従**: `onMutate` で `location.href` 変化を検知 + `popstate` リスナー → `scheduleReingest()`（350/1200ms の 2 回 ingest）で遷移後ページを訳し直す
-- **動的追加**: MutationObserver（`childList`+`subtree`、`characterData` は監視しない＝自分の nodeValue 書き換えで再発火させない）
+- **動的追加**: MutationObserver（`childList`+`subtree`+`characterData`）。`characterData` mutation は `translatedNodes.has(m.target)` でガードし、自分の nodeValue 書き換えでの再発火を防ぎつつ SPA/チャットの既存テキスト差し替えを取り込む
 - **原文復元**: 翻訳ノードは WeakMap(`originalMap`) に原文保持、復元で nodeValue を戻す。`runId` インクリメントで進行中ループを中断
 - **拡張 context 失効ハードニング**: リロード/更新で置き去りになった旧 content script が `chrome.runtime.sendMessage` で例外を投げる問題に対し、`contextAlive()`/`shutdown()` + try/catch で静かに停止する（translator / fab / image-translator 全て）
 - **再注入の冪等性**: `window.__rtTranslatorLoaded` ガード。lib 各ファイルは `__rt*Loaded` ガード
@@ -61,10 +61,11 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - ページ翻訳(`APPLY_TRANSLATE_CS`)に連動して `translateAllImages`(並列)も走る。vision 対応 LLM のみ（MyMemory 不可）
 
 ## UI 構成（popup 2タブ + FAB）
-- **popup 2タブ**: 「翻訳」＝自動翻訳トグル / 言語(元・先) / オプション(画像翻訳・Chrome 内蔵言語検出) / 翻訳・復元ボタン / status。「API設定」＝**各プロバイダのカードに「選択ラジオ + 名前 + バッジ + キー入力 + 取得リンク」を合体**＋選択中サービスのモデル一覧(更新ボタン・コスト相対バー)
+- **popup 2タブ**: 「翻訳」＝自動翻訳トグル / 言語(元・先) / オプション(画像翻訳) / 翻訳・復元ボタン / status / クイック翻訳(折りたたみ)。「API設定」＝**各プロバイダのカードに「選択ラジオ + 名前 + バッジ + キー入力 + 取得リンク」を合体**＋選択中サービスのモデル一覧(更新ボタン・コスト相対バー)
 - **キーは blur 自動保存**: 入力欄からフォーカスが外れたら保存し、そのカードに緑チェックを一瞬出す（保存ボタンは無い）
 - FAB は content 常駐（`fab.js`+`fab.css`、トップフレームのみ）。クリックで `TRANSLATE_PAGE`/`RESTORE_PAGE`、`TRANSLATION_PROGRESS` で状態同期。グリフは「訳=これから翻訳 / 原=原文に戻す」、**処理中はボタン表面のシマー**（外周リングは廃止）。ドラッグ移動（位置は `StorageKeys.FAB_POSITION`）。`#__rt_fab` の id プレフィックス + `all:initial` でページ CSS と衝突しない
-- **自動翻訳**（`autoTranslate`）: 翻訳/復元時に background が保存し、ページを開くと常駐 fab.js が ON なら自動翻訳。popup トグル・FAB・右クリックの 3 者は `TRANSLATION_PROGRESS` で同期
+- **自動翻訳**（`autoTranslate`）: **popup の「全ページ自動翻訳」トグルのみ**が永続フラグを保存する。ワンショット翻訳（popup 翻訳ボタン / FAB / 右クリック）は永続化しない（1 ページ訳しただけで以後の全ページが自動翻訳されるのを防ぐ）。ON なら常駐 fab.js が開いたページを自動翻訳。進捗は `TRANSLATION_PROGRESS` で 3 者同期（トグルの ON/OFF はワンショット進捗では切り替えない）
+- **クイック翻訳**（popup「翻訳」タブ末尾・既定で折りたたみ）: 上部の翻訳元⇄翻訳先を流用し、入力を debounce して `TRANSLATE_BATCH` に 1 件投げる。ページは翻訳しない短文用。コピー/クリア/文字数/`Ctrl+Enter`
 - デザインはパステル・モダン（生成り × 墨 × 朱のテーマ色を維持しつつ柔らかく）
 
 ## popup フォント（IBM Plex Sans JP を同梱）
