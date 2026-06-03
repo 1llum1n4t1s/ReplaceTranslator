@@ -341,13 +341,18 @@
     const b64 = o.imageBase64 || "";
 
     if (providerId === "openai" || providerId === "xai") {
-      const body = tuneReasoning(providerId, model, {
+      // 出力上限を付け、verbose 化による課金枠の浪費を防ぐ (Anthropic/Gemini と同じ IMAGE_MAX_OUTPUT_TOKENS)。
+      // OpenAI の gpt-5/o 系は max_tokens 非対応なので max_completion_tokens を使う。xAI(Grok) は max_tokens。
+      const cap = providerId === "openai"
+        ? { max_completion_tokens: IMAGE_MAX_OUTPUT_TOKENS }
+        : { max_tokens: IMAGE_MAX_OUTPUT_TOKENS };
+      const body = tuneReasoning(providerId, model, Object.assign({
         model, response_format: { type: "json_object" },
         messages: [{ role: "user", content: [
           { type: "text", text: prompt },
           { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
         ] }],
-      });
+      }, cap));
       return {
         url: provider.endpoint, method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },

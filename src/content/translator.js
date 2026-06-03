@@ -197,7 +197,7 @@
       // 指数バックオフ分(約2秒/バッチ)を丸ごと無駄にするだけなので、NMT の 429 は即諦める。
       const p = globalThis.Providers && settings && Providers.get(settings.provider);
       const isNmt = Boolean(p && p.batch === false);
-      const transient = e === "network" || e === "runtime" ||
+      const transient = e === "network" || e === "runtime" || e === "incomplete" ||
         (e === "http" && res.status >= 500) ||
         (e === "http" && res.status === 429 && !isNmt);
       if (transient && attempt < MAX_RETRY) {

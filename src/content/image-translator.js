@@ -37,7 +37,11 @@
   } catch (_e) { /* noop */ }
 
   function eligible(el) {
-    return el && el.tagName === "IMG" && el.clientWidth >= 80 && el.clientHeight >= 60 && (el.currentSrc || el.src);
+    if (!el || el.tagName !== "IMG") return false;
+    // <picture> 内の img は直接の子である必要があり、ensureWrap で span に包むと responsive な
+    // source 選択が壊れる。translate 対象から外す (オーバーレイより元レイアウト維持を優先)。
+    if (el.parentElement && el.parentElement.tagName === "PICTURE") return false;
+    return el.clientWidth >= 80 && el.clientHeight >= 60 && Boolean(el.currentSrc || el.src);
   }
 
   function ensureBtn() {

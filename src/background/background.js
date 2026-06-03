@@ -141,6 +141,15 @@ if (typeof importScripts === "function") {
     }
 
     const translations = ProviderApi.parseResponse(providerId, json);
+    // 訳文数が要求数と不一致 (出力切れ / フォーマット崩れ) のときはバッチ全体を不完全とみなし、
+    // ok:true で確定させない。取りこぼしたノードが未翻訳のまま「処理済み」にされるのを防ぎ、リトライ可能にする。
+    if (!Array.isArray(translations) || translations.length !== texts.length) {
+      return {
+        ok: false, error: "incomplete",
+        got: Array.isArray(translations) ? translations.length : 0, want: texts.length,
+        nextBatchSize: currentBatchSizeFor(providerId),
+      };
+    }
     const usage = ProviderApi.parseUsage(providerId, json);
     recordUsage(providerId, usage); // 同期メモリ更新 (storage await を critical path から除去)
     // バッチサイズを最速方向へ自動調整し、次のサイズを translator に返す
