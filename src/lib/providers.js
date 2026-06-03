@@ -216,23 +216,23 @@
     return "";
   }
 
-  // 本文 (JSON 文字列) から translations 配列を取り出す。コードフェンスや前後ノイズに耐性を持たせる。
-  function extractTranslations(content) {
-    if (typeof content !== "string" || !content.trim()) return [];
+  // LLM 応答本文 (JSON 文字列) を緩くパースする。コードフェンス除去 → JSON.parse → 失敗時は
+  // 最初の { 〜 最後の } を救出して再パース。パース不能は null。(extractTranslations と parseImageBlocks で共用)
+  function parseJsonLoose(content) {
+    if (typeof content !== "string" || !content.trim()) return null;
     let text = content.trim();
     const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
     if (fence) text = fence[1].trim();
-    let obj = null;
-    try {
-      obj = JSON.parse(text);
-    } catch (_e) {
-      // フォールバック: 最初の { 〜 最後の } を抜き出して再パース
-      const s = text.indexOf("{");
-      const e = text.lastIndexOf("}");
-      if (s >= 0 && e > s) {
-        try { obj = JSON.parse(text.slice(s, e + 1)); } catch (_e2) { obj = null; }
-      }
-    }
+    try { return JSON.parse(text); } catch (_e) { /* フォールバックへ */ }
+    const s = text.indexOf("{");
+    const e = text.lastIndexOf("}");
+    if (s >= 0 && e > s) { try { return JSON.parse(text.slice(s, e + 1)); } catch (_e2) { return null; } }
+    return null;
+  }
+
+  // 本文 (JSON 文字列) から translations 配列を取り出す。コードフェンスや前後ノイズに耐性を持たせる。
+  function extractTranslations(content) {
+    const obj = parseJsonLoose(content);
     if (obj && Array.isArray(obj.translations)) return obj.translations.map((x) => String(x));
     if (Array.isArray(obj)) return obj.map((x) => String(x)); // 念のため素の配列も許容
     return [];
@@ -402,19 +402,7 @@
   }
 
   function parseImageBlocks(providerId, json) {
-    const content = extractContent(providerId, json);
-    if (typeof content !== "string" || !content.trim()) return [];
-    let text = content.trim();
-    const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    if (fence) text = fence[1].trim();
-    let obj = null;
-    try {
-      obj = JSON.parse(text);
-    } catch (_e) {
-      const s = text.indexOf("{");
-      const e = text.lastIndexOf("}");
-      if (s >= 0 && e > s) { try { obj = JSON.parse(text.slice(s, e + 1)); } catch (_e2) { obj = null; } }
-    }
+    const obj = parseJsonLoose(extractContent(providerId, json));
     const blocks = (obj && Array.isArray(obj.blocks)) ? obj.blocks : (Array.isArray(obj) ? obj : []);
     return blocks
       .filter((b) => b && b.box && b.translation)

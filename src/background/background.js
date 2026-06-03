@@ -594,6 +594,9 @@ if (typeof importScripts === "function") {
 
   chrome.runtime.onInstalled.addListener(() => { setupContextMenus(); ensureContentFlags().catch(() => { /* noop */ }); });
   ensureContentFlags().catch(() => { /* noop */ }); // SW 起動ごとに content 用フラグの存在を保証
+  // SW 起動時に翻訳ホットパスの設定/集計メモリをプリロードし、cold start 後の最初の TRANSLATE_BATCH の
+  // storage 待ち (設定 + BATCH_TUNING + TOKEN_USAGE) を消す (warm 時は settingsMem/tuningMem が効くので無害)。
+  Promise.all([getSettingsCached(), ensureMem()]).catch(() => { /* noop */ });
 
   if (chrome.contextMenus) {
     chrome.contextMenus.onClicked.addListener(async (info, tab) => {

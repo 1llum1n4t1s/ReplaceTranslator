@@ -46,6 +46,7 @@
   let announced = false;                // 初回 done 通知済みか (以降のスクロール翻訳では戻さない)
   let fatal = null;                     // 致命的エラー (no_api_key) で全体中断
   let currentBatchSize = 0;
+  let warmupLeft = 0;                   // 残り warm-up バッチ数 (>0 の間は小サイズで投げ TTF を縮める)
   const queue = [];                     // 翻訳待ち {node, text}
 
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
@@ -53,20 +54,23 @@
   const PREFETCH_MARGIN = `${PREFETCH_PX}px`;
   // 同時に投げるバッチ数 (高速化の主因。Immersive 同様に複数リクエストを並列処理)
   const CONCURRENCY = 10;
+  // 翻訳開始直後の最初の数バッチは小さく投げる (TTF=最初の訳が出るまでを短縮)。
+  // 大きい初回バッチ(BatchTuner DEFAULT 50)だと 1 リクエストの生成が重く、かつ共有カーソルで先頭ワーカーが
+  // 食い尽くして残りワーカーが遊ぶ(実効並列1〜2)。小さく刻めば全ワーカーに行き渡り並列も効く。以降は自動学習サイズ。
+  const WARMUP_BATCHES = CONCURRENCY;   // 最初のこの本数だけ小サイズで投げる
+  const WARMUP_BATCH_SIZE = 12;         // warm-up 中の 1 バッチのテキスト数
   // 1 バッチの一時エラー時の最大リトライ回数 (指数バックオフ)
   const MAX_RETRY = 2;
 
-  // 同時に投げるバッチ数。バッチ非対応プロバイダ (MyMemory = 1件/req・無料枠が小さい) のときは
-  // バッチを直列(1)にして攻めすぎを防ぎ、実効同時リクエスト数は background の translateEach 側
-  // (= 5 並列) だけで決まるようにする。LLM 系はそのまま CONCURRENCY 並列。
-  function concurrencyFor() {
-    const p = globalThis.Providers && settings && Providers.get(settings.provider);
-    return (p && p.batch === false) ? 1 : CONCURRENCY;
-  }
-  // バッチ非対応プロバイダ (MyMemory 等の NMT) か。401/403 を恒久エラー扱いにするかの分岐に使う。
+  // バッチ非対応プロバイダ (MyMemory 等の NMT) か。並列度・401/403 恒久エラー判定の単一ソース。
   function isNmtProvider() {
-    const p = globalThis.Providers && settings && Providers.get(settings.provider);
+    const p = (globalThis.Providers && settings) ? globalThis.Providers.get(settings.provider) : null;
     return Boolean(p && p.batch === false);
+  }
+  // 同時に投げるバッチ数。NMT (MyMemory) は translator 側を直列(1)にし、実効同時数は background の
+  // translateEach 側 (8 並列) で決める。LLM 系はそのまま CONCURRENCY 並列。
+  function concurrencyFor() {
+    return isNmtProvider() ? 1 : CONCURRENCY;
   }
 
   // インライン要素。テキストノードからブロック祖先を求めるとき、これらは透過して上に辿る。
@@ -181,8 +185,10 @@
     if (immediate) scheduleFlush();
   }
 
+  // collectNodes() が accept() 済みノードだけを返すため、ここでは再検証しない (二重 accept=closest 走査の回避)。
+  // 全呼び出し元 (ingest / onIntersect) が collectNodes 経由なのが前提。
   function enqueue(node) {
-    if (accept(node)) queue.push({ node, text: node.nodeValue });
+    queue.push({ node, text: node.nodeValue });
   }
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
@@ -227,8 +233,7 @@
       const e = res && res.error;
       // MyMemory 等の NMT は無料枠で 429 を即返す。429 を数百ms 後にリトライしても解けず、
       // 指数バックオフ分(約2秒/バッチ)を丸ごと無駄にするだけなので、NMT の 429 は即諦める。
-      const p = globalThis.Providers && settings && Providers.get(settings.provider);
-      const isNmt = Boolean(p && p.batch === false);
+      const isNmt = isNmtProvider();
       const transient = e === "network" || e === "runtime" || e === "incomplete" ||
         (e === "http" && res.status >= 500) ||
         (e === "http" && res.status === 429 && !isNmt);
@@ -261,7 +266,7 @@
   function sortTopDown(items) {
     const sy = window.scrollY || window.pageYOffset || 0;
     for (const it of items) {
-      const el = it.block || (it.node && it.node.parentElement);
+      const el = it.node && it.node.parentElement; // queue は {node,text} のみ (block は持たない)
       let y = 0;
       try { if (el) y = el.getBoundingClientRect().top + sy; } catch (_e) { y = 0; }
       it._y = y;
@@ -299,7 +304,10 @@
     async function worker() {
       while (cursor < pending.length) {
         if (myRun !== runId || fatal || !translating) return;
-        const size = Math.max(1, currentBatchSize);
+        // 開始直後の数バッチは小サイズ (TTF 短縮 + 全ワーカーに分散)。以降は自動学習サイズ。
+        let size;
+        if (warmupLeft > 0) { warmupLeft--; size = WARMUP_BATCH_SIZE; }
+        else size = Math.max(1, currentBatchSize);
         const batch = pending.slice(cursor, cursor + size);
         cursor += batch.length;
         const res = await sendBatchWithRetry(batch.map((b) => b.text), myRun);
@@ -468,6 +476,7 @@
     flushing = false;
     firstFlush = true;
     currentBatchSize = 0;
+    warmupLeft = WARMUP_BATCHES; // 開始直後の数バッチは小さく投げて最初の訳を早く出す
     queue.length = 0;
     observedBlocks = new WeakSet(); // 再翻訳 (復元→再 ON) で取りこぼさないよう作り直す
     flushedBlocks = new WeakSet();
