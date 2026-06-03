@@ -16,7 +16,8 @@ $ErrorActionPreference = "Stop"
 Write-Host "拡張機能パッケージを生成中... (Target: $Target)" -ForegroundColor Cyan
 Write-Host ""
 
-$scriptDir = Split-Path -Parent ($MyInvocation.MyCommand.Path ?? $PSCommandPath ?? $PWD)
+# Windows PowerShell 5.1 でも動くよう ?? (PS7+) は使わず明示的にフォールバックする
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { $PWD.Path }
 if ($scriptDir) { Set-Location $scriptDir }
 
 Write-Host "依存パッケージを lockfile どおりにインストール中..." -ForegroundColor Yellow

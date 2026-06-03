@@ -28,6 +28,8 @@
   "badgeFree": { "message": "No key" },
   "optAutoTranslate": { "message": "Auto-translate every page" },
   "labelModel": { "message": "Model" },
+  "costUnknown": { "message": "—" },
+  "costUnknownTitle": { "message": "Price unknown" },
   "modelRefresh": { "message": "Refresh" },
   "modelRefreshTitle": { "message": "Fetch the latest models (API key required)" },
   "labelSource": { "message": "From" },

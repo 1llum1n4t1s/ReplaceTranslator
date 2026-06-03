@@ -92,6 +92,13 @@
    * fetch の素材を組み立てる (純粋関数)。body はオブジェクトで返し、background が JSON.stringify する。
    * opts = { texts:string[], sourceLang, targetLang, model, apiKey }
    */
+  // MyMemory は BCP47 の script サブタグ (zh-Hans / zh-Hant) を解釈できず Simplified に倒れるため、
+  // ロケールベースのコード (zh-CN / zh-TW) に正規化してから langpair に渡す。
+  const MYMEMORY_LANG_MAP = { "zh-Hans": "zh-CN", "zh-Hant": "zh-TW" };
+  function mymemoryLang(code) {
+    return MYMEMORY_LANG_MAP[code] || code;
+  }
+
   function buildRequest(providerId, opts) {
     const provider = globalThis.Providers && globalThis.Providers.get(providerId);
     if (!provider) throw new Error("unknown provider: " + providerId);
@@ -102,8 +109,8 @@
     // MyMemory は GET・1テキスト/リクエストの NMT (LLM プロンプト不要)
     if (providerId === "mymemory") {
       const text = (o.texts && o.texts[0]) || "";
-      const src = (o.sourceLang && o.sourceLang !== "auto") ? o.sourceLang : "Autodetect";
-      const tgt = o.targetLang || "en";
+      const src = mymemoryLang((o.sourceLang && o.sourceLang !== "auto") ? o.sourceLang : "Autodetect");
+      const tgt = mymemoryLang(o.targetLang || "en");
       const params = new URLSearchParams({ q: text, langpair: `${src}|${tgt}` });
       if (apiKey) params.set("de", apiKey); // de = 連絡先メール (無料枠拡大)
       return { url: `${provider.endpoint}?${params.toString()}`, method: "GET", headers: {}, body: undefined };

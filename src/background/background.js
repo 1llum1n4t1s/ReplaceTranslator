@@ -318,8 +318,7 @@ if (typeof importScripts === "function") {
   }
 
   // ---- 画像内テキストの翻訳 (vision・オプション) ----
-  async function blobToBase64(blob) {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
+  function base64FromBytes(bytes) {
     let bin = "";
     const chunk = 0x8000;
     for (let i = 0; i < bytes.length; i += chunk) {
@@ -327,24 +326,67 @@ if (typeof importScripts === "function") {
     }
     return btoa(bin);
   }
+
+  // ページが任意に指定できる imageUrl を外部 LLM へ中継する前の SSRF/内部リソース流出対策。
+  // http/https 以外のスキームと、localhost / プライベート IP / リンクローカル宛先を拒否する。
+  function isForbiddenImageUrl(rawUrl) {
+    let u;
+    try { u = new URL(rawUrl); } catch (_e) { return true; }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return true;
+    let h = u.hostname.toLowerCase();
+    if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1); // IPv6 リテラル
+    if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
+    if (h === "::1" || h === "::" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true; // IPv6 loopback/link-local/ULA
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      if (a === 0 || a === 127 || a === 10 ||
+          (a === 192 && b === 168) ||
+          (a === 172 && b >= 16 && b <= 31) ||
+          (a === 169 && b === 254) ||
+          (a === 100 && b >= 64 && b <= 127)) return true; // ループバック/プライベート/リンクローカル/CGNAT
+    }
+    return false;
+  }
+
+  // 先頭バイト (マジックナンバー) から画像 mime を判定する。Content-Type 欠落時の安全弁。非画像は null。
+  function sniffImageMime(b) {
+    if (!b || b.length < 4) return null;
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "image/gif";
+    if (b[0] === 0x42 && b[1] === 0x4d) return "image/bmp";
+    if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+        b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
+    return null;
+  }
+
   async function translateImage(settings, imageUrl) {
     const providerId = settings.provider;
     const provider = Providers.get(providerId);
     if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
     const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
     if (!apiKey) return { ok: false, error: "no_api_key" };
+    // 危険な fetch 先 (内部/ローカル/特殊スキーム) は取得も中継もしない
+    if (isForbiddenImageUrl(imageUrl)) return { ok: false, error: "forbidden_target" };
 
     // 画像を取得して base64 化 (host_permissions により CORS を回避)
     let b64, mime;
     try {
       const r = await fetch(imageUrl);
       const blob = await r.blob();
-      // 画像以外 (動画 video/* 等) は vision に送らない安全弁。type 空は <img> 由来として画像扱い。
-      if (blob.type && blob.type.indexOf("image/") !== 0) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
+      // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
+      if (blob.type && blob.type.indexOf("image/") === 0) {
+        mime = blob.type;
+      } else if (!blob.type) {
+        mime = sniffImageMime(bytes);
+        if (!mime) return { ok: false, error: "not_image", mime: "" };
+      } else {
         return { ok: false, error: "not_image", mime: blob.type };
       }
-      mime = (blob.type && blob.type.indexOf("image/") === 0) ? blob.type : "image/png";
-      b64 = await blobToBase64(blob);
+      b64 = base64FromBytes(bytes);
     } catch (e) {
       return { ok: false, error: "image_fetch", message: String((e && e.message) || e) };
     }

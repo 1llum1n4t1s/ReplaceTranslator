@@ -174,8 +174,19 @@
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, imgs.length) }, worker));
   }
 
-  // 画像オーバーレイをすべて消す (原文復元と連動)
+  // 画像オーバーレイをすべて消し、ensureWrap で挿入した span.__rt-img-wrap も解除して
+  // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
+    document.querySelectorAll(".__rt-img-wrap").forEach((wrap) => {
+      const img = wrap.querySelector("img");
+      const parent = wrap.parentNode;
+      wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
+      if (img && parent) {
+        parent.insertBefore(img, wrap);  // img をラッパーの外へ戻す
+        wrap.remove();                   // 空になったラッパーを除去
+      }
+    });
+    // ラッパー無しで残っているレイヤーがあれば後始末
     document.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
   }
 

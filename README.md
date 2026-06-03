@@ -2,7 +2,7 @@
 
 > [English version](README.en.md) is also available.
 
-各社のクラウド LLM（OpenAI / Anthropic / Google Gemini）を使って、表示中の Web ページを **その場で置換翻訳**する Chrome / Firefox 拡張機能です。Chrome 標準のページ翻訳のように原文を訳文へ差し替え、ワンクリックで原文に戻せます。翻訳エンジンに大規模言語モデルを使うことで、文脈をふまえた自然な翻訳が得られます。
+各社のクラウド LLM（OpenAI / Anthropic / Google Gemini / xAI (Grok)）を使って、表示中の Web ページを **その場で置換翻訳**する Chrome / Firefox 拡張機能です。Chrome 標準のページ翻訳のように原文を訳文へ差し替え、ワンクリックで原文に戻せます。翻訳エンジンに大規模言語モデルを使うことで、文脈をふまえた自然な翻訳が得られます。
 
 ## ✨ 特徴
 - **インプレース置換翻訳** — ページの原文を訳文に差し替え、トグルで原文に復元

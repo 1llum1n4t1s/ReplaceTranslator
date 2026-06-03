@@ -2,7 +2,7 @@
 
 > 日本語版は [README.md](README.md) を参照してください。
 
-A Chrome / Firefox extension that translates the page you are viewing **in place** using cloud LLMs (OpenAI / Anthropic / Google Gemini). Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
+A Chrome / Firefox extension that translates the page you are viewing **in place** using cloud LLMs (OpenAI / Anthropic / Google Gemini / xAI (Grok)). Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
 
 ## ✨ Features
 - **In-place replacement** — replace the original text with the translation, toggle back to the original

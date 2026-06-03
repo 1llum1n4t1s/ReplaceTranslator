@@ -28,6 +28,8 @@
   "badgeFree": { "message": "キー不要" },
   "optAutoTranslate": { "message": "全ページ自動翻訳" },
   "labelModel": { "message": "モデル" },
+  "costUnknown": { "message": "—" },
+  "costUnknownTitle": { "message": "価格不明" },
   "modelRefresh": { "message": "更新" },
   "modelRefreshTitle": { "message": "最新モデルを取得（API キー必須）" },
   "labelSource": { "message": "翻訳元" },

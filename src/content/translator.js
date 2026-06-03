@@ -392,10 +392,22 @@
     return false;
   }
 
+  // 適用済みの訳文を原文へ戻し、翻訳済みマークをクリアする (再翻訳前のリセット / 復元で共用)
+  function revertTranslations() {
+    for (const node of translatedNodes) {
+      const orig = originalMap.get(node);
+      if (orig != null && node.isConnected) node.nodeValue = orig;
+    }
+    translatedNodes.clear();
+  }
+
   function startTranslate(newSettings) {
     settings = newSettings;
     // 広告等の小さな iframe は翻訳しない (メインフレームは常に対象)
     if (!frameHasEnoughText()) return Promise.resolve();
+    // 2 回目以降の翻訳 (言語/provider を変えて再実行) で前回の訳が残ると accept() が既訳ノードを
+    // 全弾きして新設定が反映されないため、まず原文へ戻して翻訳済みマークをクリアする。
+    revertTranslations();
     translating = true;
     runId += 1;
     const myRun = runId;
@@ -420,11 +432,7 @@
     translating = false;
     runId += 1; // 進行中ループを中断
     stopObservers();
-    for (const node of translatedNodes) {
-      const orig = originalMap.get(node);
-      if (orig != null && node.isConnected) node.nodeValue = orig;
-    }
-    translatedNodes.clear();
+    revertTranslations();
     notifyProgress("restored");
   }
 
