@@ -38,6 +38,7 @@
     FAB_POSITION: "fabPosition",   // FAB のドラッグ位置 {left, top}
     MODELS_CACHE: "modelsCache",   // 動的取得したモデル一覧 {provider: {models, fetchedAt}}
     BATCH_TUNING: "batchTuning",   // バッチサイズ自動学習の状態 {provider: {size, throughput, dir}}
+    CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, imageTranslate} (apiKeys を含めない)
   });
 
   // ---- プロバイダ定義 ----

@@ -77,5 +77,6 @@
   "qtNoKey": { "message": "このサービスの API キーが未設定です" },
   "qtError": { "message": "翻訳できませんでした" },
   "qtTooLong": { "message": "5,000 文字を超えています" },
+  "qtLimit": { "message": "このサービスには長すぎます（短くするか LLM プロバイダを選んでください）" },
   "qtAuto": { "message": "自動" }
 }

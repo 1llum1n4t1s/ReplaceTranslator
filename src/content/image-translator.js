@@ -14,7 +14,8 @@
   if (window.top !== window.self) return; // トップフレームのみ
 
   const A = globalThis.Actions;
-  const SKEY = (globalThis.StorageKeys && globalThis.StorageKeys.SETTINGS) || "settings";
+  // content には API キーを入れない: 全体 settings ではなく非機密フラグ (CONTENT_FLAGS) だけ読む
+  const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
   if (!A) return;
 
   let enabled = false;
@@ -25,14 +26,14 @@
     try { return (chrome.i18n && chrome.i18n.getMessage(k)) || f; } catch (_e) { return f; }
   };
 
-  function applyEnabled(s) {
-    enabled = Boolean(s && s.imageTranslate);
+  function applyEnabled(f) {
+    enabled = Boolean(f && f.imageTranslate);
     if (!enabled && btn) btn.style.display = "none";
   }
-  try { chrome.storage.local.get(SKEY, (d) => applyEnabled(d && d[SKEY])); } catch (_e) { /* noop */ }
+  try { chrome.storage.local.get(CFLAGS_KEY, (d) => applyEnabled(d && d[CFLAGS_KEY])); } catch (_e) { /* noop */ }
   try {
     chrome.storage.onChanged.addListener((c, area) => {
-      if (area === "local" && c[SKEY]) applyEnabled(c[SKEY].newValue);
+      if (area === "local" && c[CFLAGS_KEY]) applyEnabled(c[CFLAGS_KEY].newValue);
     });
   } catch (_e) { /* noop */ }
 

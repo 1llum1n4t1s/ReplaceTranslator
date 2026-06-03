@@ -122,7 +122,8 @@
   }
 
   function loadModels(force) {
-    const p = Providers.get(state.settings.provider);
+    const requested = state.settings.provider; // 応答到着までにプロバイダが変わる可能性があるため捕捉
+    const p = Providers.get(requested);
     if (!p || p.batch === false) { // MyMemory 等はモデル概念なし
       $("model-row").classList.add("hidden");
       return;
@@ -131,12 +132,13 @@
     const btn = $("refresh-models");
     if (force && btn) { btn.disabled = true; btn.classList.add("is-spinning"); }
     chrome.runtime.sendMessage(
-      { action: Actions.GET_MODELS, provider: state.settings.provider, force: Boolean(force) },
+      { action: Actions.GET_MODELS, provider: requested, force: Boolean(force) },
       (res) => {
         if (force && btn) { btn.disabled = false; btn.classList.remove("is-spinning"); }
+        if (requested !== state.settings.provider) return; // 別プロバイダに切替済み → 古い応答は捨てる(誤モデル保存を防ぐ)
         const models = (res && res.ok && res.models) ? res.models : [];
         $("model-row").classList.toggle("hidden", models.length === 0);
-        if (models.length) renderModelList(models, state.settings.models[state.settings.provider]);
+        if (models.length) renderModelList(models, state.settings.models[requested]);
       }
     );
   }
@@ -283,6 +285,7 @@
         if (chrome.runtime.lastError) { render(msg("qtError", "翻訳できませんでした"), true); return; }
         if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) render(res.translations[0]);
         else if (res && res.error === "no_api_key") render(msg("qtNoKey", "このサービスの API キーが未設定です"), true);
+        else if (res && res.error === "too_long") render(msg("qtLimit", "このサービスには長すぎます（短くするか LLM プロバイダを選んでください）"), true);
         else render(msg("qtError", "翻訳できませんでした"), true);
       });
     }

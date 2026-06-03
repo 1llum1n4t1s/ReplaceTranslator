@@ -15,7 +15,8 @@
 
   const A = globalThis.Actions;
   const POS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.FAB_POSITION) || "fabPosition";
-  const SETTINGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.SETTINGS) || "settings";
+  // content には API キーを入れない: 全体 settings ではなく非機密フラグ (CONTENT_FLAGS) だけ読む
+  const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
   if (!A) return;
 
   // 拡張 context 失効時 (Extension context invalidated) は静かに無視する送信ラッパ
@@ -170,11 +171,11 @@
     });
   } catch (_e) { /* noop */ }
 
-  // グローバル翻訳 ON (autoTranslate) なら、開いたページを自動で翻訳する
+  // グローバル翻訳 ON (autoTranslate) なら、開いたページを自動で翻訳する (非機密フラグのみ読む)
   try {
-    chrome.storage.local.get(SETTINGS_KEY, (d) => {
-      const s = d && d[SETTINGS_KEY];
-      if (s && s.autoTranslate) {
+    chrome.storage.local.get(CFLAGS_KEY, (d) => {
+      const f = d && d[CFLAGS_KEY];
+      if (f && f.autoTranslate) {
         state = "loading";
         render();
         send({ action: A.TRANSLATE_PAGE });

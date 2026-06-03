@@ -46,9 +46,21 @@ if (typeof importScripts === "function") {
 
   async function saveSettings(raw) {
     const normalized = SettingsSchema.normalize(raw);
-    await chrome.storage.local.set({ [StorageKeys.SETTINGS]: normalized });
+    await chrome.storage.local.set({
+      [StorageKeys.SETTINGS]: normalized,
+      // content script (fab/image-translator) が読む非機密フラグ。apiKeys を content 文脈に出さないため分離する。
+      [StorageKeys.CONTENT_FLAGS]: { autoTranslate: normalized.autoTranslate, imageTranslate: normalized.imageTranslate },
+    });
     settingsMem = normalized; // キャッシュを最新化 (onChanged より先に確定させる)
     return normalized;
+  }
+
+  // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
+  async function ensureContentFlags() {
+    const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
+    if (cur) return;
+    const s = await getSettings();
+    await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate } });
   }
 
   // ---- メモリ集約: BATCH_TUNING / TOKEN_USAGE を SW メモリに保持し、毎バッチの storage I/O を
@@ -171,8 +183,13 @@ if (typeof importScripts === "function") {
       while (cursor < texts.length) {
         const i = cursor++;
         const text = texts[i];
-        // 長すぎるテキストは送らず原文のまま (translator 側でスキップ扱いになる)
-        if (encoder.encode(text).length > maxBytes) { translations[i] = text; continue; }
+        // 長すぎるテキストは送れない。原文を返すと「翻訳成功」に見えてしまうため too_long エラーを立てる
+        // (Quick Translate は原文を成功表示せずエラー文言を出す。ページ翻訳は部分適用で原文のまま残る)。
+        if (encoder.encode(text).length > maxBytes) {
+          firstError = firstError || { error: "too_long", maxBytes };
+          translations[i] = text;
+          continue;
+        }
         let req;
         try {
           req = ProviderApi.buildRequest(providerId, {
@@ -575,7 +592,8 @@ if (typeof importScripts === "function") {
     });
   }
 
-  chrome.runtime.onInstalled.addListener(setupContextMenus);
+  chrome.runtime.onInstalled.addListener(() => { setupContextMenus(); ensureContentFlags().catch(() => { /* noop */ }); });
+  ensureContentFlags().catch(() => { /* noop */ }); // SW 起動ごとに content 用フラグの存在を保証
 
   if (chrome.contextMenus) {
     chrome.contextMenus.onClicked.addListener(async (info, tab) => {

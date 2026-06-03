@@ -29,6 +29,7 @@
 
   // ---- 状態 ----
   const originalMap = new WeakMap();    // Node → 原文 (復元用)
+  const writtenValue = new WeakMap();   // Node → 我々が書き込んだ訳文 (ページ側の書き換えと区別するため)
   const translatedNodes = new Set();    // 翻訳/処理済みノード (再翻訳防止 + 復元走査用)
   let observedBlocks = new WeakSet();   // io.observe 済みのブロック要素
   let flushedBlocks = new WeakSet();    // 可視化して翻訳に回し終えたブロック (内部への動的追加は即取り込む)
@@ -250,6 +251,7 @@
       if (typeof t === "string" && t.length > 0 && t !== item.text && item.node.nodeValue === item.text) {
         if (!originalMap.has(item.node)) originalMap.set(item.node, item.text);
         item.node.nodeValue = t;
+        writtenValue.set(item.node, t); // 我々が書いた値を記録 (ページの後続書き換えと判別する)
       }
     }
   }
@@ -379,9 +381,16 @@
     for (const m of mutations) {
       if (m.type === "characterData") {
         // サイトが既存テキストノードを書き換えたケース (SPA/チャット等の文言差し替え)。
-        // 自分の翻訳適用 (translatedNodes) は除外して二重発火/再翻訳ループを防ぎつつ、
-        // まだ未訳のノードの新テキストだけ取り込む。
-        if (!translatedNodes.has(m.target)) ingest(m.target.parentNode || m.target);
+        const tn = m.target;
+        if (translatedNodes.has(tn)) {
+          // 我々が書いた訳文のままなら無視 (自己書き換えでの再発火/ループ防止)。
+          if (tn.nodeValue === writtenValue.get(tn)) continue;
+          // ページが別テキストへ書き換えた → 翻訳済みマーク/原文記録を捨てて訳し直す (古い訳の残留や復元時の誤上書きを防ぐ)。
+          translatedNodes.delete(tn);
+          originalMap.delete(tn);
+          writtenValue.delete(tn);
+        }
+        ingest(tn.parentNode || tn);
         continue;
       }
       for (const node of m.addedNodes) ingest(node);

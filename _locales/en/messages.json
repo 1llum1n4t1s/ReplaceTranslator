@@ -77,5 +77,6 @@
   "qtNoKey": { "message": "No API key set for this provider" },
   "qtError": { "message": "Could not translate" },
   "qtTooLong": { "message": "Over 5,000 characters" },
+  "qtLimit": { "message": "Too long for this provider — shorten it or pick an LLM provider" },
   "qtAuto": { "message": "Auto" }
 }
