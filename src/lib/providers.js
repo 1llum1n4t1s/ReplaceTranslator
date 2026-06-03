@@ -235,9 +235,11 @@
   // 本文 (JSON 文字列) から translations 配列を取り出す。コードフェンスや前後ノイズに耐性を持たせる。
   function extractTranslations(content) {
     const obj = parseJsonLoose(content);
-    if (obj && Array.isArray(obj.translations)) return obj.translations.map((x) => String(x));
-    if (Array.isArray(obj)) return obj.map((x) => String(x)); // 念のため素の配列も許容
-    return [];
+    const arr = (obj && Array.isArray(obj.translations)) ? obj.translations : (Array.isArray(obj) ? obj : null);
+    if (!arr) return [];
+    // 全要素が文字列のときだけ採用する。オブジェクト等が混じるスキーマ崩れ (例 [{translation:"..."}]) を
+    // String 化して "[object Object]" を貼り付けてしまうのを避け、パース失敗 ([]) 扱いでリトライに回す。
+    return arr.every((x) => typeof x === "string") ? arr : [];
   }
 
   function parseResponse(providerId, json) {

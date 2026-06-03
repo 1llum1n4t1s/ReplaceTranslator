@@ -141,6 +141,12 @@ test("parseResponse returns [] on non-JSON garbage", () => {
   assert.deepEqual(ProviderApi.parseResponse("openai", json), []);
 });
 
+test("parseResponse rejects non-string entries (schema slip → no [object Object])", () => {
+  // 数が合っていてもオブジェクト等が混じれば貼らずに [] (パース失敗) にする
+  const json = { choices: [{ message: { content: '{"translations":[{"translation":"x"}]}' } }] };
+  assert.deepEqual(ProviderApi.parseResponse("openai", json), []);
+});
+
 // ---- parseUsage (3社の形状差) ----
 
 test("parseUsage openai", () => {
