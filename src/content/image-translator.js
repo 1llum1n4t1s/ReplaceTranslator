@@ -11,7 +11,13 @@
 (function () {
   if (window.__rtImgLoaded) return;
   window.__rtImgLoaded = true;
-  if (window.top !== window.self) return; // トップフレームのみ
+  // サブフレーム(iframe)は本文が十分ある枠だけ画像翻訳を有効化し、広告/ユーティリティ枠を除外して
+  // 無駄な vision コストを抑える (translator.js の frameHasEnoughText=50字 と同じ意図)。メインフレームは常に有効。
+  // sub-frame には background が imageTranslate ON のときだけ allFrames 注入する。
+  if (window.top !== window.self) {
+    const txt = (document.body && document.body.innerText) || "";
+    if (txt.trim().length < 50) return;
+  }
 
   const A = globalThis.Actions;
   // content には API キーを入れない: 全体 settings ではなく非機密フラグ (CONTENT_FLAGS) だけ読む
