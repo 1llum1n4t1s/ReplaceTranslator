@@ -136,6 +136,8 @@
           { role: "user", content: userContent },
         ],
       }, cap));
+      // ストリーミング (SSE) 要求。最後の chunk に usage を含めてもらう。
+      if (o.stream) { body.stream = true; body.stream_options = { include_usage: true }; }
       return {
         url: provider.endpoint,
         method: "POST",
@@ -248,6 +250,16 @@
       return typeof t === "string" ? [t] : [];
     }
     return extractTranslations(extractContent(providerId, json));
+  }
+
+  // ストリーミング SSE の 1 data オブジェクトから増分テキストを取り出す (OpenAI/xAI chat-completions の delta.content)。
+  // 増分が無い chunk (usage のみ等) は空文字。stream 対応は openai/xai のみ。
+  function streamDelta(providerId, obj) {
+    if (providerId === "openai" || providerId === "xai") {
+      const d = obj && obj.choices && obj.choices[0] && obj.choices[0].delta;
+      return (d && typeof d.content === "string") ? d.content : "";
+    }
+    return "";
   }
 
   // usage を { input, output } に正規化 (3社の形状差を吸収)
@@ -424,6 +436,7 @@
     extractContent,
     extractTranslations,
     parseResponse,
+    streamDelta,
     parseUsage,
     buildModelsRequest,
     parseModels,

@@ -114,6 +114,23 @@ test("buildRequest throws on unknown provider", () => {
   assert.throws(() => ProviderApi.buildRequest("nope", { texts: [] }));
 });
 
+test("buildRequest opts.stream enables SSE for openai/xai (and usage in last chunk)", () => {
+  const r = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4-mini", apiKey: "k", stream: true });
+  assert.equal(r.body.stream, true);
+  assert.deepEqual(r.body.stream_options, { include_usage: true });
+  // stream 未指定なら付かない
+  const r2 = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4-mini", apiKey: "k" });
+  assert.ok(!("stream" in r2.body));
+});
+
+test("streamDelta extracts incremental content for openai/xai, empty otherwise", () => {
+  assert.equal(ProviderApi.streamDelta("openai", { choices: [{ delta: { content: "あ" } }] }), "あ");
+  assert.equal(ProviderApi.streamDelta("xai", { choices: [{ delta: { content: "い" } }] }), "い");
+  assert.equal(ProviderApi.streamDelta("openai", { choices: [{ delta: {} }] }), "");   // 増分なし(role chunk 等)
+  assert.equal(ProviderApi.streamDelta("openai", { usage: { prompt_tokens: 1 } }), ""); // usage のみ chunk
+  assert.equal(ProviderApi.streamDelta("anthropic", { choices: [{ delta: { content: "x" } }] }), ""); // 非対応
+});
+
 // ---- parseResponse (順序保持・3社・コードフェンス耐性) ----
 
 test("parseResponse openai", () => {

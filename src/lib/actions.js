@@ -27,6 +27,7 @@
     // background → content
     APPLY_TRANSLATE_CS: "APPLY_TRANSLATE_CS", // content に翻訳開始を指示
     APPLY_RESTORE_CS: "APPLY_RESTORE_CS",     // content に復元を指示
+    TRANSLATE_PARTIAL: "TRANSLATE_PARTIAL",   // ストリーミングで確定した訳文要素を逐次 content へ (早出し)
     // content → runtime (進捗通知; popup が開いていれば受信)
     TRANSLATION_PROGRESS: "TRANSLATION_PROGRESS",
   });
