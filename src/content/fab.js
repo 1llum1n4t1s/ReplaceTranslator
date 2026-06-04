@@ -126,6 +126,7 @@
 
   // クリックはトグル。ただしドラッグ直後のクリックは抑制する
   fab.addEventListener("click", (e) => {
+    if (!e.isTrusted) return; // 合成 click (悪意サイトの __rt_fab.click()) を無視。ユーザー操作なしに翻訳開始＝ページ文章送信を防ぐ
     if (moved) {
       e.preventDefault();
       e.stopImmediatePropagation();

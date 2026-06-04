@@ -54,6 +54,7 @@
     btn.textContent = "訳";
     btn.title = tr("imgBtn", "画像内のテキストを翻訳");
     btn.addEventListener("click", (e) => {
+      if (!e.isTrusted) return; // 合成 click を無視 (サイトが勝手に OCR させ、ページ内の機微画像を vision へ送るのを防ぐ)
       e.preventDefault();
       e.stopPropagation();
       if (target) translateImg(target);

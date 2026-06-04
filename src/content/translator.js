@@ -548,6 +548,10 @@
     startObservers();
     notifyProgress("progress");
     ingest(document.body || document.documentElement);
+    // 初回 scan 後にアップグレードで open shadow root を遅延 attach する web component を取りこぼさないよう、
+    // 少し待ってから再 ingest する (scheduleReingest=350/1200ms)。新規 shadow root とその MutationObserver を拾う。
+    // (content script は isolated world で page の attachShadow をフック不可のため、bounded な再走査で対処。)
+    scheduleReingest();
     // 翻訳対象が無いページでも状態が固まるよう、保険で done 判定を 1 度入れる
     window.setTimeout(() => maybeAnnounceDone(myRun), 1500);
     return Promise.resolve();

@@ -232,7 +232,15 @@ if (typeof importScripts === "function") {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return null; // 通信失敗 → 非stream で再試行させる
     }
-    if (!res.ok || !res.body || typeof res.body.getReader !== "function") return null; // stream 弾かれ → フォールバック
+    if (!res.ok) {
+      // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
+      // content 側のリトライ/バックオフ/サイズ縮小に委ねる (429 は学習サイズを縮小)。null フォールバックは stream 非対応時のみ。
+      let detail = "";
+      try { detail = await res.text(); } catch (_e) { /* noop */ }
+      if (res.status === 429) updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
+      return { ok: false, error: "http", status: res.status, message: detail.slice(0, 300), nextBatchSize: currentBatchSizeFor(providerId) };
+    }
+    if (!res.body || typeof res.body.getReader !== "function") return null; // stream 非対応レスポンス → 非stream フォールバック
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -487,7 +495,8 @@ if (typeof importScripts === "function") {
       (a === 192 && b === 168) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 169 && b === 254) ||
-      (a === 100 && b >= 64 && b <= 127);
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19)); // 198.18.0.0/15 ベンチマーク/特殊用途 (RFC2544。試験網/アプライアンス内で routed されうる)
   }
   // ページが任意に指定できる imageUrl を外部 LLM へ中継する前の SSRF/内部リソース流出対策。
   // http/https 以外のスキームと、localhost / プライベート IP / リンクローカル宛先を拒否する。
