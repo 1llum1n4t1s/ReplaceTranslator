@@ -207,11 +207,13 @@
 
   // ページ内の対象画像をまとめて並列翻訳する (テキスト翻訳と並行で走る)
   async function translateAllImages() {
-    if (!frameEligibleForBulk()) return; // 広告/ユーティリティ枠は自動一括しない (ホバー翻訳は据えたままなので手動は可能)
     const myRun = ++imgRunId; // この一括翻訳の世代 (復元/再翻訳で無効化される)
     bulkActive = true;        // 後追い watcher の有効判定。async な storage enabled に依存しない (起動レースでも取りこぼさない)
-    startImgWatch();          // 一括後に SPA 挿入 / 遅延ロードされた画像も同じ翻訳状態で拾う
-    await translateImages(Array.from(document.images), myRun);
+    // watcher は初期ゲート不通過 (空 iframe / placeholder のみ) でも据える。後から lazy-load された eligible 画像を
+    // queueLateImage が拾い、eligible 画像が出た時点でその枠は gate 的にも対象になる (初期に空でも取りこぼさない)。
+    startImgWatch();
+    // 初期の一括は frameEligibleForBulk を通った枠だけ即実行 (本文も対象画像も無い枠で無駄スキャンしない)。
+    if (frameEligibleForBulk()) await translateImages(Array.from(document.images), myRun);
   }
 
   // ---- 一括翻訳中に後から増えた画像の追従 (SPA 挿入 / lazy-load) ----

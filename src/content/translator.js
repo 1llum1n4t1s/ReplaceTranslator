@@ -92,7 +92,9 @@
     "SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "CODE", "PRE", "KBD", "SAMP", "VAR", "TT",
   ]);
   // 祖先のどこかにこれらがあれば subtree ごと翻訳しない (コード/数式/編集中/明示的な翻訳除外)。
-  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate";
+  // 末尾は拡張自身の UI (FAB / 画像ホバーボタン / 画像オーバーレイ層)。これらは fab.js / image-translator.js が
+  // 描画・管理するので、collectNodes がラベルや訳文オーバーレイを訳し直したり、復元時に stale なラベルへ戻すのを防ぐ。
+  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, .__rt-img-btn, .__rt-img-layer";
 
   function shouldTranslateText(s) {
     if (!s) return false;

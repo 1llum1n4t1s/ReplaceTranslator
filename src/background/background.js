@@ -281,7 +281,8 @@ if (typeof importScripts === "function") {
     const translations = new Array(texts.length);
     const CONCURRENCY = 8;  // MyMemory(無料 NMT)の実効同時リクエスト数。translator 側はこのとき直列(1)
     let cursor = 0;
-    let firstError = null;
+    let firstError = null;     // 表示用 (最初に起きた種別)
+    let providerError = null;  // provider 全体の失敗 (build/http/quota/network)。too_long(局所スキップ)とは区別し fatal 判定に使う
 
     async function worker() {
       while (cursor < texts.length) {
@@ -300,25 +301,28 @@ if (typeof importScripts === "function") {
             texts: [text], sourceLang: settings.sourceLang, targetLang: settings.targetLang, apiKey,
           });
         } catch (e) {
-          firstError = firstError || { error: "build", message: String((e && e.message) || e) };
+          const err = { error: "build", message: String((e && e.message) || e) };
+          providerError = providerError || err; firstError = firstError || err;
           translations[i] = text;
           continue;
         }
         try {
           const res = await fetch(req.url, { method: req.method, headers: req.headers, signal });
-          if (!res.ok) { firstError = firstError || { error: "http", status: res.status }; translations[i] = text; continue; }
+          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; translations[i] = text; continue; }
           const json = await res.json();
           // MyMemory は本文 200 でも responseStatus に実ステータス (403/429 等) を入れる
           const rs = Number(json && json.responseStatus);
           if (rs && rs !== 200) {
-            firstError = firstError || { error: "quota", status: rs, message: String((json && json.responseDetails) || "") };
+            const err = { error: "quota", status: rs, message: String((json && json.responseDetails) || "") };
+            providerError = providerError || err; firstError = firstError || err;
             translations[i] = text;
             continue;
           }
           const parsed = ProviderApi.parseResponse(providerId, json);
           translations[i] = (parsed && parsed[0]) || text;
         } catch (e) {
-          firstError = firstError || { error: "network", message: String((e && e.message) || e) };
+          const err = { error: "network", message: String((e && e.message) || e) };
+          providerError = providerError || err; firstError = firstError || err;
           translations[i] = text;
         }
       }
@@ -327,10 +331,10 @@ if (typeof importScripts === "function") {
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, texts.length || 1) }, worker));
     if (firstError) {
       // 1 件でも訳せていれば部分成功として translations を返す (呼び出し側が適用)。
-      // 全件失敗 (クォータ枯渇等で全テキストが原文のまま) のときは translations を返さず allFailed を立て、
-      // 呼び出し側が「無言で done」にせずエラー表示できるようにする。
+      // allFailed(=translator が fatal でページ全体を停止) は provider 全体の失敗 (quota/auth/network) かつ全件未訳のときだけ立てる。
+      // 全件 too_long のような局所スキップでは translations(原文) を返し、短い後続ノードを巻き添えで止めない。
       const anySuccess = translations.some((t, i) => t !== texts[i]);
-      if (!anySuccess) return Object.assign({ ok: false, allFailed: true }, firstError);
+      if (!anySuccess && providerError) return Object.assign({ ok: false, allFailed: true }, providerError);
       return Object.assign({ ok: false, translations }, firstError);
     }
     return { ok: true, translations, usage: { input: 0, output: 0 } };
