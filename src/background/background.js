@@ -188,6 +188,76 @@ if (typeof importScripts === "function") {
     return { ok: true, translations, usage, nextBatchSize };
   }
 
+  // OpenAI/xAI を SSE ストリーミングで翻訳し、確定要素ごとに onPartial(index, text) を呼ぶ (早出し)。
+  // 戻り値: 非stream と同形の結果、stream 不可/通信失敗時は null (呼び出し側が非stream にフォールバック)。
+  // 翻訳の真実は蓄積した完全 JSON の extractTranslations。partial がズレても最終結果が確定し直す。
+  async function translateBatchStream(settings, texts, signal, onPartial) {
+    const providerId = settings.provider;
+    if (providerId !== "openai" && providerId !== "xai") return null; // stream 対応は OpenAI/xAI のみ
+    const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
+    if (!apiKey) return { ok: false, error: "no_api_key", provider: providerId };
+    const model = (settings.models && settings.models[providerId]) || undefined;
+    let req;
+    try {
+      req = ProviderApi.buildRequest(providerId, {
+        texts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey, stream: true,
+      });
+    } catch (_e) { return null; }
+    await ensureMem();
+    const t0 = Date.now();
+    let res;
+    try {
+      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal });
+    } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
+      return null; // 通信失敗 → 非stream で再試行させる
+    }
+    if (!res.ok || !res.body || typeof res.body.getReader !== "function") return null; // stream 弾かれ → フォールバック
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const extractor = StreamParse.createTranslationsExtractor();
+    let sseBuf = "";       // 行バッファ (SSE は \n\n 区切り。1 行ずつ処理)
+    let content = "";      // 蓄積した delta (最終の完全パース用 = 真実)
+    let usageObj = null;
+    let idx = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        sseBuf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = sseBuf.indexOf("\n")) >= 0) {
+          const line = sseBuf.slice(0, nl).trim();
+          sseBuf = sseBuf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          let obj;
+          try { obj = JSON.parse(data); } catch (_e) { continue; }
+          const delta = ProviderApi.streamDelta(providerId, obj);
+          if (delta) {
+            content += delta;
+            for (const text of extractor.feed(delta)) { if (onPartial) { try { onPartial(idx, text); } catch (_e) { /* noop */ } } idx++; }
+          }
+          if (obj.usage) usageObj = obj;
+        }
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
+      // 途中で切れても蓄積済み content で完全パースを試みる (下へ)
+    }
+    const translations = ProviderApi.extractTranslations(content);
+    if (!Array.isArray(translations) || translations.length !== texts.length) {
+      // stream は通ったが出力が不完全。非stream にフォールバックすると二重課金なので incomplete を返し translator にリトライさせる。
+      return { ok: false, error: "incomplete", got: Array.isArray(translations) ? translations.length : 0, want: texts.length, nextBatchSize: currentBatchSizeFor(providerId) };
+    }
+    const usage = usageObj ? ProviderApi.parseUsage(providerId, usageObj) : null;
+    if (usage) recordUsage(providerId, usage);
+    const nextBatchSize = updateBatchTuning(providerId, texts.length, Date.now() - t0, false);
+    return { ok: true, translations, usage: usage || { input: 0, output: 0 }, nextBatchSize };
+  }
+
   // バッチ非対応プロバイダ用: 1 テキストずつ並列 GET (MyMemory など)。usage は集計しない。
   async function translateEach(settings, provider, texts, apiKey, signal) {
     const providerId = provider.id;
@@ -618,11 +688,25 @@ if (typeof importScripts === "function") {
             const settings = msg.settings
               ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
               : stored;
+            const tabId = sender.tab && sender.tab.id;
+            const frameId = sender.frameId || 0;
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録
             const controller = new AbortController();
-            const untrack = trackController(sender.tab && sender.tab.id, controller);
-            try { sendResponse(await translateBatch(settings, msg.texts || [], controller.signal)); }
-            finally { untrack(); }
+            const untrack = trackController(tabId, controller);
+            try {
+              let res = null;
+              // OpenAI/xAI かつ content が batchId 付き(=逐次適用に対応)なら SSE ストリームで早出しを試す
+              if (msg.batchId != null && (settings.provider === "openai" || settings.provider === "xai")) {
+                res = await translateBatchStream(settings, msg.texts || [], controller.signal, (index, text) => {
+                  if (tabId != null) {
+                    chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId: msg.batchId, index, text }, { frameId })
+                      .catch(() => { /* 受信端が無ければ無視 */ });
+                  }
+                });
+              }
+              if (!res) res = await translateBatch(settings, msg.texts || [], controller.signal); // stream 非対応/失敗は非stream へ
+              sendResponse(res);
+            } finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_IMAGE: {

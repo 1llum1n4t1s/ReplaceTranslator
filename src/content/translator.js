@@ -47,6 +47,8 @@
   let fatal = null;                     // 致命的エラー (no_api_key) で全体中断
   let currentBatchSize = 0;
   let warmupLeft = 0;                   // 残り warm-up バッチ数 (>0 の間は小サイズで投げ TTF を縮める)
+  let batchSeq = 0;                     // TRANSLATE_BATCH 連番 (streaming の partial を batchId で紐付ける)
+  const pendingBatches = new Map();     // batchId → batch ({node,text}[])。TRANSLATE_PARTIAL の逐次適用に使う
   const queue = [];                     // 翻訳待ち {node, text}
 
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
@@ -204,10 +206,16 @@
   }
 
   // ---- background への翻訳依頼 ----
-  function sendBatch(texts) {
+  // batch ({node,text}[]) を渡す。batchId を採番して登録し、streaming の TRANSLATE_PARTIAL が
+  // batchId→node を引いて逐次適用できるようにする。
+  function sendBatch(batch) {
+    const batchId = ++batchSeq;
+    pendingBatches.set(batchId, batch);
+    const texts = batch.map((b) => b.text);
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ action: A.TRANSLATE_BATCH, texts, settings }, (res) => {
+        chrome.runtime.sendMessage({ action: A.TRANSLATE_BATCH, texts, settings, batchId }, (res) => {
+          pendingBatches.delete(batchId);
           if (chrome.runtime.lastError) {
             resolve({ ok: false, error: "runtime", message: chrome.runtime.lastError.message });
             return;
@@ -216,6 +224,7 @@
         });
       } catch (_e) {
         // 拡張のリロード/更新で context が失効 (Extension context invalidated)。静かに停止する。
+        pendingBatches.delete(batchId);
         shutdown();
         resolve({ ok: false, error: "context" });
       }
@@ -225,10 +234,10 @@
   function sleep(ms) { return new Promise((r) => window.setTimeout(r, ms)); }
 
   // 一時エラー (429 / 通信 / 5xx) は指数バックオフでリトライ。致命的/恒久エラーはそのまま返す。
-  async function sendBatchWithRetry(texts, myRun) {
+  async function sendBatchWithRetry(batch, myRun) {
     for (let attempt = 0; ; attempt++) {
       if (myRun !== runId) return { ok: false, error: "aborted" };
-      const res = await sendBatch(texts);
+      const res = await sendBatch(batch);
       if (res && res.ok) return res;
       const e = res && res.error;
       // MyMemory 等の NMT は無料枠で 429 を即返す。429 を数百ms 後にリトライしても解けず、
@@ -247,21 +256,21 @@
     }
   }
 
-  // 訳文を適用 (原文を保持しつつ in-place 置換)
-  function applyTranslations(batch, translations) {
-    for (let i = 0; i < batch.length; i++) {
-      const item = batch[i];
-      const t = translations[i];
-      // ノードがバッチ送信時の原文を保持していない = in-flight 中にページが書き換えた。
-      // その場合は処理済みにしない (MutationObserver が再キューした新しい値を後で翻訳できるよう retryable に残す)。
-      if (item.node.nodeValue !== item.text) continue;
-      translatedNodes.add(item.node);
-      if (typeof t === "string" && t.length > 0 && t !== item.text) {
-        if (!originalMap.has(item.node)) originalMap.set(item.node, item.text);
-        item.node.nodeValue = t;
-        writtenValue.set(item.node, t); // 我々が書いた値を記録 (ページの後続書き換えと判別する)
-      }
+  // 1 ノードに訳文を適用 (原文を保持しつつ in-place 置換)。streaming の早出しと最終確定で共用。
+  function applyOne(item, t) {
+    // ノードがバッチ送信時の原文を保持していない = in-flight 中にページが書き換えた。
+    // その場合は処理済みにしない (MutationObserver が再キューした新しい値を後で翻訳できるよう retryable に残す)。
+    if (!item || item.node.nodeValue !== item.text) return;
+    translatedNodes.add(item.node);
+    if (typeof t === "string" && t.length > 0 && t !== item.text) {
+      if (!originalMap.has(item.node)) originalMap.set(item.node, item.text);
+      item.node.nodeValue = t;
+      writtenValue.set(item.node, t); // 我々が書いた値を記録 (ページの後続書き換えと判別する)
     }
+  }
+  // バッチ全体に適用 (最終確定)。streaming で既に適用済みのノードは nodeValue 不一致で applyOne がスキップする。
+  function applyTranslations(batch, translations) {
+    for (let i = 0; i < batch.length; i++) applyOne(batch[i], translations[i]);
   }
 
   // 翻訳の優先順位を「ページ上から下」にする: 各アイテムの絶対Y位置で昇順ソートする。
@@ -313,7 +322,7 @@
         else size = Math.max(1, currentBatchSize);
         const batch = pending.slice(cursor, cursor + size);
         cursor += batch.length;
-        const res = await sendBatchWithRetry(batch.map((b) => b.text), myRun);
+        const res = await sendBatchWithRetry(batch, myRun);
         if (myRun !== runId) return;
         // バッチサイズ自動学習は background(tuningMem) を単一ソースとし、ok/エラー問わず nextBatchSize を採用する。
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
@@ -444,6 +453,7 @@
     if (mo) { mo.disconnect(); mo = null; }
     if (flushTimer) { window.clearTimeout(flushTimer); flushTimer = null; }
     queue.length = 0;
+    pendingBatches.clear(); // 復元時に in-flight の streaming partial 紐付けを破棄 (stale 適用防止)
     observedShadowRoots = new WeakSet();
   }
 
@@ -488,6 +498,7 @@
     currentBatchSize = 0;
     warmupLeft = WARMUP_BATCHES; // 開始直後の数バッチは小さく投げて最初の訳を早く出す
     queue.length = 0;
+    pendingBatches.clear(); // 前セッションの streaming partial 紐付けを破棄
     observedBlocks = new WeakSet(); // 再翻訳 (復元→再 ON) で取りこぼさないよう作り直す
     flushedBlocks = new WeakSet();
     observedShadowRoots = new WeakSet();
@@ -510,6 +521,13 @@
   // ---- メッセージ受信 ----
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg.action !== "string") return undefined;
+    if (msg.action === A.TRANSLATE_PARTIAL) {
+      // streaming の早出し: 確定した訳文要素を該当ノードへ即適用 (最終 sendResponse でも整合確認される)。
+      // 復元/再翻訳後は pendingBatches がクリアされ batchId が引けないので適用されない (stale 防止)。
+      const batch = pendingBatches.get(msg.batchId);
+      if (translating && batch && batch[msg.index]) applyOne(batch[msg.index], msg.text);
+      return undefined;
+    }
     if (msg.action === A.APPLY_TRANSLATE_CS) {
       startTranslate(msg.settings).then(() => sendResponse({ ok: true })).catch((e) =>
         sendResponse({ ok: false, message: String((e && e.message) || e) })
