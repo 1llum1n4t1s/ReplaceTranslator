@@ -209,6 +209,10 @@
     chrome.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg.action !== "string") return undefined;
       if (msg.action === A.APPLY_TRANSLATE_CS) {
+        // 再翻訳のたびに既存オーバーレイを一旦消す。translateAllImages は isTranslated(img) を除外するため、
+        // clear しないと target/provider を変えた再翻訳で旧訳が残り、画像翻訳を OFF にした再翻訳でも
+        // 前回のオーバーレイが居座る。clearAllImages は imgRunId を進め進行中の一括も打ち切る。
+        clearAllImages();
         // 起動レース対策: storage 由来の enabled が未確定でも、メッセージ同梱の公開設定で判定する
         // (fab.js が先に TRANSLATE_PAGE を送り、こちらの flag ロードが間に合わないと画像一括が飛ぶため)。
         const on = (msg.settings && typeof msg.settings.imageTranslate === "boolean") ? msg.settings.imageTranslate : enabled;

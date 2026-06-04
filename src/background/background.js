@@ -55,6 +55,21 @@ if (typeof importScripts === "function") {
     return normalized;
   }
 
+  // APPLY_SETTINGS の patch 適用を直列化する。popup が短時間に複数の patch を送ると、各ハンドラが
+  // 同じ base を読んでから順に上書きし先の変更を取りこぼす (lost update)。チェーンで 1 件ずつ直列化し、
+  // base には直前の save が同期確定した settingsMem を使うことで、後続 patch が最新値に積み増しされる。
+  let settingsWriteChain = Promise.resolve();
+  function applySettingsPatch(patch) {
+    const run = async () => {
+      const base = settingsMem || await getSettings(); // 直前の saveSettings が settingsMem を確定済み
+      return saveSettings(Object.assign({}, base, patch));
+    };
+    // 直前の patch が成功/失敗どちらでも次を最新 base から直列適用する (then の両ハンドラに run を渡す)
+    const next = settingsWriteChain.then(run, run);
+    settingsWriteChain = next.catch(() => {}); // チェーンは常に解決させ、1 件の失敗で後続を詰まらせない
+    return next; // 呼び出し側にはこの patch 自身の結果 (保存後の設定) / 失敗を返す
+  }
+
   // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
   async function ensureContentFlags() {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
@@ -343,7 +358,7 @@ if (typeof importScripts === "function") {
   }
   function filterTranslationModels(providerId, models) {
     const include = {
-      openai: /^(gpt-|o1|o3|chatgpt-)/i,
+      openai: /^(gpt-|o[1-9]|chatgpt-)/i,  // o1/o3 に限らず o4-mini 等 o 系全世代を拾う (buildRequest/tuneReasoning の /^o[1-9]/ と一致)
       anthropic: /^claude-/i,
       gemini: /gemini-/i,
       xai: /^grok-/i,
@@ -737,10 +752,10 @@ if (typeof importScripts === "function") {
           case Actions.APPLY_SETTINGS: {
             // patch (変更分) を保管中の設定にマージしてから保存する。popup が開いたまま別経路で設定が
             // 変わった場合に、古い全体設定で上書きして巻き戻すのを防ぐ (msg.settings は後方互換で受理)。
-            const base = await getSettings();
+            // 連続して届く patch は applySettingsPatch がチェーンで直列化し lost update を防ぐ。
             const incoming = (msg.patch && typeof msg.patch === "object") ? msg.patch
               : ((msg.settings && typeof msg.settings === "object") ? msg.settings : {});
-            const saved = await saveSettings(Object.assign({}, base, incoming));
+            const saved = await applySettingsPatch(incoming);
             sendResponse({ ok: true, settings: saved });
             break;
           }

@@ -348,6 +348,12 @@
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
+        } else if (res && res.error === "incomplete") {
+          // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial は nodeValue が
+          // 訳文に書き換わっているので flush スナップショットのフィルタ (nodeValue === x.text) で
+          // 再キューされず実質完了扱いになる。未訳のまま残ったノードは translatedNodes に入れず
+          // retryable に残し、次の ingest/スクロールで再試行できるようにする (半端な partial を残したまま
+          // 全ノードを処理済みにして done と誤announce するのを防ぐ)。
         } else {
           // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける
           for (const b of batch) translatedNodes.add(b.node);

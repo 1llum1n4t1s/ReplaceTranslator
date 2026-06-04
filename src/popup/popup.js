@@ -277,12 +277,16 @@
       outEl.replaceChildren();
       if (text) { const s = document.createElement("span"); s.className = "txt"; s.textContent = text; outEl.appendChild(s); }
     }
-    function run() {
+    async function run() {
       const text = inEl.value.trim();
       if (!text) { qt.classList.remove("busy"); render(""); return; }
       if (text.length > MAX) { qt.classList.remove("busy"); render(msg("qtTooLong", "5000文字を超えています"), true); return; }
       const myReq = ++reqId;
       qt.classList.add("busy");
+      // 直前のカード操作 (provider 切替 / 言語変更) の save が storage に確定してから送る。
+      // background は保管値で翻訳するため、await せず Ctrl+Enter で debounce を飛ばすと古い設定で訳す恐れがある。
+      await pendingSave;
+      if (myReq !== reqId) return; // 待っている間に入力が進んで別リクエストになっていたら破棄
       // texts のみ送る。provider / 言語 / API キーは background が保管値を使う (キーは content/popup に出さない)。
       chrome.runtime.sendMessage({ action: Actions.TRANSLATE_BATCH, texts: [text] }, (res) => {
         if (myReq !== reqId) return; // 入力が進んで別リクエストになっていたら破棄
