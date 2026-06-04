@@ -1,0 +1,41 @@
+{
+  "_comment": "/vava スキル (~/.claude/skills/vava/) のスクリプトに渡すプロジェクト固有設定。スキル側スクリプトは CWD の本ファイルから設定を読み込む。",
+  "amo": {
+    "slug": "replace-translator",
+    "categories": ["other"],
+    "homepage": "https://github.com/1llum1n4t1s/ReplaceTranslator",
+    "supportUrl": "https://github.com/1llum1n4t1s/ReplaceTranslator/issues",
+    "defaultName": {
+      "ja": "リプレース翻訳",
+      "en-US": "Replace Translator"
+    },
+    "listingFiles": {
+      "ja": "webstore/store-listing.firefox.ja.txt",
+      "en-US": "webstore/store-listing.firefox.en.txt"
+    },
+    "privacyFiles": {
+      "ja": "docs/privacy-policy.md",
+      "en-US": "docs/privacy-policy.en.md"
+    }
+  },
+  "cws": {
+    "extensionIdFile": ".cws-id"
+  },
+  "driftKeywords": {
+    "_comment": "check-store-listing.mjs の drift 判定キーワード。未設定 (null) なら drift チェックを skip。",
+    "cws": {
+      "ja": ["リプレース翻訳"],
+      "en": ["Replace Translator"]
+    },
+    "amo": {
+      "summary": {
+        "ja": ["LLM", "置換翻訳"],
+        "en": ["LLM", "in-place"]
+      },
+      "description": {
+        "ja": ["OpenAI", "Anthropic", "Gemini", "API キー"],
+        "en": ["OpenAI", "Anthropic", "Gemini", "API key"]
+      }
+    }
+  }
+}

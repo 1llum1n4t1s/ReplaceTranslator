@@ -1,0 +1,408 @@
+"use strict";
+
+/**
+ * popup.js — ポップアップ UI (2タブ: 翻訳 / キー)
+ *
+ * - API設定タブ: サービス切替(状態) + キー入力 / 動的モデル一覧(新しい順10件 + コスト相対バー)
+ * - キータブ: API キー入力 + 内蔵検出 (バッチサイズは自動学習に委ねるため UI なし)
+ * モデルは GET_MODELS で動的取得し、選択中が消えていれば background がマイグレーションする。
+ */
+
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const state = { settings: null };
+  const msg = (k, f) => {
+    try { return chrome.i18n.getMessage(k) || f; } catch (_e) { return f; }
+  };
+
+  function applyI18n() {
+    document.querySelectorAll("[data-i18n]").forEach((el) => {
+      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n"));
+      if (m) el.textContent = m;
+    });
+    document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-title"));
+      if (m) el.title = m;
+    });
+  }
+
+  // ---- タブ ----
+  function moveInk(tabEl) {
+    const ink = document.querySelector(".tab-ink");
+    if (!ink || !tabEl) return;
+    ink.style.left = `${tabEl.offsetLeft}px`;
+    ink.style.width = `${tabEl.offsetWidth}px`;
+  }
+  function switchTab(name) {
+    document.querySelectorAll(".tab").forEach((t) => {
+      const active = t.dataset.tab === name;
+      t.classList.toggle("is-active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
+      if (active) moveInk(t);
+    });
+    document.querySelectorAll(".pane").forEach((p) => {
+      p.classList.toggle("is-active", p.dataset.pane === name);
+    });
+  }
+
+  function option(value, label) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    return o;
+  }
+  function fillLangSelect(sel, includeAuto) {
+    sel.replaceChildren();
+    (includeAuto ? Lang.LANGUAGES : Lang.targets()).forEach((l) => sel.appendChild(option(l.code, l.native)));
+  }
+
+  // ---- 翻訳タブ: サービス一覧 ----
+  // 各プロバイダの静的カード(選択ヘッダ + キー入力を合体)の状態を in-place 更新する。
+  // 入力欄は再生成しない (blur 自動保存中に値が消えないようにするため)。
+  function renderProviderList() {
+    const cur = state.settings.provider;
+    Providers.ids.forEach((id) => {
+      const card = document.querySelector(`.provider-card[data-provider="${id}"]`);
+      if (!card) return;
+      const p = Providers.get(id);
+      const requiresKey = p.requiresKey !== false;
+      const hasKey = Boolean(state.settings.apiKeys && state.settings.apiKeys[id]);
+      const selected = id === cur;
+      card.classList.toggle("selected", selected);
+      const head = card.querySelector(".pc-head");
+      if (head) head.setAttribute("aria-checked", selected ? "true" : "false");
+
+      const badge = card.querySelector("[data-badge]");
+      if (badge) {
+        if (!requiresKey) { badge.className = "pi-badge free"; badge.textContent = msg("badgeFree", "No key"); }
+        else if (hasKey) { badge.className = "pi-badge ok"; badge.textContent = "✓"; }
+        else { badge.className = "pi-badge warn"; badge.textContent = msg("badgeKeyRequired", "Key"); }
+      }
+    });
+  }
+
+  // ---- API設定タブ: 動的モデル一覧 (新しい順10件 + コスト相対バー) ----
+  function renderModelList(models, currentId) {
+    const list = $("model-list");
+    list.replaceChildren();
+    let maxCost = 0;
+    models.forEach((m) => { if (m.price && m.price.total > maxCost) maxCost = m.price.total; });
+    models.forEach((m) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "model-item" + (m.id === currentId ? " selected" : "");
+
+      const name = document.createElement("span");
+      name.className = "mi-name";
+      name.textContent = m.id;
+
+      const cost = document.createElement("span");
+      cost.className = "mi-cost";
+      if (m.price) {
+        const track = document.createElement("span");
+        track.className = "mi-track";
+        const bar = document.createElement("span");
+        bar.className = "mi-bar";
+        bar.style.width = `${maxCost > 0 ? Math.max(8, Math.round((m.price.total / maxCost) * 100)) : 8}%`;
+        track.appendChild(bar);
+        cost.appendChild(track);
+        item.title = `$${m.price.input} / $${m.price.output} per 1M tokens (in / out)`;
+      } else {
+        cost.textContent = msg("costUnknown", "—");
+        item.title = msg("costUnknownTitle", "Price unknown");
+      }
+
+      item.append(name, cost);
+      item.addEventListener("click", () => {
+        const models2 = Object.assign({}, state.settings.models, { [state.settings.provider]: m.id });
+        save({ models: models2 }, () => renderModelList(models, m.id));
+      });
+      list.appendChild(item);
+    });
+  }
+
+  function loadModels(force) {
+    const requested = state.settings.provider; // 応答到着までにプロバイダが変わる可能性があるため捕捉
+    const p = Providers.get(requested);
+    if (!p || p.batch === false) { // MyMemory 等はモデル概念なし
+      $("model-row").classList.add("hidden");
+      return;
+    }
+    // 取得 (API 通信) は force のときだけ走る = 「キー入力後」と「更新ボタン押下時」。
+    const btn = $("refresh-models");
+    if (force && btn) { btn.disabled = true; btn.classList.add("is-spinning"); }
+    chrome.runtime.sendMessage(
+      { action: Actions.GET_MODELS, provider: requested, force: Boolean(force) },
+      (res) => {
+        if (force && btn) { btn.disabled = false; btn.classList.remove("is-spinning"); }
+        if (requested !== state.settings.provider) return; // 別プロバイダに切替済み → 古い応答は捨てる(誤モデル保存を防ぐ)
+        const models = (res && res.ok && res.models) ? res.models : [];
+        $("model-row").classList.toggle("hidden", models.length === 0);
+        if (models.length) renderModelList(models, state.settings.models[requested]);
+      }
+    );
+  }
+
+  function updateKeyWarning() {
+    const p = Providers.get(state.settings.provider);
+    const requiresKey = !p || p.requiresKey !== false;
+    const hasKey = !requiresKey || Boolean(state.settings.apiKeys && state.settings.apiKeys[state.settings.provider]);
+    $("key-warning").classList.toggle("hidden", hasKey);
+    $("translate").disabled = !hasKey;
+  }
+
+  function selectProvider(id) {
+    if (id === state.settings.provider) return;
+    save({ provider: id }, () => {
+      renderProviderList();
+      updateKeyWarning();
+      loadModels(false);
+    });
+  }
+
+  // ---- キータブ ----
+  function setLinks() {
+    $("link-openai").href = Providers.openai.keyUrl;
+    $("link-anthropic").href = Providers.anthropic.keyUrl;
+    $("link-gemini").href = Providers.gemini.keyUrl;
+    $("link-xai").href = Providers.xai.keyUrl;
+  }
+  function reflectKeys() {
+    const s = state.settings;
+    $("key-openai").value = s.apiKeys.openai || "";
+    $("key-anthropic").value = s.apiKeys.anthropic || "";
+    $("key-gemini").value = s.apiKeys.gemini || "";
+    $("key-xai").value = s.apiKeys.xai || "";
+    $("key-mymemory").value = s.apiKeys.mymemory || "";
+  }
+  function collectKeys() {
+    return {
+      apiKeys: {
+        openai: $("key-openai").value.trim(),
+        anthropic: $("key-anthropic").value.trim(),
+        gemini: $("key-gemini").value.trim(),
+        xai: $("key-xai").value.trim(),
+        mymemory: $("key-mymemory").value.trim(),
+      },
+    };
+  }
+  // API キー欄はフォーカスが外れたら(blur)自動保存する。保存できたらその欄に緑チェックを一瞬出す。
+  function flashSaved(id) {
+    const kf = $(id).closest(".provider-card");
+    const mark = kf && kf.querySelector(".saved-mark");
+    if (!mark) return;
+    mark.classList.add("is-saved");                 // pop イン
+    window.clearTimeout(mark._t);
+    mark._t = window.setTimeout(() => mark.classList.remove("is-saved"), 1300); // 一瞬出して自動で消す
+  }
+  function bindKeyAutosave() {
+    const fields = [
+      ["key-openai", "openai"], ["key-anthropic", "anthropic"], ["key-gemini", "gemini"],
+      ["key-xai", "xai"], ["key-mymemory", "mymemory"],
+    ];
+    fields.forEach(([id, provider]) => {
+      $(id).addEventListener("blur", () => {
+        const val = $(id).value.trim();
+        const cur = (state.settings.apiKeys && state.settings.apiKeys[provider]) || "";
+        if (val === cur) return; // 変化なしは保存もチェック表示もしない
+        save(collectKeys(), () => {
+          flashSaved(id);
+          renderProviderList();
+          updateKeyWarning();
+          if (provider === state.settings.provider) loadModels(true); // 選択中サービスのキー変更時は最新モデルを取得
+        });
+      });
+    });
+  }
+
+  // ---- 共通 ----
+  function reflect() {
+    $("auto-translate").checked = Boolean(state.settings.autoTranslate);
+    $("image-translate").checked = Boolean(state.settings.imageTranslate);
+    renderProviderList();
+    $("source").value = state.settings.sourceLang;
+    $("target").value = state.settings.targetLang;
+    updateKeyWarning();
+    reflectKeys();
+    updateQtDir();
+    loadModels(false);
+  }
+
+  let pendingSave = Promise.resolve(); // 直近の save() の storage 確定を待つための promise
+  function save(patch, after) {
+    state.settings = Object.assign({}, state.settings, patch); // 楽観更新 (UI 即応)
+    // 全体ではなく patch (変更分) だけ送り、background が保管値にマージする (他経路の変更を巻き戻さない)
+    pendingSave = new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: Actions.APPLY_SETTINGS, patch }, (res) => {
+        if (res && res.settings) state.settings = res.settings;
+        if (after) after();
+        resolve();
+      });
+    });
+    return pendingSave;
+  }
+
+  async function getActiveTab() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tab;
+  }
+  const setStatus = (t) => { $("status").textContent = t || ""; };
+
+  // ---- クイック翻訳 (ちょっとだけ訳す。上部の翻訳元⇄翻訳先を流用し TRANSLATE_BATCH に 1 件投げる) ----
+  function langShort(coderef) {
+    if (coderef === "auto") return msg("qtAuto", "自動");
+    const l = Lang.get(coderef);
+    return l ? l.native : coderef;
+  }
+  function updateQtDir() {
+    const d = $("qt-dir");
+    if (d && state.settings) d.textContent = `${langShort(state.settings.sourceLang)} → ${langShort(state.settings.targetLang)}`;
+  }
+  function setupQuickTranslate() {
+    const qt = $("qt"), inEl = $("qt-in"), outEl = $("qt-out");
+    const countEl = $("qt-count"), copyBtn = $("qt-copy"), clearBtn = $("qt-clear");
+    const MAX = 5000;
+    let timer = null, reqId = 0;
+
+    inEl.placeholder = msg("qtPlaceholder", "ここに入力 / 貼り付け（このページは翻訳しません）");
+    outEl.setAttribute("data-ph", msg("qtOutPlaceholder", "訳文がここに出ます"));
+
+    function setCount() {
+      const n = inEl.value.length;
+      countEl.textContent = `${n.toLocaleString()} / 5,000`;
+      countEl.classList.toggle("over", n > MAX);
+    }
+    function render(text, isErr) {
+      outEl.classList.toggle("err", Boolean(isErr));
+      outEl.replaceChildren();
+      if (text) { const s = document.createElement("span"); s.className = "txt"; s.textContent = text; outEl.appendChild(s); }
+    }
+    async function run() {
+      const text = inEl.value.trim();
+      if (!text) { qt.classList.remove("busy"); render(""); return; }
+      if (text.length > MAX) { qt.classList.remove("busy"); render(msg("qtTooLong", "5000文字を超えています"), true); return; }
+      const myReq = ++reqId;
+      qt.classList.add("busy");
+      // 直前のカード操作 (provider 切替 / 言語変更) の save が storage に確定してから送る。
+      // background は保管値で翻訳するため、await せず Ctrl+Enter で debounce を飛ばすと古い設定で訳す恐れがある。
+      await pendingSave;
+      if (myReq !== reqId) return; // 待っている間に入力が進んで別リクエストになっていたら破棄
+      // texts のみ送る。provider / 言語 / API キーは background が保管値を使う (キーは content/popup に出さない)。
+      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_BATCH, texts: [text], quick: true }, (res) => {
+        if (myReq !== reqId) return; // 入力が進んで別リクエストになっていたら破棄
+        qt.classList.remove("busy");
+        if (chrome.runtime.lastError) { render(msg("qtError", "翻訳できませんでした"), true); return; }
+        if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) render(res.translations[0]);
+        else if (res && res.error === "no_api_key") render(msg("qtNoKey", "このサービスの API キーが未設定です"), true);
+        else if (res && res.error === "too_long") render(msg("qtLimit", "このサービスには長すぎます（短くするか LLM プロバイダを選んでください）"), true);
+        else render(msg("qtError", "翻訳できませんでした"), true);
+      });
+    }
+    function schedule() {
+      setCount();
+      window.clearTimeout(timer);
+      if (!inEl.value.trim()) { qt.classList.remove("busy"); reqId++; render(""); return; }
+      timer = window.setTimeout(run, 550); // debounce
+    }
+
+    inEl.addEventListener("input", schedule);
+    inEl.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); window.clearTimeout(timer); run(); }
+    });
+    clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; setCount(); render(""); inEl.focus(); });
+    copyBtn.addEventListener("click", () => {
+      const t = outEl.textContent || "";
+      if (!t || outEl.classList.contains("err")) return;
+      try { navigator.clipboard.writeText(t); } catch (_e) { /* noop */ }
+      const orig = msg("qtCopy", "コピー");
+      copyBtn.classList.add("done");
+      copyBtn.textContent = msg("qtCopied", "✓ コピー");
+      window.clearTimeout(copyBtn._t);
+      copyBtn._t = window.setTimeout(() => { copyBtn.classList.remove("done"); copyBtn.textContent = orig; }, 1300);
+    });
+    setCount();
+  }
+
+  function init() {
+    applyI18n();
+    setLinks();
+    fillLangSelect($("source"), true);
+    fillLangSelect($("target"), false);
+
+    chrome.runtime.sendMessage({ action: Actions.GET_STATE }, (res) => {
+      if (res && res.ok) {
+        state.settings = res.settings;
+        reflect();
+      }
+    });
+
+    document.querySelectorAll(".tab").forEach((t) => {
+      t.addEventListener("click", () => switchTab(t.dataset.tab));
+    });
+    moveInk(document.querySelector(".tab.is-active"));
+
+    $("source").addEventListener("change", (e) => { save({ sourceLang: e.target.value }); updateQtDir(); });
+    $("target").addEventListener("change", (e) => { save({ targetLang: e.target.value }); updateQtDir(); });
+
+    $("translate").addEventListener("click", async () => {
+      const tab = await getActiveTab();
+      if (!tab) return;
+      await pendingSave; // 直前の言語/provider 変更が storage に確定してから翻訳する (古い設定での初回実行を防ぐ)
+      setStatus(msg("statusStarting", "Starting…"));
+      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_PAGE, tabId: tab.id }, (res) => {
+        if (!res || !res.ok) setStatus(msg("statusError", "Error"));
+      });
+    });
+    $("restore").addEventListener("click", async () => {
+      const tab = await getActiveTab();
+      if (!tab) return;
+      chrome.runtime.sendMessage({ action: Actions.RESTORE_PAGE, tabId: tab.id });
+      setStatus("");
+    });
+    $("warn-keys").addEventListener("click", () => switchTab("api"));
+    // プロバイダカードのヘッダクリックで選択 (キー入力欄とは独立。入力は再生成しない)
+    document.querySelectorAll(".pc-head").forEach((h) => {
+      h.addEventListener("click", () => selectProvider(h.dataset.provider));
+    });
+
+    // 全ページ自動翻訳トグル: 永続フラグ(autoTranslate)を保存してから現在ページを翻訳/復元する。
+    // ワンショットの「翻訳」ボタン/FAB/右クリックとは独立 — このトグルだけが autoTranslate を変える。
+    $("auto-translate").addEventListener("change", async (e) => {
+      const on = e.target.checked;
+      await save({ autoTranslate: on }); // 保存の確定を待ってから翻訳/復元 (background が storage を再読みするため)
+      const tab = await getActiveTab();
+      if (!tab) return;
+      setStatus(on ? msg("statusStarting", "Starting…") : "");
+      chrome.runtime.sendMessage({ action: on ? Actions.TRANSLATE_PAGE : Actions.RESTORE_PAGE, tabId: tab.id });
+    });
+
+    // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
+    $("image-translate").addEventListener("change", (e) => save({ imageTranslate: e.target.checked }));
+
+    // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
+    $("refresh-models").addEventListener("click", () => loadModels(true));
+
+    setupQuickTranslate();
+    bindKeyAutosave();
+    document.querySelectorAll(".toggle").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const inp = document.getElementById(btn.getAttribute("data-target"));
+        const showing = inp.type === "text";
+        inp.type = showing ? "password" : "text";
+        btn.textContent = msg(showing ? "optShow" : "optHide", showing ? "表示" : "隠す");
+      });
+    });
+
+    chrome.runtime.onMessage.addListener((m, sender) => {
+      if (!m || m.action !== Actions.TRANSLATION_PROGRESS) return;
+      if (sender && sender.tab) return; // content フレーム直送(生)は無視。background が集約した進捗のみ受ける
+      // auto-translate トグルは永続 autoTranslate 設定を表す。ワンショット翻訳の進捗で勝手に切り替えない。
+      if (m.state === "progress") setStatus("");          // 進捗は FAB のシマーで示すので popup は無表示
+      else if (m.state === "done") setStatus(msg("statusDone", "Done"));
+      else if (m.state === "error") setStatus(msg("statusError", "Error"));
+      else if (m.state === "restored") setStatus("");
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", init);
+})();

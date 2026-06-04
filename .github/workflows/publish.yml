@@ -1,0 +1,307 @@
+name: Publish to Chrome Web Store + Firefox AMO
+
+on:
+  push:
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ZIP パッケージ作成
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.0
+        with:
+          persist-credentials: false
+
+      - name: バージョンを取得
+        id: version
+        run: |
+          chrome_version=$(jq -r '.version' manifest.json)
+          firefox_version=$(jq -r '.version' manifest.firefox.json)
+          if [ -z "$chrome_version" ] || [ "$chrome_version" = "null" ]; then
+            echo "::error::manifest.json の version 取得に失敗しました"
+            exit 1
+          fi
+          # Chrome/Firefox の manifest version がズレているとストア間で別バージョンを公開してしまうため一致を必須にする
+          if [ "$chrome_version" != "$firefox_version" ]; then
+            echo "::error::manifest.json ($chrome_version) と manifest.firefox.json ($firefox_version) の version が一致しません"
+            exit 1
+          fi
+          echo "version=$chrome_version" >> "$GITHUB_OUTPUT"
+          echo "📦 公開対象バージョン: $chrome_version"
+
+      - name: ブランチ名とバージョンの整合性を確認
+        env:
+          BRANCH_VERSION: ${{ github.ref_name }}
+          MANIFEST_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          expected="release/${MANIFEST_VERSION}"
+          if [ "$BRANCH_VERSION" != "$expected" ]; then
+            echo "::error::ブランチ名 ($BRANCH_VERSION) と manifest.json のバージョン ($MANIFEST_VERSION) が一致しません。期待値: $expected"
+            exit 1
+          fi
+          echo "✅ ブランチ名と manifest バージョン一致: $expected"
+
+      - name: Node セットアップ
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: '20'
+
+      - name: 依存インストール
+        run: npm ci
+
+      - name: テスト実行
+        run: npm test
+
+      - name: アイコン生成
+        run: node scripts/generate-icons.js
+
+      - name: zip パッケージを作成
+        run: |
+          # _locales/ は manifest.json の default_locale 参照先。含めないと CWS の Submit for review で
+          # PKG_DEFAULT_LOCALE_MISSING エラーになる。
+          zip -r replace-translator.zip manifest.json icons src _locales \
+            -x "*.DS_Store" "*.swp" "*~"
+          ls -lh replace-translator.zip
+
+      - name: ZIP artifact を保存
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replace-translator-zip
+          path: replace-translator.zip
+          if-no-files-found: error
+
+      - name: Firefox 用ソースディレクトリを構築
+        run: |
+          mkdir -p firefox-build
+          cp manifest.firefox.json firefox-build/manifest.json
+          cp -r icons firefox-build/
+          cp -r src firefox-build/
+          cp -r _locales firefox-build/
+          find firefox-build \( -name "*.DS_Store" -o -name "*.swp" -o -name "*~" \) -delete
+          echo "📂 firefox-build 内容:"
+          ls -la firefox-build/
+
+      - name: Firefox source artifact を保存
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replace-translator-firefox-source
+          path: firefox-build/
+          if-no-files-found: error
+
+  publish:
+    name: Chrome Web Store にアップロード + Submit for review
+    runs-on: ubuntu-latest
+    needs: package
+    environment: chrome-web-store
+    steps:
+      - name: ZIP artifact を取得
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: replace-translator-zip
+          path: .
+
+      - name: バージョン pre-flight check (CWS draft の crxVersion と一致なら skip)
+        id: cws-preflight
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          MANIFEST_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
+          token_response=$(curl -fsS \
+            -X POST "https://oauth2.googleapis.com/token" \
+            --data-urlencode "client_id=${CWS_CLIENT_ID}" \
+            --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
+            --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
+            --data-urlencode "grant_type=refresh_token")
+          access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
+          if [ -z "${access_token:-}" ]; then
+            echo "::warning::CWS pre-flight: OAuth token 取得失敗 → publish step に判定を委ねる"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::add-mask::${token_response}"
+          echo "::add-mask::${access_token}"
+          # DRAFT projection の uploadState は「直近アップロードの状態」であって審査提出済みかは表さない。
+          # uploadState != FAILURE だけで skip すると、アップロード成功後に publish が失敗/タイムアウトした版を
+          # 次回も skip してしまい、未提出の下書きのまま放置される。
+          # → PUBLISHED(公開中) バージョンが manifest と一致するときだけ skip。それ以外は publish step に委ね、
+          #    publish step 側で「審査中で更新不可」を検出して安全に終了する。
+          pub_response=$(curl -fsS \
+            -H "Authorization: Bearer ${access_token}" \
+            -H "x-goog-api-version: 2" \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}?projection=PUBLISHED") || pub_response=""
+          pub_version=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("crxVersion",""))' 2>/dev/null <<< "$pub_response" || echo "")
+          echo "📊 CWS published=${pub_version:-(unknown)} / manifest: ${MANIFEST_VERSION}"
+          if [ -n "$pub_version" ] && [ "$pub_version" = "$MANIFEST_VERSION" ]; then
+            echo "::notice::CWS は既に v${MANIFEST_VERSION} を公開中。CWS publish step を skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Chrome Web Store にアップロード + Publish API で Submit for review
+        if: ${{ steps.cws-preflight.outputs.skip != 'true' }}
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
+          token_response=$(curl -fsS \
+            -X POST "https://oauth2.googleapis.com/token" \
+            --data-urlencode "client_id=${CWS_CLIENT_ID}" \
+            --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
+            --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
+            --data-urlencode "grant_type=refresh_token")
+          access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
+          if [ -z "${access_token:-}" ]; then
+            echo "::error::access_token のパースに失敗しました"
+            exit 1
+          fi
+          echo "::add-mask::${token_response}"
+          echo "::add-mask::${access_token}"
+
+          echo "📤 Step 1/2: Chrome Web Store に ZIP をアップロード中..."
+          # -f は使わず HTTP コードと本文を捕捉する。審査中(更新不可)なら「既に提出済み」とみなして正常終了し、
+          # 公開中バージョン未一致でも審査待ちのケースで CI を赤にしない。
+          upload_http=$(curl -sS -o /tmp/cws_upload.json -w '%{http_code}' \
+            -X PUT \
+            -H "Authorization: Bearer ${access_token}" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Type: application/zip" \
+            --data-binary @replace-translator.zip \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}" || echo "000")
+          upload_response=$(cat /tmp/cws_upload.json 2>/dev/null || echo "")
+          upload_state=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("uploadState","UNKNOWN"))' 2>/dev/null <<< "$upload_response" || echo "UNKNOWN")
+          echo "📊 uploadState: ${upload_state} (HTTP ${upload_http})"
+          if [ "$upload_state" != "SUCCESS" ]; then
+            if printf '%s' "$upload_response" | grep -qiE "pending review|in review|not.?updatable|being reviewed|review in progress"; then
+              echo "::notice::アイテムは審査中で更新不可。既に提出済みとみなして正常終了します。"
+              exit 0
+            fi
+            echo "::error::アップロードが SUCCESS ではないため publish を中止します (state=${upload_state}, http=${upload_http})"
+            echo "Response: $upload_response"
+            exit 1
+          fi
+
+          echo "📨 Step 2/2: Publish API で Submit for review..."
+          publish_response=$(curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer ${access_token}" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0" \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}/publish?publishTarget=default")
+          publish_status=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(d.get("status",[])))' 2>/dev/null <<< "$publish_response")
+          echo "📊 Publish status: ${publish_status}"
+          case "$publish_status" in
+            *OK*|*ITEM_PENDING_REVIEW*)
+              echo "🎉 Submit for review 完了！"
+              ;;
+            *)
+              echo "::error::予期しない publish status: ${publish_status}"
+              echo "Response: $publish_response"
+              exit 1
+              ;;
+          esac
+
+  publish-firefox:
+    name: Firefox AMO に submission
+    runs-on: ubuntu-latest
+    needs: package
+    if: ${{ success() || failure() }}
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.0
+        with:
+          persist-credentials: false
+
+      - name: Firefox source artifact を取得
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: replace-translator-firefox-source
+          path: firefox-build/
+
+      - name: Node セットアップ
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
+        with:
+          node-version: '20'
+
+      - name: web-ext 依存インストール
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: バージョン pre-flight check (AMO に既存 version があれば skip)
+        id: amo-preflight
+        env:
+          MANIFEST_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
+          AMO_SLUG=$(jq -r '.amo.slug // empty' vava.config.json 2>/dev/null || echo "")
+          if [ -z "${AMO_SLUG:-}" ]; then
+            echo "::warning::vava.config.json の amo.slug が取得できないため AMO pre-flight を skip"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          versions_response=$(curl -fsS \
+            -H "Accept: application/json" \
+            -H "User-Agent: Mozilla/5.0" \
+            "https://addons.mozilla.org/api/v5/addons/addon/${AMO_SLUG}/versions/") || versions_response=""
+          if [ -z "$versions_response" ]; then
+            echo "::warning::AMO pre-flight: versions list 取得失敗 (初回登録 / 一時障害) → publish step に判定を委ねる"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exists=$(MANIFEST_VERSION="$MANIFEST_VERSION" python3 -c 'import json,sys,os; target=os.environ["MANIFEST_VERSION"]; data=json.load(sys.stdin); print("1" if any(v.get("version")==target for v in data.get("results",[])) else "0")' 2>/dev/null <<< "$versions_response" || echo "")
+          echo "📊 AMO versions check: target=${MANIFEST_VERSION} / exists=${exists:-(parse失敗)}"
+          if [ "$exists" = "1" ]; then
+            echo "::notice::AMO に既に v${MANIFEST_VERSION} が存在するため AMO publish step を skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Firefox AMO に submit (web-ext sign --channel=listed)
+        if: ${{ steps.amo-preflight.outputs.skip != 'true' }}
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "::error::AMO_JWT_ISSUER / AMO_JWT_SECRET の GitHub Secrets が未設定です"
+            exit 1
+          fi
+          set +e
+          npx --no web-ext sign \
+            --source-dir=firefox-build \
+            --artifacts-dir=web-ext-artifacts \
+            --channel=listed \
+            --amo-metadata=.amo-metadata.json 2>&1 | tee /tmp/web-ext.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if grep -q "Approval: timeout exceeded" /tmp/web-ext.log; then
+              echo "::warning::web-ext sign が timeout exceeded で exit 1 を返したが submission は受理済み。CI green 化のため exit 0 扱いに変換します"
+            elif grep -qiE "version (already exists|conflict)" /tmp/web-ext.log; then
+              echo "::warning::AMO に既に同 version が存在するため version conflict で fail。CI green 化のため exit 0 扱いに変換します"
+            else
+              echo "::error::web-ext sign が想定外の理由で失敗しました (rc=$rc)"
+              exit "$rc"
+            fi
+          fi
+          echo "🦊 Firefox AMO への submission 送信完了 (レビュー待ち)"

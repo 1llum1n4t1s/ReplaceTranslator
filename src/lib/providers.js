@@ -1,0 +1,449 @@
+"use strict";
+
+/**
+ * providers.js — プロバイダ抽象 (ProviderApi)
+ *
+ * OpenAI / Anthropic / Google Gemini の差を吸収する純粋関数群:
+ *   - buildSystemPrompt(sourceLang, targetLang)  → 混在翻訳を担保する system 指示文
+ *   - buildRequest(providerId, opts)             → { url, method, headers, body } (body はオブジェクト)
+ *   - parseResponse(providerId, json)            → string[] (翻訳結果。順序保持)
+ *   - parseUsage(providerId, json)               → { input, output } (トークン数)
+ *
+ * 実際の fetch は background(SW) が行う (API キーをページ文脈に晒さないため)。
+ * これらはすべて副作用なしの純粋関数で、test/providers.test.js が直接検証する。
+ * 依存: globalThis.Providers (actions.js) / globalThis.Lang (lang.js)。
+ */
+
+(function () {
+  if (globalThis.__rtProvidersLoaded) return;
+  globalThis.__rtProvidersLoaded = true;
+
+  const MAX_OUTPUT_TOKENS = 8192;
+  // 画像翻訳は出力(OCR+訳+bbox JSON)が大きくなりがちで生成も遅いため、上限を低めに抑える(速度/コスト優先)。
+  // 文字量の多い画像(漫画・図表)では足りずに切れることがあるので、その場合はここを上げる。
+  const IMAGE_MAX_OUTPUT_TOKENS = 2048;
+
+  /**
+   * 混在翻訳を担保する system 指示文を組み立てる。
+   * 「すでに target 言語の要素はそのまま、それ以外のみ翻訳」を明示し、要件 A を実現する。
+   */
+  function buildSystemPrompt(sourceLang, targetLang) {
+    const Lang = globalThis.Lang;
+    const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
+    const srcName = Lang ? Lang.promptName(sourceLang) : null; // auto なら null
+    const lines = [
+      `You are a professional translator. Translate text into ${targetName}.`,
+      srcName ? `The source language is ${srcName}.` : "",
+      `You receive a JSON array of strings.`,
+      `Return ONLY a JSON object of the form {"translations":[...]} whose array has the SAME length and SAME order as the input array.`,
+      `Rules:`,
+      `1. If an element is already written in ${targetName}, return it unchanged.`,
+      `2. Translate only the elements that are NOT in ${targetName}${srcName ? ` (i.e. ${srcName} text)` : ""}.`,
+      `3. Preserve numbers, URLs, emoji, inline code and symbols.`,
+      `4. Do not add explanations, notes, or any extra fields.`,
+      `5. Keep each translation natural and concise.`,
+    ];
+    return lines.filter(Boolean).join("\n");
+  }
+
+  /**
+   * OpenAI 系 chat/completions(OpenAI / xAI) の body に推論/温度パラメータを付与する。
+   * 翻訳は推論不要なので、推論を「各モデルが許す最小」に明示指定して高速化する(実測: none で ~1.8s / low で ~6.5s)。
+   * reasoning モデルは temperature が default(1)固定で 0 を送ると 400 になるため temperature は送らない。
+   * モデル別の最小値(実測で確認):
+   * - OpenAI gpt-5.1 以降(5.1/5.2/5.4/5.5): reasoning_effort:"none"(=推論OFF・最速)。
+   * - OpenAI gpt-5.0 系(gpt-5 / gpt-5-mini / gpt-5-nano): "none" 非対応 → "minimal"。
+   * - OpenAI o 系(o1/o3/o4): "none"/"minimal" 非対応 → "low"。
+   * - xAI(Grok) の reasoning モデル: "low"(none/minimal 非対応)。
+   * - 旧 OpenAI(gpt-4 系)等・xAI 非 reasoning: temperature:0。
+   */
+  function tuneReasoning(providerId, model, body) {
+    const m = String(model || "");
+    if (providerId === "openai" && /^(gpt-5|o[1-9])/i.test(m)) {
+      let effort = "minimal";                      // gpt-5.0 系 (none 非対応)
+      if (/^gpt-5\.\d/i.test(m)) effort = "none";  // gpt-5.1 以降 (推論OFF)
+      else if (/^o[1-9]/i.test(m)) effort = "low"; // o 系 (none/minimal 非対応)
+      body.reasoning_effort = effort;
+      // gpt-5 系は verbosity:"low" で出力を簡潔化 (翻訳は前置き不要・出力トークン削減で生成短縮)。o 系には付けない。
+      if (/^gpt-5/i.test(m)) body.verbosity = "low";
+      return body;
+    }
+    if (providerId === "xai" && /reasoning/i.test(m) && !/non-reasoning/i.test(m)) {
+      body.reasoning_effort = "low";
+      return body;
+    }
+    body.temperature = 0;
+    return body;
+  }
+
+  // Anthropic は reasoning_effort を持たず既定で拡張思考オフ。思考対応(3.7 / 4.x)には
+  // thinking:{type:"disabled"} を明示して「思考オフ(=最小)」を確定させる(実測 200・既定と同速)。
+  function anthropicThinking(model) {
+    return /claude-(3-7|(opus|sonnet|haiku)-[4-9])/i.test(String(model || "")) ? { type: "disabled" } : null;
+  }
+
+  // Gemini 2.5+ は既定で動的に思考して遅くなりうる。翻訳は思考不要なので最小化する。
+  // flash/lite は 0(無効化)、pro 等は最小 128。思考非対応世代(2.0/1.5)には付けない(400回避)。
+  function geminiThinkingConfig(model) {
+    const m = String(model || "");
+    if (!/gemini-(2\.5|[3-9])/i.test(m)) return null;
+    return { thinkingBudget: /flash|lite/i.test(m) ? 0 : 128 };
+  }
+
+  /**
+   * fetch の素材を組み立てる (純粋関数)。body はオブジェクトで返し、background が JSON.stringify する。
+   * opts = { texts:string[], sourceLang, targetLang, model, apiKey }
+   */
+  // MyMemory は BCP47 の script サブタグ (zh-Hans / zh-Hant) を解釈できず Simplified に倒れるため、
+  // ロケールベースのコード (zh-CN / zh-TW) に正規化してから langpair に渡す。
+  const MYMEMORY_LANG_MAP = { "zh-Hans": "zh-CN", "zh-Hant": "zh-TW" };
+  function mymemoryLang(code) {
+    return MYMEMORY_LANG_MAP[code] || code;
+  }
+
+  function buildRequest(providerId, opts) {
+    const provider = globalThis.Providers && globalThis.Providers.get(providerId);
+    if (!provider) throw new Error("unknown provider: " + providerId);
+    const o = opts || {};
+    const model = o.model || provider.defaultModel;
+    const apiKey = o.apiKey || "";
+
+    // MyMemory は GET・1テキスト/リクエストの NMT (LLM プロンプト不要)
+    if (providerId === "mymemory") {
+      const text = (o.texts && o.texts[0]) || "";
+      const src = mymemoryLang((o.sourceLang && o.sourceLang !== "auto") ? o.sourceLang : "Autodetect");
+      const tgt = mymemoryLang(o.targetLang || "en");
+      const params = new URLSearchParams({ q: text, langpair: `${src}|${tgt}` });
+      if (apiKey) params.set("de", apiKey); // de = 連絡先メール (無料枠拡大)
+      return { url: `${provider.endpoint}?${params.toString()}`, method: "GET", headers: {}, body: undefined };
+    }
+
+    const system = buildSystemPrompt(o.sourceLang, o.targetLang);
+    const userContent = JSON.stringify(o.texts || []);
+
+    if (providerId === "openai" || providerId === "xai") {
+      // xAI(Grok) は OpenAI 互換なので chat/completions 形式を共有する。
+      // 出力上限を付け、prompt injection / format drift で verbose 化したときの遅延・課金枠浪費を防ぐ。
+      // OpenAI の gpt-5/o 系は max_tokens 非対応のため max_completion_tokens を使う。
+      const cap = providerId === "openai"
+        ? { max_completion_tokens: MAX_OUTPUT_TOKENS }
+        : { max_tokens: MAX_OUTPUT_TOKENS };
+      const body = tuneReasoning(providerId, model, Object.assign({
+        model,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userContent },
+        ],
+      }, cap));
+      // ストリーミング (SSE) 要求。最後の chunk に usage を含めてもらう。
+      if (o.stream) { body.stream = true; body.stream_options = { include_usage: true }; }
+      return {
+        url: provider.endpoint,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body,
+      };
+    }
+
+    if (providerId === "anthropic") {
+      const body = {
+        model,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        temperature: 0,
+        system,
+        messages: [{ role: "user", content: userContent }],
+      };
+      const think = anthropicThinking(model);
+      if (think) body.thinking = think; // 思考対応モデルは明示的に思考オフ(=最小)
+      return {
+        url: provider.endpoint,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          // ブラウザ(拡張)からの直接呼び出しを許可するヘッダ
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body,
+      };
+    }
+
+    if (providerId === "gemini") {
+      // endpoint の {model} を実モデル名に置換。キーは URL ではなく x-goog-api-key ヘッダで渡す
+      // (URL に乗せるとログ/履歴に残りやすいため)。
+      const url = provider.endpoint.replace("{model}", encodeURIComponent(model));
+      return {
+        url,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: "user", parts: [{ text: userContent }] }],
+          generationConfig: Object.assign({
+            temperature: 0,
+            responseMimeType: "application/json",
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
+          }, geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
+        },
+      };
+    }
+
+    throw new Error("unsupported provider: " + providerId);
+  }
+
+  // 各社レスポンスから LLM の生成テキスト (本文) を取り出す
+  function extractContent(providerId, json) {
+    if (!json || typeof json !== "object") return "";
+    if (providerId === "openai" || providerId === "xai") {
+      const c = json.choices && json.choices[0] && json.choices[0].message;
+      return (c && typeof c.content === "string") ? c.content : "";
+    }
+    if (providerId === "anthropic") {
+      const parts = json.content;
+      if (Array.isArray(parts)) return parts.map((p) => (p && p.text) || "").join("");
+      return "";
+    }
+    if (providerId === "gemini") {
+      const cand = json.candidates && json.candidates[0];
+      const parts = cand && cand.content && cand.content.parts;
+      if (Array.isArray(parts)) return parts.map((p) => (p && p.text) || "").join("");
+      return "";
+    }
+    return "";
+  }
+
+  // LLM 応答本文 (JSON 文字列) を緩くパースする。コードフェンス除去 → JSON.parse → 失敗時は
+  // 最初の { 〜 最後の } を救出して再パース。パース不能は null。(extractTranslations と parseImageBlocks で共用)
+  function parseJsonLoose(content) {
+    if (typeof content !== "string" || !content.trim()) return null;
+    let text = content.trim();
+    const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fence) text = fence[1].trim();
+    try { return JSON.parse(text); } catch (_e) { /* フォールバックへ */ }
+    const s = text.indexOf("{");
+    const e = text.lastIndexOf("}");
+    if (s >= 0 && e > s) { try { return JSON.parse(text.slice(s, e + 1)); } catch (_e2) { return null; } }
+    return null;
+  }
+
+  // 本文 (JSON 文字列) から translations 配列を取り出す。コードフェンスや前後ノイズに耐性を持たせる。
+  function extractTranslations(content) {
+    const obj = parseJsonLoose(content);
+    const arr = (obj && Array.isArray(obj.translations)) ? obj.translations : (Array.isArray(obj) ? obj : null);
+    if (!arr) return [];
+    // 全要素が文字列のときだけ採用する。オブジェクト等が混じるスキーマ崩れ (例 [{translation:"..."}]) を
+    // String 化して "[object Object]" を貼り付けてしまうのを避け、パース失敗 ([]) 扱いでリトライに回す。
+    return arr.every((x) => typeof x === "string") ? arr : [];
+  }
+
+  function parseResponse(providerId, json) {
+    if (providerId === "mymemory") {
+      const t = json && json.responseData && json.responseData.translatedText;
+      return typeof t === "string" ? [t] : [];
+    }
+    return extractTranslations(extractContent(providerId, json));
+  }
+
+  // ストリーミング SSE の 1 data オブジェクトから増分テキストを取り出す (OpenAI/xAI chat-completions の delta.content)。
+  // 増分が無い chunk (usage のみ等) は空文字。stream 対応は openai/xai のみ。
+  function streamDelta(providerId, obj) {
+    if (providerId === "openai" || providerId === "xai") {
+      const d = obj && obj.choices && obj.choices[0] && obj.choices[0].delta;
+      return (d && typeof d.content === "string") ? d.content : "";
+    }
+    return "";
+  }
+
+  // usage を { input, output } に正規化 (3社の形状差を吸収)
+  function parseUsage(providerId, json) {
+    let input = 0;
+    let output = 0;
+    if (json && typeof json === "object") {
+      if (providerId === "openai" || providerId === "xai") {
+        const u = json.usage || {};
+        input = u.prompt_tokens || 0;
+        output = u.completion_tokens || 0;
+      } else if (providerId === "anthropic") {
+        const u = json.usage || {};
+        input = u.input_tokens || 0;
+        output = u.output_tokens || 0;
+      } else if (providerId === "gemini") {
+        const u = json.usageMetadata || {};
+        input = u.promptTokenCount || 0;
+        output = u.candidatesTokenCount || 0;
+      }
+    }
+    return { input: Number(input) || 0, output: Number(output) || 0 };
+  }
+
+  // ---- モデル一覧の動的取得 (各社 models API。価格は含まれないので別途 ModelPricing で付与) ----
+  function buildModelsRequest(providerId, apiKey) {
+    const provider = globalThis.Providers && globalThis.Providers.get(providerId);
+    if (!provider) return null;
+    const key = apiKey || "";
+    if (providerId === "openai" || providerId === "xai") {
+      const base = provider.endpoint.replace(/\/chat\/completions$/, "");
+      return { url: `${base}/models`, headers: { Authorization: `Bearer ${key}` } };
+    }
+    if (providerId === "anthropic") {
+      return {
+        url: "https://api.anthropic.com/v1/models?limit=100",
+        headers: {
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+      };
+    }
+    if (providerId === "gemini") {
+      return { url: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", headers: { "x-goog-api-key": key } };
+    }
+    return null; // mymemory 等はモデル一覧を持たない
+  }
+
+  // レスポンスを [{ id, created }] に正規化 (created は新しい順ソート用)。
+  // Gemini は created を持たないため 0 + version で、呼び出し側がバージョン降順に並べる。
+  function parseModels(providerId, json) {
+    if (!json || typeof json !== "object") return [];
+    if (providerId === "openai" || providerId === "xai") {
+      return (json.data || []).map((m) => ({ id: m.id, created: Number(m.created) || 0 }));
+    }
+    if (providerId === "anthropic") {
+      return (json.data || []).map((m) => ({ id: m.id, created: Date.parse(m.created_at) || 0 }));
+    }
+    if (providerId === "gemini") {
+      return (json.models || [])
+        .filter((m) => {
+          const methods = m.supportedGenerationMethods || m.supported_actions;
+          return !methods || methods.indexOf("generateContent") >= 0;
+        })
+        .map((m) => ({ id: String(m.name || "").replace(/^models\//, ""), created: 0, version: m.version || "" }));
+    }
+    return [];
+  }
+
+  // ---- 画像内テキストの翻訳 (LLM vision: OCR + 翻訳 + 正規化 bbox) ----
+  function clamp01(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+  }
+
+  function buildImagePrompt(sourceLang, targetLang) {
+    const Lang = globalThis.Lang;
+    const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
+    const srcName = Lang ? Lang.promptName(sourceLang) : null;
+    return [
+      `You are an OCR translator. Detect every text block in the image.`,
+      srcName ? `The source language is ${srcName}.` : "",
+      `Return ONLY a JSON object {"blocks":[{"original":"...","translation":"...","box":{"x":0,"y":0,"w":0,"h":0}}]}`,
+      `where box is normalized to 0..1 relative to the image (x,y = top-left of the block).`,
+      `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
+      `If the image has no text, return {"blocks":[]}. No explanations.`,
+    ].filter(Boolean).join("\n");
+  }
+
+  // opts: { imageBase64, mimeType, sourceLang, targetLang, model, apiKey }
+  function buildImageRequest(providerId, opts) {
+    const provider = globalThis.Providers && globalThis.Providers.get(providerId);
+    if (!provider || provider.batch === false) return null; // NMT(MyMemory) は vision 不可
+    const o = opts || {};
+    const model = o.model || provider.defaultModel;
+    const apiKey = o.apiKey || "";
+    const prompt = buildImagePrompt(o.sourceLang, o.targetLang);
+    const mime = o.mimeType || "image/png";
+    const b64 = o.imageBase64 || "";
+
+    if (providerId === "openai" || providerId === "xai") {
+      // 出力上限を付け、verbose 化による課金枠の浪費を防ぐ (Anthropic/Gemini と同じ IMAGE_MAX_OUTPUT_TOKENS)。
+      // OpenAI の gpt-5/o 系は max_tokens 非対応なので max_completion_tokens を使う。xAI(Grok) は max_tokens。
+      const cap = providerId === "openai"
+        ? { max_completion_tokens: IMAGE_MAX_OUTPUT_TOKENS }
+        : { max_tokens: IMAGE_MAX_OUTPUT_TOKENS };
+      const body = tuneReasoning(providerId, model, Object.assign({
+        model, response_format: { type: "json_object" },
+        messages: [{ role: "user", content: [
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
+        ] }],
+      }, cap));
+      return {
+        url: provider.endpoint, method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body,
+      };
+    }
+    if (providerId === "anthropic") {
+      const body = {
+        model, max_tokens: IMAGE_MAX_OUTPUT_TOKENS, temperature: 0,
+        messages: [{ role: "user", content: [
+          { type: "text", text: prompt },
+          { type: "image", source: { type: "base64", media_type: mime, data: b64 } },
+        ] }],
+      };
+      const think = anthropicThinking(model);
+      if (think) body.thinking = think;
+      return {
+        url: provider.endpoint, method: "POST",
+        headers: {
+          "Content-Type": "application/json", "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body,
+      };
+    }
+    if (providerId === "gemini") {
+      const url = provider.endpoint.replace("{model}", encodeURIComponent(model));
+      return {
+        url, method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: {
+          contents: [{ role: "user", parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mime, data: b64 } },
+          ] }],
+          generationConfig: Object.assign({ temperature: 0, responseMimeType: "application/json", maxOutputTokens: IMAGE_MAX_OUTPUT_TOKENS },
+            geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
+        },
+      };
+    }
+    return null;
+  }
+
+  function parseImageBlocks(providerId, json) {
+    const obj = parseJsonLoose(extractContent(providerId, json));
+    const blocks = (obj && Array.isArray(obj.blocks)) ? obj.blocks : (Array.isArray(obj) ? obj : []);
+    return blocks
+      // translation は文字列のみ採用 (オブジェクト等を String 化して "[object Object]" を画像に貼らない)。original も文字列のみ。
+      .filter((b) => b && b.box && typeof b.translation === "string" && b.translation)
+      .map((b) => ({
+        original: typeof b.original === "string" ? b.original : "",
+        translation: b.translation,
+        box: { x: clamp01(b.box.x), y: clamp01(b.box.y), w: clamp01(b.box.w), h: clamp01(b.box.h) },
+      }));
+  }
+
+  const ProviderApi = Object.freeze({
+    buildSystemPrompt,
+    buildRequest,
+    extractContent,
+    extractTranslations,
+    parseResponse,
+    streamDelta,
+    parseUsage,
+    buildModelsRequest,
+    parseModels,
+    buildImagePrompt,
+    buildImageRequest,
+    parseImageBlocks,
+  });
+
+  globalThis.ProviderApi = ProviderApi;
+})();
