@@ -641,18 +641,13 @@ if (typeof importScripts === "function") {
   // 全フレームに注入する (右サイドパネル等が iframe のときも翻訳されるように)。
   // 各フレームの translator は文字数の少ない枠(広告等)を自前のしきい値で除外する。
   // APPLY_TRANSLATE_CS は tabs.sendMessage(frameId 省略) で全フレームに配信される。
-  async function injectTranslator(tabId, withImages) {
-    const files = ["src/lib/actions.js", "src/lib/lang.js", "src/content/translator.js"];
-    // 画像翻訳 ON のときは image-translator も全フレームへ注入する (iframe 内の画像も訳す)。
-    // 各フレーム側で本文量ガードを通すので広告枠は実際には bulk を走らせない。top フレームは
-    // manifest 常駐済みだが __rtImgLoaded ガードで二重 init しない (CSS は同一規則の再適用で無害)。
-    if (withImages) files.push("src/content/image-translator.js");
-    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files });
-    if (withImages) {
-      try {
-        await chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: ["src/content/image-translator.css"] });
-      } catch (_e) { /* 注入不可フレーム(about:blank 等)は無視 */ }
-    }
+  async function injectTranslator(tabId) {
+    // 画像翻訳はホバー手動のみで top フレームの manifest content script (image-translator.js) が担うため、
+    // ここでは翻訳エンジン (translator.js) だけを全フレームに注入する。
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ["src/lib/actions.js", "src/lib/lang.js", "src/content/translator.js"],
+    });
   }
 
   // ページ翻訳/復元はワンショット動作。全ページ自動翻訳 (autoTranslate) の永続フラグはここでは変更しない。
@@ -662,7 +657,7 @@ if (typeof importScripts === "function") {
     abortTab(tabId); // 再翻訳: このタブの前回の in-flight fetch を中断 (古い設定の無駄リクエストを切る)
     resetFrameProgress(tabId); // フレーム横断の進捗集約をリセット (watchdog も解除・新しい翻訳セッション)
     const settings = await getSettings();
-    await injectTranslator(tabId, settings.imageTranslate);
+    await injectTranslator(tabId);
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
     await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_TRANSLATE_CS, settings: publicSettings(settings) });
   }

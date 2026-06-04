@@ -55,10 +55,11 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - **バッチサイズは自動学習**: `BatchTuner`(actions.js・純粋関数)が texts/秒 を hill-climbing（DEFAULT 50 / STEP 25 / MIN5 / MAX100、429 でサイズ半減）。`background` はメモリ(`tuningMem`)で同期更新し、storage 永続化はデバウンス集約（**毎バッチ storage I/O と 10 並列の read-modify-write 競合を避ける**）
 - **トークン集計はメモリ保持・非表示**: `recordUsage` が `usageMem`(`tokenUsage[YYYY-MM][provider]`) に加算しデバウンス永続化。popup のトークン表示 UI は撤去済み（表示は無いが集計は残る）
 
-## 画像翻訳（オプション `imageTranslate`）
-- `image-translator.js` が画像ホバーで「訳」ボタンを出し、`TRANSLATE_IMAGE` で background が画像を fetch→base64→LLM vision に投げ、`parseImageBlocks` の正規化 bbox をオーバーレイ。`<img>` 限定（**動画は送らない**。background でも非画像 mime を弾く）
-- 速度/コスト優先: 各 provider の軽量 `visionModel` を既定使用、出力上限 `IMAGE_MAX_OUTPUT_TOKENS`(2048)。オーバーレイ文字は `box.h × 画像高さ × 0.7` で元サイズに追従
-- ページ翻訳(`APPLY_TRANSLATE_CS`)に連動して `translateAllImages`(並列)も走る。vision 対応 LLM のみ（MyMemory 不可）
+## 画像翻訳（オプション `imageTranslate`）— ホバー手動のみ
+- **ホバー手動翻訳に一本化**（一括翻訳 `translateAllImages` / 後追い watcher / iframe 一括注入は廃止＝「読みたい1枚だけ訳す」）。`image-translator.js` が画像ホバーで「訳」ボタンを出し、クリックで `translateImg`→`TRANSLATE_IMAGE`、background が画像を fetch→base64→LLM vision に投げ、`parseImageBlocks` の正規化 bbox をオーバーレイ。`<img>` 限定（**動画は送らない**。background でも非画像 mime を弾く）
+- ページ翻訳とは**非連動**。`APPLY_TRANSLATE_CS` では何もせず、`APPLY_RESTORE_CS`（原文復元）でだけ `clearAllImages` がオーバーレイを消す。`imageTranslate` が ON のときだけホバーボタンを出す（`enabled` で gate）
+- 速度/コスト優先: 各 provider の軽量 `visionModel` を既定使用、出力上限 `IMAGE_MAX_OUTPUT_TOKENS`(2048)。`ensureWrap` は元 img の表示ボックス(`getBoundingClientRect`)・display・object-fit を wrap に px 固定で引き継ぎ（レスポンシブ画像が inline-block ラップで拡大されるのを防ぐ）、復元時に元 inline style を戻す。オーバーレイ文字は `box.h × 画像高さ × 0.7` で元サイズに追従。vision 対応 LLM のみ（MyMemory 不可）
+- `image-translator.js` は manifest `content_scripts` で**トップフレームのみ常駐**（iframe には注入しない）
 
 ## UI 構成（popup 2タブ + FAB）
 - **popup 2タブ**: 「翻訳」＝自動翻訳トグル / 言語(元・先) / オプション(画像翻訳) / 翻訳・復元ボタン / status / クイック翻訳。「API設定」＝**各プロバイダのカードに「選択ラジオ + 名前 + バッジ + キー入力 + 取得リンク」を合体**＋選択中サービスのモデル一覧(更新ボタン・コスト相対バー)
