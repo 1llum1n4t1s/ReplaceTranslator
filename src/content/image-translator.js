@@ -148,7 +148,9 @@
     try {
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
         if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
-        if (myRun !== imgRunId || !img.isConnected) { if (btn) btn.textContent = "訳"; return; } // 復元後の遅延応答 / 削除済み画像は描かない
+        // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
+        // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
+        if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
           try { renderBlocks(img, res.blocks); if (btn) btn.style.display = "none"; }
           catch (_e) { if (btn) btn.textContent = "訳"; } // 画像が消えていた等で描画失敗 → 無視
