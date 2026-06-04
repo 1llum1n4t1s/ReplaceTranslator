@@ -23,9 +23,19 @@ jobs:
       - name: バージョンを取得
         id: version
         run: |
-          version=$(grep -oP '(?<="version": ")[^"]+' manifest.json)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "📦 公開対象バージョン: $version"
+          chrome_version=$(jq -r '.version' manifest.json)
+          firefox_version=$(jq -r '.version' manifest.firefox.json)
+          if [ -z "$chrome_version" ] || [ "$chrome_version" = "null" ]; then
+            echo "::error::manifest.json の version 取得に失敗しました"
+            exit 1
+          fi
+          # Chrome/Firefox の manifest version がズレているとストア間で別バージョンを公開してしまうため一致を必須にする
+          if [ "$chrome_version" != "$firefox_version" ]; then
+            echo "::error::manifest.json ($chrome_version) と manifest.firefox.json ($firefox_version) の version が一致しません"
+            exit 1
+          fi
+          echo "version=$chrome_version" >> "$GITHUB_OUTPUT"
+          echo "📦 公開対象バージョン: $chrome_version"
 
       - name: ブランチ名とバージョンの整合性を確認
         env:
