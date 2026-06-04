@@ -11,13 +11,11 @@
 (function () {
   if (window.__rtImgLoaded) return;
   window.__rtImgLoaded = true;
-  // サブフレーム(iframe)は本文が十分ある枠だけ画像翻訳を有効化し、広告/ユーティリティ枠を除外して
-  // 無駄な vision コストを抑える (translator.js の frameHasEnoughText=50字 と同じ意図)。メインフレームは常に有効。
+  // init はフレーム判定で早期 return せず常に完走させ、message listener / hover / watcher を必ず据える。
+  // サブフレームを「本文が少ない」だけで return すると、後で本文/画像が増えた iframe に再注入されても
+  // __rtImgLoaded で弾かれ永久スキップになるため。広告枠の自動一括除外は frameEligibleForBulk() で行う
+  // (本文も対象画像も無い枠だけ bulk をスキップ。ホバー翻訳はどの枠でも可能)。
   // sub-frame には background が imageTranslate ON のときだけ allFrames 注入する。
-  if (window.top !== window.self) {
-    const txt = (document.body && document.body.innerText) || "";
-    if (txt.trim().length < 50) return;
-  }
 
   const A = globalThis.Actions;
   // content には API キーを入れない: 全体 settings ではなく非機密フラグ (CONTENT_FLAGS) だけ読む
@@ -134,9 +132,11 @@
     const url = img.currentSrc || img.src;
     if (!url) return;
     const myRun = imgRunId; // 復元/再翻訳で無効化されたら描かない (translateOne と同じ世代チェック)
+    inFlight.add(img);      // 送信中マーク (後追い watcher が同じ画像を二重送信しないように)
     if (btn) btn.textContent = "…";
     try {
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
+        inFlight.delete(img);
         if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
         if (myRun !== imgRunId) { if (btn) btn.textContent = "訳"; return; } // 復元/再翻訳後の遅延応答は描画しない
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
@@ -147,13 +147,15 @@
           window.setTimeout(() => { if (btn) btn.textContent = "訳"; }, 1500);
         }
       });
-    } catch (_e) { if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
+    } catch (_e) { inFlight.delete(img); if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
   }
 
   // ---- 一括並列翻訳 (複数画像を同時に投げて体感を上げる) ----
   // 並列度 (ゆろさん指定で 10)。vision は重く各社レートも厳しめなので 429 に注意。
   const BATCH_CONCURRENCY = 10;
   let imgRunId = 0; // 一括翻訳の世代。復元/再翻訳で ++ し、進行中ワーカーの新規送信と遅延描画を止める
+  let bulkActive = false;         // 一括翻訳が有効な間だけ true。後追い watcher の判定に使う (async な storage enabled に非依存)
+  const inFlight = new WeakSet();  // TRANSLATE_IMAGE 送信中の画像。mutation+load の二重発見で同一画像を二重 OCR しないためのマーク
 
   // 既にオーバーレイ済みか (二重翻訳・再 OCR を防ぐ)
   function isTranslated(img) {
@@ -166,21 +168,23 @@
     return new Promise((resolve) => {
       const url = img.currentSrc || img.src;
       if (!url) { resolve(); return; }
+      inFlight.add(img);                              // 送信中マーク (応答描画前の二重発見で二重 OCR しない)
+      const done = () => { inFlight.delete(img); resolve(); };
       try {
         chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
           // 復元/再翻訳で世代が変わっていたら描画しない (クリア後にオーバーレイが再出現するのを防ぐ)
           if (myRun === imgRunId && !chrome.runtime.lastError && res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
             renderBlocks(img, res.blocks);
           }
-          resolve();
+          done();
         });
-      } catch (_e) { resolve(); } // context 失効 (Extension context invalidated) は静かに無視
+      } catch (_e) { done(); } // context 失効 (Extension context invalidated) は静かに無視
     });
   }
 
-  // 対象画像リストを並列翻訳する (eligible && 未翻訳のみ。myRun で復元/再翻訳の世代を判定)
+  // 対象画像リストを並列翻訳する (eligible && 未翻訳 && 送信中でないもの。myRun で復元/再翻訳の世代を判定)
   async function translateImages(candidates, myRun) {
-    const imgs = candidates.filter((im) => eligible(im) && !isTranslated(im));
+    const imgs = candidates.filter((im) => eligible(im) && !isTranslated(im) && !inFlight.has(im));
     if (!imgs.length) return;
     let cursor = 0;
     async function worker() {
@@ -192,9 +196,20 @@
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, imgs.length) }, worker));
   }
 
+  // サブフレームの自動一括対象か。本文が十分 (50字) か eligible 画像がある枠 (漫画/スキャン/インフォグラフィック等の
+  // 画像主体 iframe) なら対象。本文も対象画像も無い広告/ユーティリティ枠だけ自動一括をスキップする。メインフレームは常に対象。
+  function frameEligibleForBulk() {
+    if (window.top === window.self) return true;
+    const txt = ((document.body && document.body.innerText) || "").trim();
+    if (txt.length >= 50) return true;
+    return Array.from(document.images).some(eligible);
+  }
+
   // ページ内の対象画像をまとめて並列翻訳する (テキスト翻訳と並行で走る)
   async function translateAllImages() {
+    if (!frameEligibleForBulk()) return; // 広告/ユーティリティ枠は自動一括しない (ホバー翻訳は据えたままなので手動は可能)
     const myRun = ++imgRunId; // この一括翻訳の世代 (復元/再翻訳で無効化される)
+    bulkActive = true;        // 後追い watcher の有効判定。async な storage enabled に依存しない (起動レースでも取りこぼさない)
     startImgWatch();          // 一括後に SPA 挿入 / 遅延ロードされた画像も同じ翻訳状態で拾う
     await translateImages(Array.from(document.images), myRun);
   }
@@ -212,7 +227,9 @@
     if (list.length) translateImages(list, imgRunId); // clearAllImages で世代が変われば worker が止まる
   }
   function queueLateImage(img) {
-    if (!enabled || !eligible(img) || isTranslated(img)) return;
+    // bulkActive で判定 (storage の async enabled に依存せず、一括が走った run なら確実に拾う)。
+    // inFlight 済みは二重 OCR 防止のため弾く。
+    if (!bulkActive || !eligible(img) || isTranslated(img) || inFlight.has(img)) return;
     pendingImgs.add(img);
     if (!pendingImgTimer) pendingImgTimer = window.setTimeout(flushPendingImgs, 300); // 連続追加をまとめる
   }
@@ -228,7 +245,7 @@
   function startImgWatch() {
     if (imgMo) return;
     imgMo = new MutationObserver((muts) => {
-      if (!enabled) return;
+      if (!bulkActive) return;
       const found = [];
       for (const m of muts) {
         if (m.type === "attributes") { collectImgsInto(m.target, found); continue; } // data-src→src 等の差し替え
@@ -250,6 +267,7 @@
   // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
     imgRunId++; // 進行中の一括翻訳を無効化 (復元後に新規 OCR を送らない / 遅延描画もしない)
+    bulkActive = false; // 後追い watcher を無効化 (この後 stopImgWatch で監視も解除)
     stopImgWatch(); // 後追い監視も止める (復元=画像翻訳終了 / 再翻訳時は translateAllImages が貼り直す)
     document.querySelectorAll(".__rt-img-wrap").forEach((wrap) => {
       const img = wrap.querySelector("img");
