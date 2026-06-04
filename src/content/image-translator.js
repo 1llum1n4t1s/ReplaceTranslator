@@ -132,11 +132,11 @@
     const url = img.currentSrc || img.src;
     if (!url) return;
     const myRun = imgRunId; // 復元/再翻訳で無効化されたら描かない (translateOne と同じ世代チェック)
-    inFlight.add(img);      // 送信中マーク (後追い watcher が同じ画像を二重送信しないように)
+    inFlight.set(img, myRun); // 送信中マーク。値=この送信の世代 (stale run の残骸は新 run が再送できる)
     if (btn) btn.textContent = "…";
     try {
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
-        inFlight.delete(img);
+        if (inFlight.get(img) === myRun) inFlight.delete(img); // 自分の世代のマークだけ消す (新 run が貼り直したものは残す)
         if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
         if (myRun !== imgRunId) { if (btn) btn.textContent = "訳"; return; } // 復元/再翻訳後の遅延応答は描画しない
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
@@ -147,7 +147,7 @@
           window.setTimeout(() => { if (btn) btn.textContent = "訳"; }, 1500);
         }
       });
-    } catch (_e) { inFlight.delete(img); if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
+    } catch (_e) { if (inFlight.get(img) === myRun) inFlight.delete(img); if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
   }
 
   // ---- 一括並列翻訳 (複数画像を同時に投げて体感を上げる) ----
@@ -155,7 +155,7 @@
   const BATCH_CONCURRENCY = 10;
   let imgRunId = 0; // 一括翻訳の世代。復元/再翻訳で ++ し、進行中ワーカーの新規送信と遅延描画を止める
   let bulkActive = false;         // 一括翻訳が有効な間だけ true。後追い watcher の判定に使う (async な storage enabled に非依存)
-  const inFlight = new WeakSet();  // TRANSLATE_IMAGE 送信中の画像。mutation+load の二重発見で同一画像を二重 OCR しないためのマーク
+  const inFlight = new WeakMap();  // img → 送信時の imgRunId。現行 run の in-flight だけ二重送信を防ぎ、stale run の残骸 (clearAllImages 後) は再送を許す
 
   // 既にオーバーレイ済みか (二重翻訳・再 OCR を防ぐ)
   function isTranslated(img) {
@@ -168,8 +168,8 @@
     return new Promise((resolve) => {
       const url = img.currentSrc || img.src;
       if (!url) { resolve(); return; }
-      inFlight.add(img);                              // 送信中マーク (応答描画前の二重発見で二重 OCR しない)
-      const done = () => { inFlight.delete(img); resolve(); };
+      inFlight.set(img, myRun);                       // 送信中マーク。値=この送信の世代
+      const done = () => { if (inFlight.get(img) === myRun) inFlight.delete(img); resolve(); };
       try {
         chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
           // 復元/再翻訳で世代が変わっていたら描画しない (クリア後にオーバーレイが再出現するのを防ぐ)
@@ -184,7 +184,7 @@
 
   // 対象画像リストを並列翻訳する (eligible && 未翻訳 && 送信中でないもの。myRun で復元/再翻訳の世代を判定)
   async function translateImages(candidates, myRun) {
-    const imgs = candidates.filter((im) => eligible(im) && !isTranslated(im) && !inFlight.has(im));
+    const imgs = candidates.filter((im) => eligible(im) && !isTranslated(im) && inFlight.get(im) !== myRun);
     if (!imgs.length) return;
     let cursor = 0;
     async function worker() {
@@ -231,7 +231,7 @@
   function queueLateImage(img) {
     // bulkActive で判定 (storage の async enabled に依存せず、一括が走った run なら確実に拾う)。
     // inFlight 済みは二重 OCR 防止のため弾く。
-    if (!bulkActive || !eligible(img) || isTranslated(img) || inFlight.has(img)) return;
+    if (!bulkActive || !eligible(img) || isTranslated(img) || inFlight.get(img) === imgRunId) return;
     pendingImgs.add(img);
     if (!pendingImgTimer) pendingImgTimer = window.setTimeout(flushPendingImgs, 300); // 連続追加をまとめる
   }

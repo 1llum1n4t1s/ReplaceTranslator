@@ -283,6 +283,7 @@ if (typeof importScripts === "function") {
     let cursor = 0;
     let firstError = null;     // 表示用 (最初に起きた種別)
     let providerError = null;  // provider 全体の失敗 (build/http/quota/network)。too_long(局所スキップ)とは区別し fatal 判定に使う
+    let okCount = 0;           // API が応答した件数。訳文==原文(固有名詞/既に target 言語)でも成功なので translation!==input では数えない
 
     async function worker() {
       while (cursor < texts.length) {
@@ -320,6 +321,7 @@ if (typeof importScripts === "function") {
           }
           const parsed = ProviderApi.parseResponse(providerId, json);
           translations[i] = (parsed && parsed[0]) || text;
+          okCount++; // responseStatus 200 で応答が返った = 成功 (訳文が原文と同一でも成功扱い)
         } catch (e) {
           const err = { error: "network", message: String((e && e.message) || e) };
           providerError = providerError || err; firstError = firstError || err;
@@ -333,8 +335,9 @@ if (typeof importScripts === "function") {
       // 1 件でも訳せていれば部分成功として translations を返す (呼び出し側が適用)。
       // allFailed(=translator が fatal でページ全体を停止) は provider 全体の失敗 (quota/auth/network) かつ全件未訳のときだけ立てる。
       // 全件 too_long のような局所スキップでは translations(原文) を返し、短い後続ノードを巻き添えで止めない。
-      const anySuccess = translations.some((t, i) => t !== texts[i]);
-      if (!anySuccess && providerError) return Object.assign({ ok: false, allFailed: true }, providerError);
+      // 成功は okCount (API が応答した件数) で判定する。translation!==input で推測すると、同一文字列が返る
+      // 正当な成功 (固有名詞/既に target 言語) を取りこぼし、別 item の失敗で誤って allFailed (=ページ全停止) になる。
+      if (okCount === 0 && providerError) return Object.assign({ ok: false, allFailed: true }, providerError);
       return Object.assign({ ok: false, translations }, firstError);
     }
     return { ok: true, translations, usage: { input: 0, output: 0 } };
@@ -491,6 +494,13 @@ if (typeof importScripts === "function") {
     let h = u.hostname.toLowerCase();
     if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1); // IPv6 リテラル
     if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
+    // IP リテラル以外の内部ホスト名も遮断する (例: https://nas/scan.jpg, https://printer.corp/status.png)。
+    // MV3 は DNS 解決 API を持たず公開名→プライベートIP を検証できないため、社内解決されうる名前を入口で弾く。
+    // 公開 CDN は公開 TLD の FQDN なので影響しない。
+    const looksIp = h.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
+    if (!looksIp && (!h.includes(".") || /\.(internal|intranet|corp|home|lan|private|test|example|invalid|localdomain)$/.test(h))) {
+      return true; // 単一ラベル名 (nas/printer/intranet) or 内部・予約 TLD
+    }
     // IPv6 リテラル (":" を含む) のときだけ範囲判定する。fc/fd を裸の startsWith で見ると "fcbarcelona.com" 等の
     // 通常ホストを誤ブロックするため、先頭ヘクステットを数値化して fe80::/10 と fc00::/7 全域を弾く。
     if (h.includes(":")) {

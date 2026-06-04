@@ -105,6 +105,20 @@
     return true;
   }
 
+  // SKIP_CLOSEST を shadow 境界を越えて判定する。closest() は自分の root (shadowRoot) までしか遡らず host を見ないため、
+  // <my-widget translate="no"> のようにホスト側に付いた除外マーカーを取りこぼす。getRootNode().host を辿って上位 tree も確認する。
+  function skippedByMarker(el) {
+    let cur = el;
+    while (cur) {
+      if (typeof cur.closest === "function" && cur.closest(SKIP_CLOSEST)) return true;
+      const root = cur.getRootNode && cur.getRootNode();
+      const host = root && root.host; // ShadowRoot なら host 要素。通常 document なら undefined で打ち切り
+      if (!host) return false;
+      cur = host; // ホストを起点にさらに上位 (ネストした shadow / light DOM) を辿る
+    }
+    return false;
+  }
+
   function accept(node) {
     if (translatedNodes.has(node)) return false;
     const p = node.parentNode;
@@ -112,8 +126,8 @@
     if (SKIP_PARENT_TAGS.has(p.nodeName)) return false;
     if (p.isContentEditable) return false;
     if (!shouldTranslateText(node.nodeValue)) return false;
-    // 残った候補だけ closest で subtree 除外を確認する (走査全体のコストを抑える)
-    if (typeof p.closest === "function" && p.closest(SKIP_CLOSEST)) return false;
+    // 残った候補だけ除外マーカーを確認する (走査全体のコストを抑える)。shadow 内のテキストは host チェーンも遡る。
+    if (skippedByMarker(p)) return false;
     return true;
   }
 
@@ -507,8 +521,16 @@
     // 2 回目以降の翻訳 (言語/provider 変更で再実行) は先に原文へ戻す。前回の訳が残ると accept() が既訳ノードを
     // 全弾きし、iframe では frameHasEnoughText() が 0 字と誤判定して再翻訳されないため、閾値判定より前に revert する。
     revertTranslations();
-    // 広告等の小さな iframe は翻訳しない (メインフレームは常に対象)
-    if (!frameHasEnoughText()) return Promise.resolve();
+    // 広告等の小さな iframe は翻訳しない (メインフレームは常に対象)。
+    // 以前このフレームが翻訳中だった場合、ゲート不通過になった今は旧セッションを確実に止める。
+    // (translating/observers/queue/runId を残すと、旧 run の遅延バッチが現 runId で適用されたり、
+    //  MutationObserver が新 settings で訳し続ける。runId++ で進行中ループ/遅延応答を無効化し observers を破棄。)
+    if (!frameHasEnoughText()) {
+      translating = false;
+      runId += 1;
+      stopObservers(); // io/mo 切断 + queue/pendingBatches クリア (未起動なら no-op)
+      return Promise.resolve();
+    }
     translating = true;
     runId += 1;
     const myRun = runId;
