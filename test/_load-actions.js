@@ -22,5 +22,6 @@ load("actions.js");
 load("lang.js");
 load("model-pricing.js");
 load("providers.js");
+load("stream.js");
 
 module.exports = globalThis;

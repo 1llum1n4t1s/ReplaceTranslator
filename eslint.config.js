@@ -22,6 +22,7 @@ const ACTIONS_GLOBALS = {
   ProviderApi: "readonly",      // src/lib/providers.js — buildRequest/parseResponse/parseUsage/parseModels
   BatchTuner: "readonly",       // src/lib/actions.js — バッチサイズ自動学習
   ModelPricing: "readonly",     // src/lib/model-pricing.js — モデル別概算価格
+  StreamParse: "readonly",      // src/lib/stream.js — ストリーミング JSON から translations を逐次抽出
 };
 
 const COMMON_RULES = {
