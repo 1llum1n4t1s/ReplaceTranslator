@@ -580,9 +580,14 @@ if (typeof importScripts === "function") {
     // 画像を取得して base64 化 (host_permissions により CORS を回避)
     let b64, mime;
     try {
-      const r = await fetch(imageUrl, { signal });
-      // リダイレクト後の最終 URL も検証する (公開 URL → 30x で localhost/private へ飛ばす SSRF を防ぐ。
-      // 取得済みでも、禁止先なら base64 化せず LLM へ送らないことで内部コンテンツの外部流出を止める)。
+      // redirect:"manual" で 30x をフォローしない。公開 URL → 30x で内部ホスト (nas / 127.0.0.1 等) へ飛ばす
+      // SSRF を、フォロー前=内部ホストへリクエストが飛ぶ前に遮断する。opaqueredirect は Location を読めないので
+      // 検証不能 → 拒否 (img の src は通常リダイレクト解決済みの最終 URL なので実害は小さい)。
+      const r = await fetch(imageUrl, { signal, redirect: "manual" });
+      if (r.type === "opaqueredirect" || r.status === 0 || (r.status >= 300 && r.status < 400)) {
+        return { ok: false, error: "forbidden_target" };
+      }
+      // 念のため最終 URL も検証 (manual では通常 r.url === imageUrl だが二重防御)。
       if (r.url && r.url !== imageUrl && isForbiddenImageUrl(r.url)) return { ok: false, error: "forbidden_target" };
       const cl = Number(r.headers.get("content-length") || 0);
       if (cl && cl > MAX_IMAGE_BYTES) return { ok: false, error: "image_too_large", size: cl };
@@ -660,6 +665,9 @@ if (typeof importScripts === "function") {
   async function translatePage(tabId) {
     abortTab(tabId); // 再翻訳: このタブの前回の in-flight fetch を中断 (古い設定の無駄リクエストを切る)
     resetFrameProgress(tabId); // フレーム横断の進捗集約をリセット (watchdog も解除・新しい翻訳セッション)
+    // FAB/右クリック/自動は popup の pendingSave を待てないため、進行中の APPLY_SETTINGS 保存を待ってから読む。
+    // 設定変更直後に翻訳開始しても、ページ全体が旧 provider/旧言語で走り出すのを防ぐ。
+    await settingsWriteChain;
     const settings = await getSettings();
     await injectTranslator(tabId);
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
