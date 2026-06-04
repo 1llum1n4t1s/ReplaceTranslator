@@ -127,10 +127,12 @@
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
+    const myRun = imgRunId; // 復元/再翻訳で無効化されたら描かない (translateOne と同じ世代チェック)
     if (btn) btn.textContent = "…";
     try {
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
         if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
+        if (myRun !== imgRunId) { if (btn) btn.textContent = "訳"; return; } // 復元/再翻訳後の遅延応答は描画しない
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
           renderBlocks(img, res.blocks);
           if (btn) btn.style.display = "none";

@@ -252,9 +252,11 @@
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
       const t = translations[i];
+      // ノードがバッチ送信時の原文を保持していない = in-flight 中にページが書き換えた。
+      // その場合は処理済みにしない (MutationObserver が再キューした新しい値を後で翻訳できるよう retryable に残す)。
+      if (item.node.nodeValue !== item.text) continue;
       translatedNodes.add(item.node);
-      // ノードが現在も同じ原文を保持している場合のみ書き換える (動的書き換え競合の防御)
-      if (typeof t === "string" && t.length > 0 && t !== item.text && item.node.nodeValue === item.text) {
+      if (typeof t === "string" && t.length > 0 && t !== item.text) {
         if (!originalMap.has(item.node)) originalMap.set(item.node, item.text);
         item.node.nodeValue = t;
         writtenValue.set(item.node, t); // 我々が書いた値を記録 (ページの後続書き換えと判別する)
