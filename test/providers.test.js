@@ -308,3 +308,8 @@ test("parseImageBlocks returns [] when there are no blocks", () => {
   const json = { choices: [{ message: { content: '{"blocks":[]}' } }] };
   assert.deepEqual(ProviderApi.parseImageBlocks("openai", json), []);
 });
+
+test("parseImageBlocks rejects non-string translation (schema slip → no [object Object])", () => {
+  const json = { choices: [{ message: { content: '{"blocks":[{"translation":{"text":"x"},"box":{"x":0,"y":0,"w":0.5,"h":0.1}}]}' } }] };
+  assert.deepEqual(ProviderApi.parseImageBlocks("openai", json), []);
+});

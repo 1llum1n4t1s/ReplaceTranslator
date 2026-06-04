@@ -527,7 +527,7 @@ if (typeof importScripts === "function") {
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId) {
     abortTab(tabId); // 再翻訳: このタブの前回の in-flight fetch を中断 (古い設定の無駄リクエストを切る)
-    frameProgress.delete(tabId); // フレーム横断の進捗集約をリセット (新しい翻訳セッション)
+    resetFrameProgress(tabId); // フレーム横断の進捗集約をリセット (watchdog も解除・新しい翻訳セッション)
     const settings = await getSettings();
     await injectTranslator(tabId);
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
@@ -546,33 +546,54 @@ if (typeof importScripts === "function") {
   // ---- フレーム横断の進捗集約 ----
   // 同一タブの複数フレーム (allFrames 注入) の進捗を集約し、参加フレームが全部 done になってから
   // グローバル done を発行する。小さい iframe / 子フレームが先に done で UI が早期確定するのを防ぐ。
-  const frameProgress = new Map(); // tabId -> { active:Set<frameId>, done:Set<frameId> }
+  const frameProgress = new Map(); // tabId -> { active:Set<frameId>, done:Set<frameId>, timer:id|null }
+  const FRAME_DONE_GRACE_MS = 8000; // 一部フレーム done 後、残りがこの時間応答しなければ離脱とみなし done を発行
   function relayProgress(tabId, msg) {
     chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ }); // FAB (content top frame)
     try { chrome.runtime.sendMessage(msg); } catch (_e) { /* popup が無ければ無視 */ }   // popup (集約済みのみ受理)
   }
+  function clearFrameTimer(st) { if (st && st.timer) { clearTimeout(st.timer); st.timer = null; } }
+  function resetFrameProgress(tabId) {
+    clearFrameTimer(frameProgress.get(tabId));
+    frameProgress.delete(tabId);
+  }
   function handleFrameProgress(tabId, frameId, msg) {
     let st = frameProgress.get(tabId);
-    if (!st) { st = { active: new Set(), done: new Set() }; frameProgress.set(tabId, st); }
+    if (!st) { st = { active: new Set(), done: new Set(), timer: null }; frameProgress.set(tabId, st); }
     switch (msg.state) {
       case "progress":
         st.done.delete(frameId);
         st.active.add(frameId);
+        clearFrameTimer(st); // 新たに翻訳中のフレームが出たので done watchdog を解除
         if (st.done.size === 0 && st.active.size === 1) relayProgress(tabId, msg); // 最初の進捗で loading 表示
         break;
       case "done":
         st.active.add(frameId);
         st.done.add(frameId);
-        if ([...st.active].every((f) => st.done.has(f))) relayProgress(tabId, msg); // 全参加フレーム完了で done
+        clearFrameTimer(st);
+        if ([...st.active].every((f) => st.done.has(f))) {
+          relayProgress(tabId, msg); // 全参加フレーム完了
+        } else {
+          // 未完フレームが残る。iframe の離脱/ナビゲーションで永久に done が来ず FAB/popup が loading に
+          // 張り付くのを防ぐため watchdog を張る (猶予後に done を発行)。
+          st.timer = setTimeout(() => {
+            const cur = frameProgress.get(tabId);
+            if (cur) { cur.timer = null; relayProgress(tabId, msg); }
+          }, FRAME_DONE_GRACE_MS);
+        }
         break;
       case "restored":
-        frameProgress.delete(tabId);
+        resetFrameProgress(tabId);
         relayProgress(tabId, msg);
         break;
       default: // error 等はどのフレーム由来でも即通知
         relayProgress(tabId, msg);
     }
   }
+  // タブが閉じたら集約状態と in-flight を後始末する (離脱フレーム/タブの取り残し防止)
+  try {
+    chrome.tabs.onRemoved.addListener((tabId) => { resetFrameProgress(tabId); abortTab(tabId); });
+  } catch (_e) { /* noop */ }
 
   // ---- メッセージディスパッチ ----
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

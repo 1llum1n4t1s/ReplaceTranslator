@@ -228,13 +228,18 @@
     loadModels(false);
   }
 
+  let pendingSave = Promise.resolve(); // 直近の save() の storage 確定を待つための promise
   function save(patch, after) {
     state.settings = Object.assign({}, state.settings, patch); // 楽観更新 (UI 即応)
     // 全体ではなく patch (変更分) だけ送り、background が保管値にマージする (他経路の変更を巻き戻さない)
-    chrome.runtime.sendMessage({ action: Actions.APPLY_SETTINGS, patch }, (res) => {
-      if (res && res.settings) state.settings = res.settings;
-      if (after) after();
+    pendingSave = new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: Actions.APPLY_SETTINGS, patch }, (res) => {
+        if (res && res.settings) state.settings = res.settings;
+        if (after) after();
+        resolve();
+      });
     });
+    return pendingSave;
   }
 
   async function getActiveTab() {
@@ -338,6 +343,7 @@
     $("translate").addEventListener("click", async () => {
       const tab = await getActiveTab();
       if (!tab) return;
+      await pendingSave; // 直前の言語/provider 変更が storage に確定してから翻訳する (古い設定での初回実行を防ぐ)
       setStatus(msg("statusStarting", "Starting…"));
       chrome.runtime.sendMessage({ action: Actions.TRANSLATE_PAGE, tabId: tab.id }, (res) => {
         if (!res || !res.ok) setStatus(msg("statusError", "Error"));
@@ -359,7 +365,7 @@
     // ワンショットの「翻訳」ボタン/FAB/右クリックとは独立 — このトグルだけが autoTranslate を変える。
     $("auto-translate").addEventListener("change", async (e) => {
       const on = e.target.checked;
-      save({ autoTranslate: on }); // background はワンショット翻訳で保存しなくなったため popup 側で永続化
+      await save({ autoTranslate: on }); // 保存の確定を待ってから翻訳/復元 (background が storage を再読みするため)
       const tab = await getActiveTab();
       if (!tab) return;
       setStatus(on ? msg("statusStarting", "Starting…") : "");

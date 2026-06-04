@@ -409,10 +409,11 @@
     const obj = parseJsonLoose(extractContent(providerId, json));
     const blocks = (obj && Array.isArray(obj.blocks)) ? obj.blocks : (Array.isArray(obj) ? obj : []);
     return blocks
-      .filter((b) => b && b.box && b.translation)
+      // translation は文字列のみ採用 (オブジェクト等を String 化して "[object Object]" を画像に貼らない)。original も文字列のみ。
+      .filter((b) => b && b.box && typeof b.translation === "string" && b.translation)
       .map((b) => ({
-        original: String(b.original || ""),
-        translation: String(b.translation || ""),
+        original: typeof b.original === "string" ? b.original : "",
+        translation: b.translation,
         box: { x: clamp01(b.box.x), y: clamp01(b.box.y), w: clamp01(b.box.w), h: clamp01(b.box.h) },
       }));
   }
