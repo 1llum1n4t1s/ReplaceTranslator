@@ -62,7 +62,7 @@
   "optAdvancedTitle": { "message": "詳細設定" },
   "optMyMemoryNote": { "message": "キー不要。メールを入れると無料枠が増えます（匿名 5千 / メール登録 5万字/日）。NMT エンジン・1テキスト最大500バイト。" },
   "optImageTranslate": { "message": "画像内テキストの翻訳" },
-  "optImageTranslateDesc": { "message": "ページ翻訳時に画像内の文字も一括翻訳します（画像にホバーして「訳」で個別翻訳も可）。vision 対応 LLM のみ・MyMemory 不可。" },
+  "optImageTranslateDesc": { "message": "画像にホバーして「訳」を押すと、その画像内の文字を翻訳します（1枚ずつ手動）。vision 対応 LLM のみ・MyMemory 不可。" },
   "imgBtn": { "message": "画像内のテキストを翻訳" },
   "optBatchSize": { "message": "バッチサイズ（1 リクエストあたりのテキスト数）" },
   "optSave": { "message": "保存" },

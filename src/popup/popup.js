@@ -288,7 +288,7 @@
       await pendingSave;
       if (myReq !== reqId) return; // 待っている間に入力が進んで別リクエストになっていたら破棄
       // texts のみ送る。provider / 言語 / API キーは background が保管値を使う (キーは content/popup に出さない)。
-      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_BATCH, texts: [text] }, (res) => {
+      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_BATCH, texts: [text], quick: true }, (res) => {
         if (myReq !== reqId) return; // 入力が進んで別リクエストになっていたら破棄
         qt.classList.remove("busy");
         if (chrome.runtime.lastError) { render(msg("qtError", "翻訳できませんでした"), true); return; }

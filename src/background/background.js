@@ -129,8 +129,9 @@ if (typeof importScripts === "function") {
   }
 
   // ---- 翻訳代理 fetch (核心) ----
-  async function translateBatch(settings, texts, signal) {
+  async function translateBatch(settings, texts, signal, opts) {
     const providerId = settings.provider;
+    const tune = !(opts && opts.tune === false); // quick translate (単発) は学習(BatchTuner)を汚さない
     const provider = Providers.get(providerId);
     const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
     const requiresKey = !provider || provider.requiresKey !== false;
@@ -174,7 +175,7 @@ if (typeof importScripts === "function") {
     if (!res.ok) {
       let detail = "";
       try { detail = await res.text(); } catch (_e) { /* noop */ }
-      if (res.status === 429) updateBatchTuning(providerId, texts.length, durationMs, true);
+      if (res.status === 429 && tune) updateBatchTuning(providerId, texts.length, durationMs, true);
       return {
         ok: false, error: "http", status: res.status, message: detail.slice(0, 300),
         nextBatchSize: currentBatchSizeFor(providerId),
@@ -192,16 +193,18 @@ if (typeof importScripts === "function") {
     // 訳文数が要求数と不一致 (出力切れ / フォーマット崩れ) のときはバッチ全体を不完全とみなし、
     // ok:true で確定させない。取りこぼしたノードが未翻訳のまま「処理済み」にされるのを防ぎ、リトライ可能にする。
     if (!Array.isArray(translations) || translations.length !== texts.length) {
+      // 出力切れ/フォーマット崩れ = バッチが大きすぎる兆候。サイズ失敗として次サイズを縮小して返し、
+      // 同じ大きさで再試行/再キューを繰り返して未翻訳のまま諦めるのを防ぐ (quick は学習を汚さない)。
       return {
         ok: false, error: "incomplete",
         got: Array.isArray(translations) ? translations.length : 0, want: texts.length,
-        nextBatchSize: currentBatchSizeFor(providerId),
+        nextBatchSize: tune ? updateBatchTuning(providerId, texts.length, durationMs, true) : currentBatchSizeFor(providerId),
       };
     }
     const usage = ProviderApi.parseUsage(providerId, json);
     recordUsage(providerId, usage); // 同期メモリ更新 (storage await を critical path から除去)
-    // バッチサイズを最速方向へ自動調整し、次のサイズを translator に返す
-    const nextBatchSize = updateBatchTuning(providerId, texts.length, durationMs, false);
+    // バッチサイズを最速方向へ自動調整し、次のサイズを translator に返す (quick は学習せず現状サイズを返す)
+    const nextBatchSize = tune ? updateBatchTuning(providerId, texts.length, durationMs, false) : currentBatchSizeFor(providerId);
     return { ok: true, translations, usage, nextBatchSize };
   }
 
@@ -267,7 +270,8 @@ if (typeof importScripts === "function") {
     const translations = ProviderApi.extractTranslations(content);
     if (!Array.isArray(translations) || translations.length !== texts.length) {
       // stream は通ったが出力が不完全。非stream にフォールバックすると二重課金なので incomplete を返し translator にリトライさせる。
-      return { ok: false, error: "incomplete", got: Array.isArray(translations) ? translations.length : 0, want: texts.length, nextBatchSize: currentBatchSizeFor(providerId) };
+      // 出力切れはバッチが大きすぎる兆候なので、サイズ失敗として次サイズを縮小して返す (同サイズでの再試行ループを防ぐ)。
+      return { ok: false, error: "incomplete", got: Array.isArray(translations) ? translations.length : 0, want: texts.length, nextBatchSize: updateBatchTuning(providerId, texts.length, Date.now() - t0, true) };
     }
     const usage = usageObj ? ProviderApi.parseUsage(providerId, usageObj) : null;
     if (usage) recordUsage(providerId, usage);
@@ -766,12 +770,15 @@ if (typeof importScripts === "function") {
                   }
                 });
               }
-              if (!res) res = await translateBatch(settings, msg.texts || [], controller.signal); // stream 非対応/失敗は非stream へ
+              if (!res) res = await translateBatch(settings, msg.texts || [], controller.signal, { tune: !msg.quick }); // stream 非対応/失敗は非stream へ。quick は学習しない
               sendResponse(res);
             } finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_IMAGE: {
+            // ページから直接来る (popup の pendingSave を待てない) ため、進行中の APPLY_SETTINGS 保存を待ってから
+            // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回 OCR が旧 provider/旧言語で実行されるのを防ぐ。
+            await settingsWriteChain;
             const stored = await getSettingsCached();
             const settings = msg.settings
               ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
