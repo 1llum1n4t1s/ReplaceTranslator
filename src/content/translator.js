@@ -258,11 +258,14 @@
 
   // 1 ノードに訳文を適用 (原文を保持しつつ in-place 置換)。streaming の早出しと最終確定で共用。
   function applyOne(item, t) {
-    // ノードがバッチ送信時の原文を保持していない = in-flight 中にページが書き換えた。
-    // その場合は処理済みにしない (MutationObserver が再キューした新しい値を後で翻訳できるよう retryable に残す)。
-    if (!item || item.node.nodeValue !== item.text) return;
+    if (!item) return;
+    const nv = item.node.nodeValue;
+    // 適用してよいのは「原文のまま」or「我々が前に書いた値(streaming の早出し partial 含む)」のときだけ。
+    // それ以外 (in-flight 中にページが書き換えた) は触らず retryable に残す (MutationObserver が新値を再キュー)。
+    // → 最終確定 (完全 JSON) は、早出し partial と異なれば上書きして訂正できる。
+    if (nv !== item.text && nv !== writtenValue.get(item.node)) return;
     translatedNodes.add(item.node);
-    if (typeof t === "string" && t.length > 0 && t !== item.text) {
+    if (typeof t === "string" && t.length > 0 && t !== item.text && t !== nv) {
       if (!originalMap.has(item.node)) originalMap.set(item.node, item.text);
       item.node.nodeValue = t;
       writtenValue.set(item.node, t); // 我々が書いた値を記録 (ページの後続書き換えと判別する)

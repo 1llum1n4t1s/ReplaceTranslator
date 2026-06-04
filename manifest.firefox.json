@@ -33,6 +33,7 @@
       "src/lib/lang.js",
       "src/lib/model-pricing.js",
       "src/lib/providers.js",
+      "src/lib/stream.js",
       "src/background/background.js"
     ]
   },

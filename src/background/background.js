@@ -14,7 +14,7 @@
 
 // 依存ライブラリ読み込み (Chrome: importScripts / Firefox: manifest の background.scripts で既読)
 if (typeof importScripts === "function") {
-  importScripts("/src/lib/actions.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js");
+  importScripts("/src/lib/actions.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js");
 }
 
 (function () {
