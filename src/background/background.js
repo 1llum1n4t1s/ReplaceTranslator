@@ -62,7 +62,9 @@ if (typeof importScripts === "function") {
   function applySettingsPatch(patch) {
     const run = async () => {
       const base = settingsMem || await getSettings(); // 直前の saveSettings が settingsMem を確定済み
-      return saveSettings(Object.assign({}, base, patch));
+      const p = typeof patch === "function" ? patch(base) : patch; // 関数 patch は最新 base を見てマージ内容を決める (models 等の入れ子保持に使う)
+      if (p == null) return base; // 変更不要 (例: migrateModel が載せ替え不要と判断) → 保存しない
+      return saveSettings(Object.assign({}, base, p));
     };
     // 直前の patch が成功/失敗どちらでも次を最新 base から直列適用する (then の両ハンドラに run を渡す)
     const next = settingsWriteChain.then(run, run);
@@ -430,12 +432,12 @@ if (typeof importScripts === "function") {
   async function migrateModel(providerId, models, allIds) {
     if (!models || !models.length) return;
     const valid = (allIds && allIds.length) ? allIds : models.map((m) => m.id);
-    const data = await chrome.storage.local.get(StorageKeys.SETTINGS);
-    const settings = SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
-    if (!valid.includes(settings.models[providerId])) {
-      settings.models[providerId] = models[0].id;
-      await chrome.storage.local.set({ [StorageKeys.SETTINGS]: SettingsSchema.normalize(settings) });
-    }
+    // SETTINGS 直書きは applySettingsPatch の直列化を迂回し、並行する APPLY_SETTINGS と lost-update を起こす。
+    // 直列キュー経由 + 最新 base に対して判定/マージし、models の他 provider のエントリも保持する。
+    await applySettingsPatch((base) => {
+      if (valid.includes(base.models[providerId])) return null; // 選択中が有効 → 載せ替え不要 (保存しない)
+      return { models: Object.assign({}, base.models, { [providerId]: models[0].id }) };
+    });
   }
   async function getModelsForProvider(providerId, force) {
     const provider = Providers.get(providerId);
@@ -539,6 +541,29 @@ if (typeof importScripts === "function") {
     return null;
   }
 
+  // レスポンス body をストリームで読み、累積バイトが cap を超えたら読み取りを打ち切って null を返す。
+  // Content-Length が無い/詐称のレスポンスで r.blob()(=全body をバッファ) がメモリを食うのを防ぐ。
+  async function readCappedBytes(res, cap) {
+    if (!res.body || typeof res.body.getReader !== "function") { // body stream 非対応環境のフォールバック
+      const buf = new Uint8Array(await res.arrayBuffer());
+      return buf.length > cap ? null : buf;
+    }
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > cap) { try { await reader.cancel(); } catch (_e) { /* noop */ } return null; } // 上限超過で打ち切り
+      chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+  }
+
   async function translateImage(settings, imageUrl, signal) {
     const providerId = settings.provider;
     const provider = Providers.get(providerId);
@@ -557,18 +582,20 @@ if (typeof importScripts === "function") {
       if (r.url && r.url !== imageUrl && isForbiddenImageUrl(r.url)) return { ok: false, error: "forbidden_target" };
       const cl = Number(r.headers.get("content-length") || 0);
       if (cl && cl > MAX_IMAGE_BYTES) return { ok: false, error: "image_too_large", size: cl };
-      const blob = await r.blob();
-      if (blob.size > MAX_IMAGE_BYTES) return { ok: false, error: "image_too_large", size: blob.size };
-      const bytes = new Uint8Array(await blob.arrayBuffer());
+      // Content-Length が無い/詐称でも、body をストリームで読みつつ累積監視し上限超過で打ち切る
+      // (r.blob() は全body をバッファしてから size を見るので巨大/無限レスポンスでメモリを食う)。
+      const bytes = await readCappedBytes(r, MAX_IMAGE_BYTES);
+      if (!bytes) return { ok: false, error: "image_too_large" };
       // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
       // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
-      if (blob.type && blob.type.indexOf("image/") === 0) {
-        mime = blob.type;
-      } else if (!blob.type) {
+      const ctype = (r.headers.get("content-type") || "").toLowerCase().split(";")[0].trim();
+      if (ctype.indexOf("image/") === 0) {
+        mime = ctype;
+      } else if (!ctype) {
         mime = sniffImageMime(bytes);
         if (!mime) return { ok: false, error: "not_image", mime: "" };
       } else {
-        return { ok: false, error: "not_image", mime: blob.type };
+        return { ok: false, error: "not_image", mime: ctype };
       }
       b64 = base64FromBytes(bytes);
     } catch (e) {
@@ -665,7 +692,11 @@ if (typeof importScripts === "function") {
   }
   function handleFrameProgress(tabId, frameId, msg) {
     let st = frameProgress.get(tabId);
-    if (!st) { st = { active: new Set(), done: new Set(), timer: null }; frameProgress.set(tabId, st); }
+    if (!st) { st = { active: new Set(), done: new Set(), errored: false, timer: null }; frameProgress.set(tabId, st); }
+    // error は終端。どれかのフレームが error を出したら、その後の done/progress で上書きしない
+    // (別フレームの done が error 表示を消して「成功したように見える」のを防ぐ)。restore/新セッションでリセット。
+    if (msg.state === "error") { st.errored = true; clearFrameTimer(st); relayProgress(tabId, msg); return; }
+    if (st.errored && msg.state !== "restored") return; // 終端後は restore 以外を中継しない
     switch (msg.state) {
       case "progress":
         st.done.delete(frameId);
@@ -692,7 +723,7 @@ if (typeof importScripts === "function") {
         resetFrameProgress(tabId);
         relayProgress(tabId, msg);
         break;
-      default: // error 等はどのフレーム由来でも即通知
+      default: // 未知の state は念のため中継 (error は上の専用パスで終端化済み)
         relayProgress(tabId, msg);
     }
   }

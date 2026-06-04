@@ -172,10 +172,14 @@
       const done = () => { if (inFlight.get(img) === myRun) inFlight.delete(img); resolve(); };
       try {
         chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
-          // 復元/再翻訳で世代が変わっていたら描画しない (クリア後にオーバーレイが再出現するのを防ぐ)
-          if (myRun === imgRunId && !chrome.runtime.lastError && res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
-            renderBlocks(img, res.blocks);
-          }
+          // 復元/再翻訳で世代が変わっていたら描画しない (クリア後にオーバーレイが再出現するのを防ぐ)。
+          // img.isConnected で SPA が送信中に削除/仮想化した画像を弾き、renderBlocks の throw を try で握って
+          // 必ず done() させる (描画失敗で promise が未解決のままワーカープールが詰まるのを防ぐ)。
+          try {
+            if (myRun === imgRunId && img.isConnected && !chrome.runtime.lastError && res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
+              renderBlocks(img, res.blocks);
+            }
+          } catch (_e) { /* 画像削除/仮想化で描画失敗 → 無視 */ }
           done();
         });
       } catch (_e) { done(); } // context 失効 (Extension context invalidated) は静かに無視
