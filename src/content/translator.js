@@ -50,6 +50,7 @@
   let batchSeq = 0;                     // TRANSLATE_BATCH 連番 (streaming の partial を batchId で紐付ける)
   const pendingBatches = new Map();     // batchId → batch ({node,text}[])。TRANSLATE_PARTIAL の逐次適用に使う
   const queue = [];                     // 翻訳待ち {node, text}
+  const INCOMPLETE_REQUEUE_MAX = 2;     // stream 出力切れ(incomplete)で未訳のまま残ったノードを再キューする上限 (無限ループ防止)
 
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
   const PREFETCH_PX = 1200;
@@ -349,11 +350,17 @@
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
         } else if (res && res.error === "incomplete") {
-          // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial は nodeValue が
-          // 訳文に書き換わっているので flush スナップショットのフィルタ (nodeValue === x.text) で
-          // 再キューされず実質完了扱いになる。未訳のまま残ったノードは translatedNodes に入れず
-          // retryable に残し、次の ingest/スクロールで再試行できるようにする (半端な partial を残したまま
-          // 全ノードを処理済みにして done と誤announce するのを防ぐ)。
+          // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial (nodeValue が訳文へ
+          // 書き換わったノード) はそのまま残し、まだ原文のままのノードだけ能動的に queue へ戻す。
+          // queue に積めば flush 末尾の queue.length>0 判定で再 flush され、BatchTuner が縮めたサイズで
+          // 訳し直される。「将来の ingest/スクロール頼み」で done を誤announceし、手動再実行まで未訳放置に
+          // なるのを防ぐ。無限ループ防止に再キュー回数を INCOMPLETE_REQUEUE_MAX で打ち切り、超えたら諦める。
+          for (const b of batch) {
+            if (!b.node.isConnected || b.node.nodeValue !== b.text || translatedNodes.has(b.node)) continue;
+            if ((b.incompleteRetry || 0) >= INCOMPLETE_REQUEUE_MAX) { translatedNodes.add(b.node); continue; }
+            b.incompleteRetry = (b.incompleteRetry || 0) + 1;
+            queue.push(b);
+          }
         } else {
           // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける
           for (const b of batch) translatedNodes.add(b.node);

@@ -172,10 +172,9 @@
     });
   }
 
-  // ページ内の対象画像をまとめて並列翻訳する (テキスト翻訳と並行で走る)
-  async function translateAllImages() {
-    const myRun = ++imgRunId; // この一括翻訳の世代 (復元/再翻訳で無効化される)
-    const imgs = Array.from(document.images).filter((im) => eligible(im) && !isTranslated(im));
+  // 対象画像リストを並列翻訳する (eligible && 未翻訳のみ。myRun で復元/再翻訳の世代を判定)
+  async function translateImages(candidates, myRun) {
+    const imgs = candidates.filter((im) => eligible(im) && !isTranslated(im));
     if (!imgs.length) return;
     let cursor = 0;
     async function worker() {
@@ -187,10 +186,65 @@
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, imgs.length) }, worker));
   }
 
+  // ページ内の対象画像をまとめて並列翻訳する (テキスト翻訳と並行で走る)
+  async function translateAllImages() {
+    const myRun = ++imgRunId; // この一括翻訳の世代 (復元/再翻訳で無効化される)
+    startImgWatch();          // 一括後に SPA 挿入 / 遅延ロードされた画像も同じ翻訳状態で拾う
+    await translateImages(Array.from(document.images), myRun);
+  }
+
+  // ---- 一括翻訳中に後から増えた画像の追従 (SPA 挿入 / lazy-load) ----
+  // document.images のスナップショットは translateAllImages の 1 回きりなので、その後に現れた画像は
+  // ホバーしない限り訳されない。一括が有効な間 (translateAllImages〜clearAllImages) だけ
+  // MutationObserver + load で新規 eligible 画像を拾い、現世代 (imgRunId) で翻訳する。
+  let imgMo = null;
+  const pendingImgs = new Set();
+  let pendingImgTimer = null;
+  function flushPendingImgs() {
+    pendingImgTimer = null;
+    const list = Array.from(pendingImgs); pendingImgs.clear();
+    if (list.length) translateImages(list, imgRunId); // clearAllImages で世代が変われば worker が止まる
+  }
+  function queueLateImage(img) {
+    if (!enabled || !eligible(img) || isTranslated(img)) return;
+    pendingImgs.add(img);
+    if (!pendingImgTimer) pendingImgTimer = window.setTimeout(flushPendingImgs, 300); // 連続追加をまとめる
+  }
+  function onImgLoad(e) {
+    const t = e.target;
+    if (t && t.tagName === "IMG") queueLateImage(t); // lazy <img> が src 解決して load した瞬間に拾う
+  }
+  function collectImgsInto(node, sink) {
+    if (!node || node.nodeType !== 1) return;
+    if (node.tagName === "IMG") sink.push(node);
+    else if (node.querySelectorAll) node.querySelectorAll("img").forEach((im) => sink.push(im));
+  }
+  function startImgWatch() {
+    if (imgMo) return;
+    imgMo = new MutationObserver((muts) => {
+      if (!enabled) return;
+      const found = [];
+      for (const m of muts) {
+        if (m.type === "attributes") { collectImgsInto(m.target, found); continue; } // data-src→src 等の差し替え
+        for (const n of m.addedNodes) collectImgsInto(n, found);
+      }
+      for (const im of found) queueLateImage(im);
+    });
+    imgMo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "srcset"] });
+    document.addEventListener("load", onImgLoad, true); // 遅延ロード画像の load を capture で拾う
+  }
+  function stopImgWatch() {
+    if (imgMo) { imgMo.disconnect(); imgMo = null; }
+    document.removeEventListener("load", onImgLoad, true);
+    if (pendingImgTimer) { window.clearTimeout(pendingImgTimer); pendingImgTimer = null; }
+    pendingImgs.clear();
+  }
+
   // 画像オーバーレイをすべて消し、ensureWrap で挿入した span.__rt-img-wrap も解除して
   // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
     imgRunId++; // 進行中の一括翻訳を無効化 (復元後に新規 OCR を送らない / 遅延描画もしない)
+    stopImgWatch(); // 後追い監視も止める (復元=画像翻訳終了 / 再翻訳時は translateAllImages が貼り直す)
     document.querySelectorAll(".__rt-img-wrap").forEach((wrap) => {
       const img = wrap.querySelector("img");
       const parent = wrap.parentNode;
