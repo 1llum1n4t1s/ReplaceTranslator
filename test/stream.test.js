@@ -39,9 +39,9 @@ test("コードフェンス/前置きは最初の '[' まで読み飛ばす", ()
   assert.deepEqual(r.out, ["x", "y"]);
 });
 
-test("エスケープ (\\\" \\\\ \\n \\t /) を正しく復元する", () => {
-  const r = run(['{"translations":["a\\"b","c\\\\d","e\\nf","g\\/h"]}']);
-  assert.deepEqual(r.out, ['a"b', "c\\d", "e\nf", "g/h"]);
+test("エスケープ (\\\" \\\\ \\n \\t \\/) を正しく復元する", () => {
+  const r = run(['{"translations":["a\\"b","c\\\\d","e\\nf","f\\tg","g\\/h"]}']);
+  assert.deepEqual(r.out, ['a"b', "c\\d", "e\nf", "f\tg", "g/h"]);
 });
 
 test("\\uXXXX を復元し、4桁が分割されても結合する", () => {

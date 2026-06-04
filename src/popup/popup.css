@@ -348,7 +348,7 @@ body {
   position: relative; min-height: 56px; padding: 11px 12px; font-size: 13px; line-height: 1.55;
   border: 1px solid var(--rule); border-top: 0; border-radius: 4px 4px 12px 12px;
   background: linear-gradient(180deg, var(--paper-2), var(--paper-3)); color: var(--ink);
-  white-space: pre-wrap; word-break: break-word;
+  white-space: pre-wrap; overflow-wrap: break-word;
 }
 .qt-out:empty::before { content: attr(data-ph); color: var(--ink-soft); opacity: .7; }
 .qt-out .txt { animation: qt-rise .35s ease both; }
