@@ -91,10 +91,25 @@
   function ensureWrap(img) {
     const p = img.parentElement;
     if (p && p.classList.contains("__rt-img-wrap")) return p;
+    // 元 img の「表示中のボックス」を wrap に px 固定で引き継ぐ。これをしないと、親にサイズ指定されていた
+    // レスポンシブ画像 (例: width:100% の img を持つ Twitter 等) が inline-block ラップ内で自然サイズに膨らみ
+    // 「画像が拡大される」。wrap を表示サイズに固定し img を 100% でフィットさせて見た目を維持する。
+    const cs = window.getComputedStyle(img);
+    const r = img.getBoundingClientRect();
     const wrap = document.createElement("span");
     wrap.className = "__rt-img-wrap";
+    wrap.style.display = (cs.display === "" || cs.display.indexOf("inline") === 0) ? "inline-block" : "block";
+    wrap.style.width = Math.round(r.width) + "px";
+    wrap.style.height = Math.round(r.height) + "px";
+    wrap.style.verticalAlign = cs.verticalAlign; // 行内画像のベースラインずれを抑える
     img.parentNode.insertBefore(wrap, img);
     wrap.appendChild(img);
+    // img を wrap いっぱいにフィット。元の inline style は退避し、復元 (clearAllImages) で戻す。
+    if (img.__rtPrevStyle === undefined) img.__rtPrevStyle = img.getAttribute("style") || "";
+    img.style.width = "100%";
+    img.style.height = "100%";
+    img.style.maxWidth = "100%";
+    img.style.objectFit = cs.objectFit || "contain";
     return wrap;
   }
 
@@ -280,9 +295,19 @@
       const parent = wrap.parentNode;
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
       if (img && parent) {
+        if (img.__rtPrevStyle !== undefined) { // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)
+          if (img.__rtPrevStyle) img.setAttribute("style", img.__rtPrevStyle); else img.removeAttribute("style");
+          try { delete img.__rtPrevStyle; } catch (_e) { img.__rtPrevStyle = undefined; }
+        }
         parent.insertBefore(img, wrap);  // img をラッパーの外へ戻す
         wrap.remove();                   // 空になったラッパーを除去
       }
+    });
+    // 念のため: ラッパー解除前に取り残された __rtPrevStyle 付き img があれば素の状態へ戻す (二重防御)
+    document.querySelectorAll("img[style*='100%']").forEach((im) => {
+      if (im.__rtPrevStyle === undefined) return;
+      if (im.__rtPrevStyle) im.setAttribute("style", im.__rtPrevStyle); else im.removeAttribute("style");
+      try { delete im.__rtPrevStyle; } catch (_e) { im.__rtPrevStyle = undefined; }
     });
     // ラッパー無しで残っているレイヤーがあれば後始末
     document.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());

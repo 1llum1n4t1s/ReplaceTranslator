@@ -18,7 +18,8 @@
 }
 .__rt-img-btn:hover { filter: brightness(1.08); }
 
-.__rt-img-wrap { position: relative; display: inline-block; max-width: 100%; }
+/* display / width / height は ensureWrap が元画像の表示ボックスに合わせて inline 指定する (拡大防止) */
+.__rt-img-wrap { position: relative; }
 
 .__rt-img-layer {
   position: absolute;
