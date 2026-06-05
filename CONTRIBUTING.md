@@ -20,7 +20,7 @@
 
 ## セットアップ
 ```
-npm install
+pnpm install
 ```
 
 ## 開発（拡張機能の読み込み）
@@ -29,13 +29,13 @@ npm install
 
 ## テスト / Lint
 ```
-npm test        # Node 標準テスト（actions / providers の純粋関数）
-npm run lint    # ESLint（Flat Config）
+pnpm test        # Node 標準テスト（actions / providers の純粋関数）
+pnpm run lint    # ESLint（Flat Config）
 ```
 
 ## ビルド
 ```
-npm run generate-icons          # icons/icon.svg → icon-16/48/128.png
+pnpm run generate-icons          # icons/icon.svg → icon-16/48/128.png
 powershell -File zip.ps1         # Chrome zip + Firefox xpi を生成 (Windows)
 ./zip.sh                         # 同上 (Unix / macOS)
 ```

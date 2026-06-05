@@ -21,9 +21,9 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyComman
 if ($scriptDir) { Set-Location $scriptDir }
 
 Write-Host "依存パッケージを lockfile どおりにインストール中..." -ForegroundColor Yellow
-npm ci --silent
+pnpm install --frozen-lockfile --silent
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "npm ci に失敗しました (exit $LASTEXITCODE)" -ForegroundColor Red
+    Write-Host "pnpm install に失敗しました (exit $LASTEXITCODE)" -ForegroundColor Red
     exit 1
 }
 

@@ -5,16 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 各社クラウド LLM / 無料 NMT でページをインプレース置換翻訳する Chrome / Firefox (MV3) 拡張機能。本ファイルは LLM 向けのアーキテクチャ・実装パターン集（肯定形で記述）。ビルドツール無しのネイティブ JS（`"type": "commonjs"`・ランタイム依存ゼロ・devDeps のみ）。
 
 ## ビルド / テスト / Lint コマンド
-- `npm test` — Node 標準テスト（`node --test`。純粋関数のみ: actions / providers / lang）
+- `pnpm test` — Node 標準テスト（`node --test`。純粋関数のみ: actions / providers / lang）
 - 単一ファイル: `node --test test/providers.test.js` ／ 単一テスト名: `node --test --test-name-pattern "BatchTuner"`
-- `npm run lint` — ESLint（Flat Config v9+）
-- `npm run generate-icons` — SVG → PNG（sharp）。`npm run build` はこれだけ（バンドル無し）
+- `pnpm run lint` — ESLint（Flat Config v9+）
+- `pnpm run generate-icons` — SVG → PNG（sharp）。`pnpm run build` はこれだけ（バンドル無し）
 - `zip.ps1` / `zip.sh` — Chrome zip + Firefox xpi を生成
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（§popup フォント参照）
 
 ## 規約上の前提（設計の根拠）
 - 大手3社ともブラウザ拡張からサブスクのログインセッション流用は ToS 違反。**API トークンが唯一の正規ルート**。プロバイダ追加時も **API キー方式**で実装する
-- 翻訳エンジン（translator.js）はコードに自動テストが無い（DOM + chrome API + LLM 依存）。変更時は `npm test`（純粋関数）+ `npm run lint` を通し、ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
+- 翻訳エンジン（translator.js）はコードに自動テストが無い（DOM + chrome API + LLM 依存）。変更時は `pnpm test`（純粋関数）+ `pnpm run lint` を通し、ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
 
 ## アーキテクチャ（3 レイヤ + lib）
 ```

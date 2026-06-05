@@ -4,9 +4,9 @@
   "type": "commonjs",
   "description": "Chrome/Firefox extension that translates the current page in-place using cloud LLMs (OpenAI, Anthropic, Google Gemini, xAI Grok) via your own API key.",
   "scripts": {
-    "ci:install": "npm ci",
+    "ci:install": "pnpm install --frozen-lockfile",
     "generate-icons": "node scripts/generate-icons.js",
-    "build": "npm run generate-icons",
+    "build": "pnpm run generate-icons",
     "test": "node --test",
     "lint": "eslint src/ test/ scripts/"
   },

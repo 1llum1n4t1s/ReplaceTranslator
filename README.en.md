@@ -33,7 +33,7 @@ Get an API key here:
 
 ### Load the development build (current method)
 1. Download / clone this repository
-2. Install deps and generate the icons: `npm install && npm run build` (writes `icons/icon-*.png` from the SVG — without them the unpacked load fails icon validation)
+2. Install deps and generate the icons: `pnpm install && pnpm run build` (writes `icons/icon-*.png` from the SVG — without them the unpacked load fails icon validation)
 3. Open `chrome://extensions` in Chrome and turn on "Developer mode"
 4. Click "Load unpacked" and select this folder
 
