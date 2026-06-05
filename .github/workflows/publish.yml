@@ -57,7 +57,7 @@ jobs:
       - name: Node セットアップ
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
       - name: 依存インストール
@@ -249,7 +249,7 @@ jobs:
       - name: Node セットアップ
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.0.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
       - name: web-ext 依存インストール
