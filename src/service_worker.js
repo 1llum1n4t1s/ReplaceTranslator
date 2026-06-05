@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * background.js — Service Worker (メッセージディスパッチ + LLM 代理 fetch + usage 集計)
+ * service_worker.js — Service Worker (メッセージディスパッチ + LLM 代理 fetch + usage 集計)
  *
  * 責務:
  *   1. 設定 (chrome.storage.local) の取得/保存・正規化

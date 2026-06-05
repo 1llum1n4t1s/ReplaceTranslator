@@ -5,7 +5,7 @@
  * - `src/` の IIFE + globalThis 公開定数を明示列挙 (no-implicit-globals 違反を防ぎつつ、
  *   actions.js / lang.js / providers.js が公開する定数を読み取り専用 global として承認する)
  * - Chrome 内蔵 AI のグローバル (Translator / LanguageDetector / LanguageModel) も将来利用のため許可
- * - `scripts/` は Node CJS 環境、`test/` は Node 標準 test runner 環境
+ * - `test/` は Node 標準 test runner 環境
  */
 
 const globals = require("globals");
@@ -39,7 +39,6 @@ module.exports = [
   {
     ignores: [
       "node_modules/**",
-      "icons/icon-*.png",
       "firefox-build/**",
       "web-ext-artifacts/**",
       "temp-build*/**",
@@ -75,18 +74,6 @@ module.exports = [
       globals: {
         ...globals.node,
         ...ACTIONS_GLOBALS,
-      },
-    },
-    rules: COMMON_RULES,
-  },
-  {
-    // ビルドスクリプト: Node CJS
-    files: ["scripts/**/*.js"],
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: "commonjs",
-      globals: {
-        ...globals.node,
       },
     },
     rules: COMMON_RULES,

@@ -1,4 +1,3 @@
 # postinstall でネイティブビルドが必要な依存を明示許可（pnpm v10.12+ はここで管理）
 allowBuilds:
-  sharp: true
   spawn-sync: true

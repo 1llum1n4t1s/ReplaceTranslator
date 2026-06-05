@@ -1,4 +1,4 @@
-# 📖 リプレース翻訳 (Replace Translator)
+# 📖 Replace AI Translator API
 
 > [English version](README.en.md) is also available.
 

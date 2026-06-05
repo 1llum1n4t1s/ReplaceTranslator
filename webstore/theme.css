@@ -1,0 +1,180 @@
+/* ストア掲載スクリーンショット共通テーマ（生成り × 墨 × 朱）
+   フォントは拡張本体同梱の IBM Plex Sans JP woff2 を file:// で参照する。
+   puppeteer は deviceScaleFactor=1・clip 1280x800 でキャプチャ（CWS 仕様）。 */
+@font-face { font-family: 'Plex JP'; src: url('../src/popup/fonts/IBMPlexSansJP-400.woff2') format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Plex JP'; src: url('../src/popup/fonts/IBMPlexSansJP-600.woff2') format('woff2'); font-weight: 600; font-display: block; }
+@font-face { font-family: 'Plex JP'; src: url('../src/popup/fonts/IBMPlexSansJP-700.woff2') format('woff2'); font-weight: 700; font-display: block; }
+
+:root {
+  --paper:   #f6f3ec;
+  --paper2:  #fffdf8;
+  --ink:     #2b3340;
+  --ink-soft:#6b695f;
+  --vermilion:#d8462b;
+  --coral:   #f5876c;
+  --ok:      #4fae6d;
+  --free:    #4e93b8;
+  --line:    #e7e1d4;
+  --shadow:  0 18px 50px rgba(43,51,64,.13);
+  --shadow-sm: 0 8px 22px rgba(43,51,64,.10);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+/* サイズは puppeteer の viewport に追従（スクショ=1280x800 / プロモ=440x280・1400x560） */
+html, body { width:100%; height:100%; }
+body {
+  font-family:'Plex JP','Segoe UI','Yu Gothic UI','Meiryo',sans-serif;
+  color:var(--ink);
+  background:
+    radial-gradient(1100px 520px at 13% -10%, #fffdf8 0%, rgba(255,253,248,0) 60%),
+    radial-gradient(960px 640px at 110% 118%, #f1e6dc 0%, rgba(241,230,220,0) 56%),
+    var(--paper);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+
+.slide { width:1280px; height:800px; padding:62px 74px; display:flex; flex-direction:column; }
+
+/* ---- 見出し ---- */
+.head { margin-bottom:30px; }
+.kicker {
+  display:inline-flex; align-items:center; gap:9px;
+  font-size:18px; font-weight:600; color:var(--vermilion);
+  letter-spacing:.04em; margin-bottom:14px;
+}
+.kicker::before { content:""; width:26px; height:3px; border-radius:2px; background:var(--vermilion); }
+.title { font-size:46px; font-weight:700; line-height:1.18; letter-spacing:.01em; white-space:pre-line; }
+.title .em { color:var(--vermilion); }
+.sub { margin-top:14px; font-size:21px; font-weight:400; color:var(--ink-soft); line-height:1.5; white-space:pre-line; }
+
+.body { flex:1; display:flex; gap:40px; align-items:center; min-height:0; }
+.center { justify-content:center; }
+
+/* ---- チップ / バッジ ---- */
+.chips { display:flex; flex-wrap:wrap; gap:14px; }
+.chip {
+  display:inline-flex; align-items:center; gap:10px;
+  background:var(--paper2); border:1px solid var(--line); border-radius:14px;
+  padding:13px 20px; font-size:19px; font-weight:600; box-shadow:var(--shadow-sm);
+}
+.chip .dot { width:12px; height:12px; border-radius:50%; background:var(--vermilion); }
+.chip.ok .dot{ background:var(--ok);} .chip.free .dot{ background:var(--free);} .chip.coral .dot{ background:var(--coral);}
+
+.providers { display:flex; flex-wrap:wrap; gap:12px; }
+.badge {
+  display:inline-flex; align-items:center; gap:9px;
+  background:#fff; border:1px solid var(--line); border-radius:999px;
+  padding:10px 18px; font-size:17px; font-weight:600; color:var(--ink);
+  box-shadow:var(--shadow-sm);
+}
+.badge .pdot{ width:11px; height:11px; border-radius:50%; }
+.p-openai{ background:#10a37f;} .p-anthropic{ background:#d97757;}
+.p-gemini{ background:#4285f4;} .p-xai{ background:#222;} .p-mymemory{ background:var(--free);}
+.badge.free-pill{ background:#eef6f1; border-color:#cfe6d8; color:#2f7d52;}
+
+/* ---- カード（汎用パネル） ---- */
+.card { background:var(--paper2); border:1px solid var(--line); border-radius:22px; box-shadow:var(--shadow); }
+
+/* ---- ポップアップ・モック ---- */
+.popup { width:430px; border-radius:22px; background:var(--paper2); border:1px solid var(--line); box-shadow:var(--shadow); overflow:hidden; }
+.popup-top { padding:20px 22px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:13px; }
+.popup-logo { width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,var(--vermilion),var(--coral)); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:21px; }
+.popup-name { font-size:18px; font-weight:700; }
+.tabs { display:flex; gap:8px; margin-left:auto; }
+.tab { font-size:14px; font-weight:600; color:var(--ink-soft); padding:7px 13px; border-radius:9px; white-space:nowrap; }
+.tab.active { background:#fbe9e4; color:var(--vermilion); }
+.popup-body { padding:20px 22px 22px; display:flex; flex-direction:column; gap:15px; }
+
+.row { display:flex; align-items:center; gap:12px; }
+.row-label { font-size:16px; font-weight:600; color:var(--ink-soft); }
+
+.toggle { width:52px; height:30px; border-radius:999px; background:var(--vermilion); position:relative; flex:none; }
+.toggle::after { content:""; position:absolute; top:3px; left:25px; width:24px; height:24px; border-radius:50%; background:#fff; box-shadow:0 2px 5px rgba(0,0,0,.2); }
+.toggle.off { background:#d9d2c4; } .toggle.off::after { left:3px; }
+
+.select { flex:1; background:#fff; border:1px solid var(--line); border-radius:11px; padding:12px 15px; font-size:16px; font-weight:600; display:flex; align-items:center; justify-content:space-between; }
+.select .car { color:var(--ink-soft); font-size:13px; }
+.langflow { display:flex; align-items:center; gap:11px; }
+.arrow { color:var(--vermilion); font-size:22px; font-weight:700; flex:none; }
+
+.btns { display:flex; gap:12px; }
+.btn { flex:1; text-align:center; border-radius:12px; padding:13px 0; font-size:17px; font-weight:700; }
+.btn-primary { background:var(--vermilion); color:#fff; box-shadow:0 8px 18px rgba(216,70,43,.30); }
+.btn-ghost { background:#fff; color:var(--ink); border:1px solid var(--line); }
+.status { font-size:14px; color:var(--ok); font-weight:600; display:flex; align-items:center; gap:8px; }
+.status .sdot{ width:9px;height:9px;border-radius:50%;background:var(--ok);}
+
+/* プロバイダ・カード（API設定） */
+.provcard { display:flex; align-items:center; gap:13px; background:#fff; border:1px solid var(--line); border-radius:13px; padding:13px 16px; }
+.provcard.sel { border-color:var(--vermilion); background:#fff7f4; box-shadow:0 6px 16px rgba(216,70,43,.12); }
+.radio { width:20px; height:20px; border-radius:50%; border:2px solid #cfc7b6; flex:none; }
+.provcard.sel .radio { border-color:var(--vermilion); background:radial-gradient(circle at center, var(--vermilion) 0 6px, #fff 7px); }
+.prov-name { font-size:17px; font-weight:700; }
+.prov-key { margin-left:auto; font-family:'Plex JP',monospace; font-size:14px; color:var(--ink-soft); letter-spacing:.12em; }
+.tag { font-size:13px; font-weight:700; padding:4px 11px; border-radius:999px; }
+.tag.pay{ background:#f0ece2; color:var(--ink-soft);} .tag.free{ background:#eef6f1; color:#2f7d52;} .tag.nokey{ background:#eaf2f7; color:#2c6a8a;}
+.check { color:var(--ok); font-size:18px; font-weight:700; }
+
+.models { margin-top:4px; display:flex; flex-direction:column; gap:11px; }
+.model-row { display:flex; align-items:center; gap:13px; }
+.model-name { font-size:15px; font-weight:600; width:168px; }
+.costbar { flex:1; height:10px; border-radius:5px; background:#efe8da; overflow:hidden; }
+.costbar > span { display:block; height:100%; border-radius:5px; background:linear-gradient(90deg,var(--coral),var(--vermilion)); }
+
+/* ---- ブラウザ枠 + Before/After ---- */
+.browser { position:relative; flex:1; border-radius:18px; background:#fff; border:1px solid var(--line); box-shadow:var(--shadow); overflow:hidden; display:flex; flex-direction:column; min-width:0; }
+.browser-bar { height:46px; background:#f1ece2; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; padding:0 18px; }
+.tl { width:13px; height:13px; border-radius:50%; } .tl.r{background:#f0807a;} .tl.y{background:#f3c969;} .tl.g{background:#7ec98a;}
+.urlbar { margin-left:12px; flex:1; height:26px; background:#fff; border:1px solid var(--line); border-radius:8px; display:flex; align-items:center; padding:0 12px; font-size:13px; color:var(--ink-soft); }
+.page { flex:1; padding:26px 28px; display:flex; flex-direction:column; gap:13px; min-height:0; }
+.page .ph { font-size:22px; font-weight:700; }
+.page p { font-size:16px; line-height:1.62; color:#3a4150; white-space:pre-line; }
+.page.translated .ph, .page.translated p { color:var(--ink); }
+.tagline-pill { align-self:flex-start; font-size:13px; font-weight:700; padding:5px 13px; border-radius:999px; margin-bottom:4px; }
+.pill-before { background:#f0ece2; color:var(--ink-soft); }
+.pill-after { background:#fbe4dd; color:var(--vermilion); }
+.split { display:flex; gap:26px; align-items:stretch; flex:1; min-height:0; }
+.split .browser { flex:1; }
+
+/* フローティングボタン */
+.fab { position:absolute; width:62px; height:62px; border-radius:50%; background:var(--vermilion); color:#fff; display:flex; align-items:center; justify-content:center; font-size:26px; font-weight:700; box-shadow:0 12px 26px rgba(216,70,43,.42); border:3px solid #fff; }
+
+/* ---- 画像翻訳デモ ---- */
+.imgwrap { position:relative; width:430px; height:300px; border-radius:16px; overflow:hidden; box-shadow:var(--shadow); border:1px solid var(--line); }
+.imgwrap .photo { width:100%; height:100%; background:linear-gradient(135deg,#cfe0ea,#aec6d8 55%,#8fb0c6); display:flex; align-items:center; justify-content:center; }
+.img-orig { position:absolute; left:26px; top:34px; font-size:26px; font-weight:700; color:#23323f; opacity:.35; }
+.img-overlay { position:absolute; left:22px; top:28px; background:rgba(255,253,248,.96); color:var(--ink); font-size:21px; font-weight:700; padding:8px 14px; border-radius:9px; box-shadow:var(--shadow-sm); }
+.img-overlay.two { top:80px; font-size:18px; }
+.hover-btn { position:absolute; right:14px; bottom:14px; background:var(--vermilion); color:#fff; font-size:16px; font-weight:700; padding:7px 15px; border-radius:10px; box-shadow:0 6px 14px rgba(216,70,43,.4); }
+
+/* クイック翻訳 */
+.quick { width:430px; border-radius:18px; background:var(--paper2); border:1px solid var(--line); box-shadow:var(--shadow); padding:20px 22px; display:flex; flex-direction:column; gap:13px; }
+.quick-head { font-size:17px; font-weight:700; display:flex; align-items:center; gap:10px; }
+.quick-head .qflow { margin-left:auto; font-size:14px; color:var(--ink-soft); font-weight:600; }
+.qbox { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 15px; font-size:16px; line-height:1.5; color:var(--ink); min-height:84px; white-space:pre-line; }
+.qbox.out { background:#fff7f4; border-color:#f3d2c8; }
+.qbar { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--ink-soft); }
+.qbar .spacer{ flex:1; }
+.qchip { font-size:13px; font-weight:600; padding:5px 11px; border-radius:8px; background:#f0ece2; }
+
+.foot { margin-top:26px; font-size:18px; color:var(--ink-soft); display:flex; align-items:center; gap:10px; white-space:pre-line; }
+.foot .fdot{ width:8px;height:8px;border-radius:50%;background:var(--coral); flex:none;}
+
+/* ---- プロモーションタイル（CWS: 小 440x280 / マーキー 1400x560） ---- */
+.promo { width:100vw; height:100vh; display:flex; align-items:center; }
+.promo-logo { background:linear-gradient(135deg,var(--vermilion),var(--coral)); color:#fff; font-weight:700; display:flex; align-items:center; justify-content:center; box-shadow:var(--shadow); flex:none; }
+
+/* 小タイル 440x280：ブランド中心・最小要素 */
+.promo-small { flex-direction:column; justify-content:center; text-align:center; gap:15px; padding:26px; }
+.promo-small .promo-logo { width:84px; height:84px; border-radius:23px; font-size:46px; }
+.promo-small .promo-name { font-size:29px; font-weight:700; line-height:1.12; }
+.promo-small .promo-tag { font-size:16px; color:var(--ink-soft); }
+
+/* マーキー 1400x560：左ブランド + 右に特徴チップ/プロバイダ */
+.promo-marquee { padding:0 92px; gap:72px; }
+.mq-left { flex:1.25; display:flex; flex-direction:column; gap:20px; }
+.mq-left .promo-logo { width:118px; height:118px; border-radius:30px; font-size:64px; }
+.mq-left .promo-name { font-size:54px; font-weight:700; line-height:1.08; }
+.mq-left .promo-tag { font-size:27px; color:var(--ink-soft); line-height:1.45; }
+.mq-right { flex:1; display:flex; flex-direction:column; gap:15px; align-items:flex-start; }

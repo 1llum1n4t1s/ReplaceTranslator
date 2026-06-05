@@ -1,6 +1,6 @@
 {
   "appName": {
-    "message": "リプレース翻訳",
+    "message": "Replace AI Translator API",
     "description": "拡張機能名 (chrome://extensions およびストア表示)"
   },
   "appDescription": {
@@ -8,11 +8,11 @@
     "description": "拡張機能の短い説明 (manifest.description)"
   },
   "defaultTitle": {
-    "message": "リプレース翻訳",
+    "message": "Replace AI Translator API",
     "description": "ツールバーアイコンの hover ツールチップ"
   },
 
-  "headerTitle": { "message": "リプレース翻訳" },
+  "headerTitle": { "message": "Replace AI Translator API" },
   "headerTagline": { "message": "各社 LLM で、ページを置換翻訳" },
   "tabTranslate": { "message": "翻訳" },
   "tabKeys": { "message": "キー" },
@@ -52,7 +52,7 @@
   "toastDone": { "message": "完了" },
   "toastRestored": { "message": "原文に戻しました" },
 
-  "optionsTitle": { "message": "リプレース翻訳 — 設定" },
+  "optionsTitle": { "message": "Replace AI Translator API — 設定" },
   "optionsLead": { "message": "各プロバイダの API キーを入力してください。キーはこのブラウザ内にローカル保存され、翻訳時に該当プロバイダの API にのみ送信されます。" },
   "optKeysTitle": { "message": "API キー" },
   "optShow": { "message": "表示" },

@@ -1,6 +1,6 @@
 {
   "appName": {
-    "message": "Replace Translator",
+    "message": "Replace AI Translator API",
     "description": "Extension name shown in chrome://extensions and the stores"
   },
   "appDescription": {
@@ -8,11 +8,11 @@
     "description": "Short description (manifest.description)"
   },
   "defaultTitle": {
-    "message": "Replace Translator",
+    "message": "Replace AI Translator API",
     "description": "Toolbar icon tooltip"
   },
 
-  "headerTitle": { "message": "Replace Translator" },
+  "headerTitle": { "message": "Replace AI Translator API" },
   "headerTagline": { "message": "Replace any page with cloud LLMs" },
   "tabTranslate": { "message": "Translate" },
   "tabKeys": { "message": "Keys" },
@@ -52,7 +52,7 @@
   "toastDone": { "message": "Done" },
   "toastRestored": { "message": "Restored original" },
 
-  "optionsTitle": { "message": "Replace Translator — Settings" },
+  "optionsTitle": { "message": "Replace AI Translator API — Settings" },
   "optionsLead": { "message": "Enter your own API key for each provider. Keys are stored locally in this browser and are sent only to that provider's API when translating." },
   "optKeysTitle": { "message": "API keys" },
   "optShow": { "message": "Show" },

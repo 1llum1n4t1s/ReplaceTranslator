@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="theme.css"></head>
+<body>
+  <div class="slide">
+    <div class="head">
+      <div class="kicker" data-t="kicker"></div>
+      <div class="title" data-t="title"></div>
+      <div class="sub" data-t="sub"></div>
+    </div>
+    <div class="body">
+      <div style="flex:1;display:flex;flex-direction:column;gap:18px;">
+        <div class="providers">
+          <span class="badge"><span class="pdot p-openai"></span>OpenAI</span>
+          <span class="badge"><span class="pdot p-anthropic"></span>Anthropic</span>
+          <span class="badge"><span class="pdot p-gemini"></span>Gemini</span>
+          <span class="badge"><span class="pdot p-xai"></span>xAI Grok</span>
+          <span class="badge free-pill"><span class="pdot p-mymemory"></span><span data-t="nokey"></span></span>
+        </div>
+        <div class="foot" style="margin-top:6px;"><span class="fdot"></span><span data-t="note"></span></div>
+      </div>
+      <div class="popup" style="width:472px;">
+        <div class="popup-top">
+          <div class="popup-logo">訳</div>
+          <div class="popup-name">Replace AI Translator</div>
+          <div class="tabs"><span class="tab" data-t="tabTranslate"></span><span class="tab active" data-t="tabApi"></span></div>
+        </div>
+        <div class="popup-body" style="gap:11px;">
+          <div class="provcard sel"><span class="radio"></span><span class="prov-name">OpenAI</span><span class="tag pay" data-t="tagPay"></span><span class="prov-key">sk-•••••••</span></div>
+          <div class="provcard"><span class="radio"></span><span class="prov-name">Gemini</span><span class="tag free" data-t="tagFree"></span><span class="check">✓</span></div>
+          <div class="provcard"><span class="radio"></span><span class="prov-name">MyMemory</span><span class="tag nokey" data-t="tagNokey"></span></div>
+          <div class="models">
+            <div class="model-row"><span class="model-name">gpt-5.1</span><span class="costbar"><span style="width:64%"></span></span></div>
+            <div class="model-row"><span class="model-name">gpt-5.1-mini</span><span class="costbar"><span style="width:30%"></span></span></div>
+            <div class="model-row"><span class="model-name">gpt-4o-mini</span><span class="costbar"><span style="width:15%"></span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -8,8 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `pnpm test` — Node 標準テスト（`node --test`。純粋関数のみ: actions / providers / lang）
 - 単一ファイル: `node --test test/providers.test.js` ／ 単一テスト名: `node --test --test-name-pattern "BatchTuner"`
 - `pnpm run lint` — ESLint（Flat Config v9+）
-- `pnpm run generate-icons` — SVG → PNG（sharp）。`pnpm run build` はこれだけ（バンドル無し）
-- `zip.ps1` / `zip.sh` — Chrome zip + Firefox xpi を生成
+- `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
+- `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
+- ストア掲載画像は `webstore/*.html`（テンプレ）+ `webstore/generate-screenshots.js`（puppeteer）→ `webstore/images/{ja,en}/`。依存は `webstore/package.json`（gitignore）に隔離し `pnpm -C webstore install` で ad-hoc 導入
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（§popup フォント参照）
 
 ## 規約上の前提（設計の根拠）
@@ -72,8 +73,9 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 ## popup フォント（IBM Plex Sans JP を同梱）
 - MV3 拡張は CSP/プライバシー/審査の都合で**外部 CDN フォント不可** → フル TTF を `pyftsubset` で必要範囲(Latin/かな/漢字 U+4E00-9FFF/記号)だけサブセット化した woff2 を `src/popup/fonts/` に同梱し `@font-face` で `'self'` から読む（400/600/700）。`popup.css` の `--display`/`--sans` 先頭に指定。明朝は使わない
 
-## Firefox 対応
-- `manifest.firefox.json` は `background.scripts` で lib を読み込む（`importScripts` は Chrome のみ）。background.js 冒頭で `typeof importScripts === "function"` をガード
+## Firefox 対応（単一 manifest.json で Chrome / Firefox 共用）
+- `manifest.json` の `background` に **`service_worker`（Chrome 用）と `scripts`（Firefox 用 = lib 全ファイル + `src/service_worker.js`）を併記**する。Chrome は `service_worker` を読み、`src/service_worker.js` 冒頭の `importScripts(...)` で lib をロード。Firefox は `scripts` 配列を順次ロード。`typeof importScripts === "function"` ガードで両対応（`manifest.firefox.json` は廃止）
+- `browser_specific_settings.gecko`（id / strict_min_version / data_collection_permissions）は `manifest.json` に inline（Chrome は無視するので安全）
 - offscreen / tabCapture など Firefox 未対応 API は不使用のため strip マーカー不要
 
 ## Lint / i18n 方針
@@ -82,5 +84,5 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - UI 文言は `_locales/{en,ja}/messages.json`、HTML は `data-i18n` 属性、JS は `chrome.i18n.getMessage`。文言を足すときは en/ja の両方に追加する
 
 ## リリース
-- `vava.config.json` + `.cws-id`（実 ID へ要差し替え）+ `.amo-metadata.json` を使い、`/vava` で version bump → CI 配信
-- バージョン番号（`package.json` / `manifest.json` / `manifest.firefox.json`）の更新は**ゆろさんが明示的に指示したときだけ**行う
+- `vava.config.json` + `.cws-id`（実 ID へ要差し替え）+ AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
+- バージョン番号（`package.json` / `manifest.json`）の更新は**ゆろさんが明示的に指示したときだけ**行う

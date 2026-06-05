@@ -1,6 +1,4 @@
 node_modules/
-# 生成物 (generate-icons.js が SVG から書き出す PNG)
-icons/icon-*.png
 temp-build/
 temp-build-*/
 *.zip
@@ -11,6 +9,14 @@ temp/
 firefox-build/
 web-ext-artifacts/
 *.xpi
+# update-amo-listing.mjs が webstore/*.txt + vava.config.json から毎回生成する中間物
+amo-metadata.json
+# webstore スクショ生成の依存 (puppeteer 等・ad-hoc install。ReviewForMD と同じ隔離運用)
+webstore/node_modules/
+webstore/package.json
+webstore/package-lock.json
+webstore/pnpm-lock.yaml
+webstore/pnpm-workspace.yaml
 # 認証情報のうっかり commit を防ぐ defense-in-depth (AMO_JWT_* / CWS_* OAuth refresh token 等)
 .env
 .env.*

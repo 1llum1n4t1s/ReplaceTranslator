@@ -23,19 +23,14 @@ jobs:
       - name: バージョンを取得
         id: version
         run: |
-          chrome_version=$(jq -r '.version' manifest.json)
-          firefox_version=$(jq -r '.version' manifest.firefox.json)
-          if [ -z "$chrome_version" ] || [ "$chrome_version" = "null" ]; then
+          # Chrome/Firefox は単一 manifest.json を共有するため version 取得元も 1 本
+          version=$(jq -r '.version' manifest.json)
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
             echo "::error::manifest.json の version 取得に失敗しました"
             exit 1
           fi
-          # Chrome/Firefox の manifest version がズレているとストア間で別バージョンを公開してしまうため一致を必須にする
-          if [ "$chrome_version" != "$firefox_version" ]; then
-            echo "::error::manifest.json ($chrome_version) と manifest.firefox.json ($firefox_version) の version が一致しません"
-            exit 1
-          fi
-          echo "version=$chrome_version" >> "$GITHUB_OUTPUT"
-          echo "📦 公開対象バージョン: $chrome_version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "📦 公開対象バージョン: $version"
 
       - name: ブランチ名とバージョンの整合性を確認
         env:
@@ -66,9 +61,6 @@ jobs:
       - name: テスト実行
         run: pnpm test
 
-      - name: アイコン生成
-        run: node scripts/generate-icons.js
-
       - name: zip パッケージを作成
         run: |
           # _locales/ は manifest.json の default_locale 参照先。含めないと CWS の Submit for review で
@@ -86,8 +78,9 @@ jobs:
 
       - name: Firefox 用ソースディレクトリを構築
         run: |
+          # 単一 manifest.json を共有（Firefox は background.scripts、Chrome は service_worker を使う）
           mkdir -p firefox-build
-          cp manifest.firefox.json firefox-build/manifest.json
+          cp manifest.json firefox-build/manifest.json
           cp -r icons firefox-build/
           cp -r src firefox-build/
           cp -r _locales firefox-build/
@@ -288,6 +281,15 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: AMO listing メタデータを生成
+        if: ${{ steps.amo-preflight.outputs.skip != 'true' }}
+        run: |
+          # webstore/store-listing.firefox.{ja,en}.txt + vava.config.json + package.json を single source として
+          # amo-metadata.json（名前/概要/説明/カテゴリ/homepage/support_url/version.license）を生成。
+          # listed version は license 必須・初回は categories 必須なので、これを --amo-metadata で
+          # 渡さないと web-ext sign が Bad Request（license/categories required）で落ちる。
+          node update-amo-listing.mjs
+
       - name: Firefox AMO に submit (web-ext sign --channel=listed)
         if: ${{ steps.amo-preflight.outputs.skip != 'true' }}
         env:
@@ -303,7 +305,7 @@ jobs:
             --source-dir=firefox-build \
             --artifacts-dir=web-ext-artifacts \
             --channel=listed \
-            --amo-metadata=.amo-metadata.json 2>&1 | tee /tmp/web-ext.log
+            --amo-metadata=amo-metadata.json 2>&1 | tee /tmp/web-ext.log
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then

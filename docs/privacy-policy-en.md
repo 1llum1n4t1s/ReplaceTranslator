@@ -1,9 +1,9 @@
-# Privacy Policy — Replace Translator
+# Privacy Policy — Replace AI Translator API
 
 Last updated: 2026-06-03
 
 ## Information we collect
-Replace Translator's developer does not collect, store, or receive any of your data, and the extension uses no analytics and no tracking. The text you translate — and, if you enable image translation, the images — are sent only to the translation provider you choose (see "Page text" and "Image translation" below).
+Replace AI Translator API's developer does not collect, store, or receive any of your data, and the extension uses no analytics and no tracking. The text you translate — and, if you enable image translation, the images — are sent only to the translation provider you choose (see "Page text" and "Image translation" below).
 
 ## API keys
 - Your API keys for each LLM provider (OpenAI / Anthropic / Google / xAI) are stored only inside your browser (`chrome.storage.local`). MyMemory needs no key.

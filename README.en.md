@@ -1,4 +1,4 @@
-# 📖 Replace Translator
+# 📖 Replace AI Translator API
 
 > 日本語版は [README.md](README.md) を参照してください。
 
@@ -56,7 +56,7 @@ Japanese, English, Chinese (Simplified / Traditional), Korean, Spanish, French, 
 ## 🔒 Privacy
 - API keys are stored **only inside your browser**
 - Page text is sent **only to the provider API you selected** when translating (never to the extension developer's servers)
-- See the [Privacy Policy](docs/privacy-policy.en.md) for details
+- See the [Privacy Policy](docs/privacy-policy-en.md) for details
 
 ## 🛠 Troubleshooting
 - **"No API key set"** — enter the key for the selected provider in Settings (⚙)

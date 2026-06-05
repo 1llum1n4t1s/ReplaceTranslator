@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="theme.css"></head>
+<body>
+  <div class="slide">
+    <div class="head">
+      <div class="kicker" data-t="kicker"></div>
+      <div class="title" data-t="title"></div>
+      <div class="sub" data-t="sub"></div>
+    </div>
+    <div class="body">
+      <div style="flex:1;display:flex;flex-direction:column;gap:16px;">
+        <span class="chip"><span class="dot"></span><span data-t="b1"></span></span>
+        <span class="chip"><span class="dot"></span><span data-t="b2"></span></span>
+        <span class="chip ok"><span class="dot"></span><span data-t="b3"></span></span>
+      </div>
+      <div class="popup">
+        <div class="popup-top">
+          <div class="popup-logo">訳</div>
+          <div class="popup-name">Replace AI Translator</div>
+          <div class="tabs"><span class="tab active" data-t="tabTranslate"></span><span class="tab" data-t="tabApi"></span></div>
+        </div>
+        <div class="popup-body">
+          <div class="row"><span class="toggle"></span><span class="row-label" data-t="autoLabel"></span></div>
+          <div class="langflow">
+            <span class="select"><span data-t="srcLang"></span><span class="car">▾</span></span>
+            <span class="arrow">→</span>
+            <span class="select"><span data-t="tgtLang"></span><span class="car">▾</span></span>
+          </div>
+          <div class="row"><span class="toggle off"></span><span class="row-label" data-t="imgOpt"></span></div>
+          <div class="btns"><span class="btn btn-primary" data-t="btnTranslate"></span><span class="btn btn-ghost" data-t="btnRestore"></span></div>
+          <div class="status"><span class="sdot"></span><span data-t="statusMsg"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

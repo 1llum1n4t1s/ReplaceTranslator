@@ -6,8 +6,8 @@
     "homepage": "https://github.com/1llum1n4t1s/ReplaceTranslator",
     "supportUrl": "https://github.com/1llum1n4t1s/ReplaceTranslator/issues",
     "defaultName": {
-      "ja": "リプレース翻訳",
-      "en-US": "Replace Translator"
+      "ja": "Replace AI Translator API",
+      "en-US": "Replace AI Translator API"
     },
     "listingFiles": {
       "ja": "webstore/store-listing.firefox.ja.txt",
@@ -15,7 +15,7 @@
     },
     "privacyFiles": {
       "ja": "docs/privacy-policy.md",
-      "en-US": "docs/privacy-policy.en.md"
+      "en-US": "docs/privacy-policy-en.md"
     }
   },
   "cws": {
@@ -24,8 +24,8 @@
   "driftKeywords": {
     "_comment": "check-store-listing.mjs の drift 判定キーワード。未設定 (null) なら drift チェックを skip。",
     "cws": {
-      "ja": ["リプレース翻訳"],
-      "en": ["Replace Translator"]
+      "ja": ["Replace AI Translator API"],
+      "en": ["Replace AI Translator API"]
     },
     "amo": {
       "summary": {

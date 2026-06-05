@@ -1,0 +1,134 @@
+============================================================
+Chrome Web Store listing (copy & paste) — English (en)
+============================================================
+
+[Store listing] tab
+------------------------------------------------------------
+
+■ Name (max 75 chars)
+Replace AI Translator API
+
+■ Summary (max 132 chars)
+Translate any page in place with cloud LLMs (OpenAI, Anthropic, Gemini, Grok) via your own API key. One-click restore.
+
+■ Description (max 16,000 chars)
+
+Translate the web page you are viewing in place using cloud LLMs (OpenAI / Anthropic / Google Gemini / xAI (Grok)). Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
+
+[Features]
+- In-place replacement — replace the original text with the translation, toggle back to the original
+- Multiple LLM providers — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
+- No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
+- Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
+- Infinite scroll / SPA friendly — content loaded later is translated automatically
+- Quick translate — translate short text right inside the popup
+- Image text translation (experimental, vision-capable LLMs)
+- Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
+
+[About API keys]
+In line with each provider's terms, this extension works with API keys (API tokens) only. It does not reuse subscription logins (ChatGPT Plus / Claude Pro / Gemini Advanced, etc.), which would violate those terms. To try it for free, Google Gemini (free tier) or the no-key MyMemory option is a good start.
+
+[How to use]
+1. Install from the Chrome Web Store
+2. Click the toolbar icon, open the "Keys" tab, and enter the API key for the provider you want (MyMemory needs no key)
+3. In the "Translate" tab, pick the source and target languages, then click "Translate". Click "Restore" to go back
+4. You can also toggle translate/restore from the floating button at the bottom-right of the page, or the right-click menu
+5. Turn on image translation in the "Keys" tab, then hover an image and click the translate button to translate the text inside it (experimental, vision-capable LLMs)
+
+[Privacy]
+- The developer does not collect, store, or receive your data (no analytics, no tracking)
+- API keys are stored only inside your browser (chrome.storage.local)
+- The text to translate (and images, when image translation is on) is sent only to the provider API you selected
+- Nothing is ever sent to the developer's servers
+- See the privacy policy for details
+
+■ Category
+Productivity
+
+■ Language
+English
+
+------------------------------------------------------------
+
+[Graphic assets] tab
+------------------------------------------------------------
+
+■ Store icon (128x128)
+→ icons/icon128.png
+
+■ Screenshots (1280x800) — up to 5, at least 1
+  webstore/images/en/01-hero.png … 05-image-quick.png
+
+■ Small promo tile (440x280) — optional
+→ webstore/images/en/promo-small-440x280.png
+
+■ Marquee promo tile (1400x560) — optional (required to be considered for featuring)
+→ webstore/images/en/promo-marquee-1400x560.png
+
+------------------------------------------------------------
+
+[Privacy practices] tab
+------------------------------------------------------------
+
+■ Does this item have a single purpose?
+Yes
+
+■ Single purpose description
+Translate the text (and, optionally, the text inside images) of the web page the user is viewing, using a cloud LLM / NMT API chosen by the user, and display the translation in place on the page.
+
+■ Permission justification
+
+  activeTab:
+  Used when the user triggers translation from the popup or the right-click menu, to read the
+  current tab's page content and replace it with the translated text.
+
+  storage:
+  Stores the user's settings, API key, monthly token usage, and the auto-tuned batch size
+  locally in the browser (chrome.storage.local). Nothing is sent to the developer.
+
+  scripting:
+  Injects the translation engine (translator.js) into the target page (all frames) on demand to
+  translate text nodes in place and to restore the original text.
+
+  contextMenus:
+  Adds "Translate this page" / "Restore original" entries to the right-click menu.
+
+  host permissions (<all_urls>):
+  Needed so the user can translate any web page. The content script is injected into the page,
+  and requests to the translation provider's API are proxied from the background service worker
+  (so the API key is never exposed to the page context, and CORS is avoided). No host is contacted
+  except the translation provider the user selected.
+
+■ Are you using remote code?
+No
+(All code is contained within the extension package; no remote code is loaded or executed. Calls to
+translation providers transmit data, not executable code.)
+
+■ Data usage disclosure
+
+  What user data do you collect / transfer?
+  - Website content: YES. The page text (and, when image translation is enabled, images) is sent
+    only to the translation provider the user selected, solely to perform the translation. It is
+    never sent to the developer's servers.
+  - Personally identifiable information: No
+  - Health information: No
+  - Financial and payment information: No
+  - Authentication information: The API key is stored locally only (chrome.storage.local) and is
+    sent only to the selected provider's API for authentication. It is never sent to the developer.
+  - Personal communications / location / web history / user activity: No
+
+  Certifications (all true):
+  - I do not sell or transfer user data to third parties, outside of the approved use cases
+  - I do not use or transfer user data for purposes that are unrelated to my item's single purpose
+  - I do not use or transfer user data to determine creditworthiness or for lending purposes
+
+------------------------------------------------------------
+
+[Distribution] tab
+------------------------------------------------------------
+
+■ Visibility
+Public
+
+■ Regions
+All regions
