@@ -39,6 +39,7 @@
   "statusStarting": { "message": "開始中…" },
   "statusError": { "message": "エラー" },
   "statusDone": { "message": "完了" },
+  "statusSameLang": { "message": "ページは既に翻訳先の言語です" },
 
   "ctxTranslate": { "message": "このページを翻訳" },
   "ctxRestore": { "message": "原文に戻す" },
@@ -63,6 +64,8 @@
   "optMyMemoryNote": { "message": "キー不要。メールを入れると無料枠が増えます（匿名 5千 / メール登録 5万字/日）。NMT エンジン・1テキスト最大500バイト。" },
   "optImageTranslate": { "message": "画像内テキストの翻訳" },
   "optImageTranslateDesc": { "message": "画像にホバーして「訳」を押すと、その画像内の文字を翻訳します（1枚ずつ手動）。vision 対応 LLM のみ・MyMemory 不可。" },
+  "optShowFab": { "message": "フローティングボタン" },
+  "optShowFabDesc": { "message": "ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。" },
   "imgBtn": { "message": "画像内のテキストを翻訳" },
   "optBatchSize": { "message": "バッチサイズ（1 リクエストあたりのテキスト数）" },
   "optSave": { "message": "保存" },

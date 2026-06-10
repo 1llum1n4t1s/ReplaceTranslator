@@ -20,6 +20,19 @@ test("buildSystemPrompt names an explicit source language", () => {
   assert.match(p, /source language is English/i);
 });
 
+test("buildSystemPrompt with explicit source translates ONLY that language (third languages stay)", () => {
+  const p = ProviderApi.buildSystemPrompt("en", "ja");
+  assert.match(p, /Translate ONLY the elements written in English/);
+  assert.match(p, /any other language unchanged/i);
+  assert.doesNotMatch(p, /NOT in Japanese/); // 「target 以外は全部訳す」ルールは source 確定時には出さない
+});
+
+test("buildSystemPrompt with auto source keeps the NOT-in-target rule", () => {
+  const p = ProviderApi.buildSystemPrompt("auto", "ja");
+  assert.match(p, /NOT in Japanese/);
+  assert.doesNotMatch(p, /Translate ONLY the elements written in/);
+});
+
 // ---- buildRequest (3社の形状) ----
 
 test("buildRequest openai shape", () => {

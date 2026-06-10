@@ -12,6 +12,9 @@
   if (window.__rtFabLoaded) return;
   window.__rtFabLoaded = true;
   if (window.top !== window.self) return; // トップフレームのみ
+  // 動画/音声ファイルを直接開いたメディアページは翻訳対象テキストが無いので FAB を出さない
+  // (ブラウザ生成の <video>/<audio> だけのページ。YouTube 等の通常の動画サイトは text/html なので対象外)
+  if (/^(video|audio)\//.test(document.contentType || "")) return;
 
   const A = globalThis.Actions;
   const POS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.FAB_POSITION) || "fabPosition";
@@ -157,12 +160,20 @@
     else if (m.state === "done") { state = "on"; render(); pulse(); }
     else if (m.state === "error") { state = "off"; render(); }
     else if (m.state === "restored") { state = "off"; render(); }
+    else if (m.state === "skipped") { state = "off"; render(); } // ページ言語=翻訳先 → 訳すものが無いので未翻訳状態へ戻す
   });
 
   render();
-  (document.body || document.documentElement).appendChild(fab);
 
-  // 保存済みの位置を復元
+  // FAB の表示可否 (showFab)。インライン display は fab.css (#__rt_fab) より優先されるので確実に消せる。
+  function applyVisibility(flags) {
+    fab.style.display = (flags && flags.showFab === false) ? "none" : "";
+  }
+  function mount() {
+    (document.body || document.documentElement).appendChild(fab);
+  }
+
+  // 保存済みの位置を復元 (DOM 追加前でも style 適用は有効)
   try {
     chrome.storage.local.get(POS_KEY, (d) => {
       const pos = d && d[POS_KEY];
@@ -172,15 +183,25 @@
     });
   } catch (_e) { /* noop */ }
 
-  // グローバル翻訳 ON (autoTranslate) なら、開いたページを自動で翻訳する (非機密フラグのみ読む)
+  // 非機密フラグを読んでから DOM に載せる (showFab=OFF 設定でのチラつき防止)。
+  // グローバル翻訳 ON (autoTranslate) なら開いたページを自動で翻訳する (FAB 非表示でも独立して動く)。
   try {
     chrome.storage.local.get(CFLAGS_KEY, (d) => {
       const f = d && d[CFLAGS_KEY];
+      applyVisibility(f);
+      mount();
       if (f && f.autoTranslate) {
         state = "loading";
         render();
         send({ action: A.TRANSLATE_PAGE });
       }
+    });
+  } catch (_e) { mount(); }
+
+  // popup でトグルされたら開いているページにも即時反映する
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[CFLAGS_KEY]) applyVisibility(changes[CFLAGS_KEY].newValue);
     });
   } catch (_e) { /* noop */ }
 })();

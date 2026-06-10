@@ -219,6 +219,7 @@
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("image-translate").checked = Boolean(state.settings.imageTranslate);
+    $("show-fab").checked = state.settings.showFab !== false;
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -378,6 +379,7 @@
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
     $("image-translate").addEventListener("change", (e) => save({ imageTranslate: e.target.checked }));
+    $("show-fab").addEventListener("change", (e) => save({ showFab: e.target.checked }));
 
     // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
     $("refresh-models").addEventListener("click", () => loadModels(true));
@@ -401,6 +403,7 @@
       else if (m.state === "done") setStatus(msg("statusDone", "Done"));
       else if (m.state === "error") setStatus(msg("statusError", "Error"));
       else if (m.state === "restored") setStatus("");
+      else if (m.state === "skipped") setStatus(msg("statusSameLang", "Page is already in the target language"));
     });
   }
 

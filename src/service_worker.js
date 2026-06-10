@@ -49,7 +49,7 @@ if (typeof importScripts === "function") {
     await chrome.storage.local.set({
       [StorageKeys.SETTINGS]: normalized,
       // content script (fab/image-translator) が読む非機密フラグ。apiKeys を content 文脈に出さないため分離する。
-      [StorageKeys.CONTENT_FLAGS]: { autoTranslate: normalized.autoTranslate, imageTranslate: normalized.imageTranslate },
+      [StorageKeys.CONTENT_FLAGS]: { autoTranslate: normalized.autoTranslate, imageTranslate: normalized.imageTranslate, showFab: normalized.showFab },
     });
     settingsMem = normalized; // キャッシュを最新化 (onChanged より先に確定させる)
     return normalized;
@@ -77,7 +77,7 @@ if (typeof importScripts === "function") {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
     if (cur) return;
     const s = await getSettings();
-    await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate } });
+    await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate, showFab: s.showFab } });
   }
 
   // ---- メモリ集約: BATCH_TUNING / TOKEN_USAGE を SW メモリに保持し、毎バッチの storage I/O を
@@ -734,6 +734,11 @@ if (typeof importScripts === "function") {
             if (cur) { cur.timer = null; relayProgress(tabId, msg); }
           }, FRAME_DONE_GRACE_MS);
         }
+        break;
+      case "skipped":
+        // メインフレームが「ページ言語=翻訳先」で翻訳不要と判定。iframe が翻訳中ならそちらの done 表示に任せ、
+        // どのフレームも翻訳していないときだけ中継して FAB/popup を未翻訳状態に戻す。
+        if (st.active.size === 0) relayProgress(tabId, msg);
         break;
       case "restored":
         resetFrameProgress(tabId);

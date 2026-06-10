@@ -505,6 +505,47 @@
     return false;
   }
 
+  // ---- ページ言語検出 (sourceLang=auto の解決) ----
+  // 「翻訳先と異なる言語を全部訳す」だと日本語ページに散在する英語メニュー等まで訳してしまう。
+  // ページの主要言語を翻訳元として解決し、ページ言語=翻訳先のページは翻訳しない。
+  // 翻訳対象と同じ基準 (collectNodes) の実テキストから先頭をサンプルする。
+  function samplePageText(limit) {
+    let s = "";
+    for (const n of collectNodes(document.body || document.documentElement)) {
+      const t = (n.nodeValue || "").trim();
+      if (t) s += (s ? " " : "") + t;
+      if (s.length >= limit) break;
+    }
+    return s.slice(0, limit);
+  }
+
+  // chrome.i18n.detectLanguage (CLD) で言語判定し、この拡張の言語コードへ正規化して返す。
+  // 判定が不確実 (isReliable=false) / API 不在 / 表外言語は null。
+  function detectLanguageOf(text) {
+    return new Promise((resolve) => {
+      try {
+        chrome.i18n.detectLanguage(text, (res) => {
+          const ok = !chrome.runtime.lastError && res && res.isReliable &&
+            Array.isArray(res.languages) && res.languages.length > 0;
+          resolve(ok ? ((globalThis.Lang && Lang.normalizeCode(res.languages[0].language)) || null) : null);
+        });
+      } catch (_e) { resolve(null); }
+    });
+  }
+
+  // 実テキストの CLD 判定を優先し、html lang 属性は補助に使う (テンプレ由来で実内容と違う lang が多いため)。
+  // どちらも取れなければ null (= 従来どおり「翻訳先以外を翻訳」にフォールバック)。
+  async function detectPageLang() {
+    // 2000 字: ページ先頭に英語ナビ等の異言語が固まっていても、本文まで含めれば CLD は多数派言語を返す
+    const text = samplePageText(2000);
+    if (text.length >= 40) { // 短文すぎる判定は誤りやすいので CLD には最低量を要求
+      const byText = await detectLanguageOf(text);
+      if (byText) return byText;
+    }
+    const attr = (document.documentElement && document.documentElement.lang) || "";
+    return (globalThis.Lang && Lang.normalizeCode(attr)) || null;
+  }
+
   // 適用済みの訳文を原文へ戻し、翻訳済みマークをクリアする (再翻訳前のリセット / 復元で共用)
   function revertTranslations() {
     for (const node of translatedNodes) {
@@ -516,7 +557,7 @@
     translatedNodes.clear();
   }
 
-  function startTranslate(newSettings) {
+  async function startTranslate(newSettings) {
     settings = newSettings;
     // 2 回目以降の翻訳 (言語/provider 変更で再実行) は先に原文へ戻す。前回の訳が残ると accept() が既訳ノードを
     // 全弾きし、iframe では frameHasEnoughText() が 0 字と誤判定して再翻訳されないため、閾値判定より前に revert する。
@@ -529,7 +570,23 @@
       translating = false;
       runId += 1;
       stopObservers(); // io/mo 切断 + queue/pendingBatches クリア (未起動なら no-op)
-      return Promise.resolve();
+      return;
+    }
+    // sourceLang=auto はページの主要言語を検出して翻訳元に解決する。
+    // ページ言語=翻訳先のページは翻訳しない (日本語ページの英語メニュー等の断片を巻き込まない + API 呼び出しゼロ)。
+    if (settings.sourceLang === "auto") {
+      translating = false; // 検出の await 中は旧 observers/ループを止めておく
+      runId += 1;
+      const myDetect = runId;
+      const pageLang = await detectPageLang();
+      if (runId !== myDetect) return; // 検出中に restore / 別の翻訳開始が走った
+      if (pageLang && pageLang === settings.targetLang) {
+        stopObservers();
+        // skip の通知はメインフレームのみ (iframe の skip は frameHasEnoughText 不通過と同様に静かに終わる)
+        if (window.top === window.self) notifyProgress("skipped");
+        return;
+      }
+      if (pageLang) settings = Object.assign({}, settings, { sourceLang: pageLang });
     }
     translating = true;
     runId += 1;
@@ -554,7 +611,6 @@
     scheduleReingest();
     // 翻訳対象が無いページでも状態が固まるよう、保険で done 判定を 1 度入れる
     window.setTimeout(() => maybeAnnounceDone(myRun), 1500);
-    return Promise.resolve();
   }
 
   function restore() {

@@ -39,7 +39,7 @@
     FAB_POSITION: "fabPosition",   // FAB のドラッグ位置 {left, top}
     MODELS_CACHE: "modelsCache",   // 動的取得したモデル一覧 {provider: {models, fetchedAt}}
     BATCH_TUNING: "batchTuning",   // バッチサイズ自動学習の状態 {provider: {size, throughput, dir}}
-    CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, imageTranslate} (apiKeys を含めない)
+    CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, imageTranslate, showFab} (apiKeys を含めない)
   });
 
   // ---- プロバイダ定義 ----
@@ -111,7 +111,7 @@
   // ---- 設定スキーマ ----
   const DEFAULT_SETTINGS = Object.freeze({
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
-    sourceLang: "auto",          // auto = 自動判定 (target 以外の言語を翻訳)
+    sourceLang: "auto",          // auto = ページの主要言語を検出して翻訳元にする (検出不能時は target 以外を翻訳)
     targetLang: "ja",
     apiKeys: Object.freeze({ openai: "", anthropic: "", gemini: "", xai: "", mymemory: "" }),
     models: Object.freeze({
@@ -123,6 +123,7 @@
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     imageTranslate: false,       // 画像内テキストの翻訳 (オプション・vision)
+    showFab: true,               // ページ右下のフローティング翻訳ボタンを表示する (OFF でも popup/右クリックから翻訳可)
   });
 
   /**
@@ -150,6 +151,7 @@
       models,
       autoTranslate: Boolean(r.autoTranslate),
       imageTranslate: Boolean(r.imageTranslate),
+      showFab: r.showFab !== false, // 既定 ON。既存ユーザーの保存済み設定 (キー欠損) でも FAB が消えないよう !== false で判定
     };
   }
 

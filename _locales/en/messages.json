@@ -39,6 +39,7 @@
   "statusStarting": { "message": "Starting…" },
   "statusError": { "message": "Error" },
   "statusDone": { "message": "Done" },
+  "statusSameLang": { "message": "Page is already in the target language" },
 
   "ctxTranslate": { "message": "Translate this page" },
   "ctxRestore": { "message": "Restore original" },
@@ -63,6 +64,8 @@
   "optMyMemoryNote": { "message": "No key needed. Add an email to raise the free daily limit (anonymous 5k / with email 50k chars/day). NMT engine, max 500 bytes per text." },
   "optImageTranslate": { "message": "Translate text inside images" },
   "optImageTranslateDesc": { "message": "Hover an image and click 訳 to translate the text inside that single image. Manual, one image at a time. Vision-capable LLMs only (not MyMemory)." },
+  "optShowFab": { "message": "Floating button" },
+  "optShowFabDesc": { "message": "Show the floating translate button at the bottom-right of pages. When off, you can still translate from this popup or the context menu." },
   "imgBtn": { "message": "Translate text in image" },
   "optBatchSize": { "message": "Batch size (texts per request)" },
   "optSave": { "message": "Save" },

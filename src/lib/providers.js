@@ -38,7 +38,11 @@
       `Return ONLY a JSON object of the form {"translations":[...]} whose array has the SAME length and SAME order as the input array.`,
       `Rules:`,
       `1. If an element is already written in ${targetName}, return it unchanged.`,
-      `2. Translate only the elements that are NOT in ${targetName}${srcName ? ` (i.e. ${srcName} text)` : ""}.`,
+      // 翻訳元が確定しているとき (ユーザー明示 or ページ言語検出) は source の要素だけを訳す。
+      // 「target 以外は全部訳す」だと第三言語の断片 (メニュー/引用等) まで巻き込むため、確定時は source-only に絞る。
+      srcName
+        ? `2. Translate ONLY the elements written in ${srcName}. Return elements in any other language unchanged.`
+        : `2. Translate only the elements that are NOT in ${targetName}.`,
       `3. Preserve numbers, URLs, emoji, inline code and symbols.`,
       `4. Do not add explanations, notes, or any extra fields.`,
       `5. Keep each translation natural and concise.`,

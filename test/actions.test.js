@@ -41,6 +41,12 @@ test("normalize coerces boolean flags", () => {
   assert.equal(s.autoTranslate, false);
 });
 
+test("normalize defaults showFab to true when missing (existing installs keep the FAB)", () => {
+  assert.equal(SettingsSchema.normalize({}).showFab, true);          // 既存ユーザーの保存済み設定にはキーが無い
+  assert.equal(SettingsSchema.normalize({ showFab: false }).showFab, false);
+  assert.equal(SettingsSchema.normalize({ showFab: true }).showFab, true);
+});
+
 // ---- TokenUsage ----
 
 test("currentMonthKey formats YYYY-MM", () => {

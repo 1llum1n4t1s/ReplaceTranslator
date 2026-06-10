@@ -54,11 +54,28 @@
     return LANGUAGES.filter((l) => l.code !== "auto");
   }
 
+  // ページ/ブラウザが返す言語コード (BCP 47 の html lang 属性 / chrome.i18n.detectLanguage の CLD コード) を
+  // この拡張の言語コードへ正規化する。例: "ja-JP"→"ja" / "zh-CN"・"zh"→"zh-Hans" / "zh-TW"→"zh-Hant" / "pt-BR"→"pt"。
+  // 表に無い言語・空文字は null (= 判定不能としてフォールバック側に委ねる)。
+  function normalizeCode(raw) {
+    if (typeof raw !== "string" || !raw) return null;
+    const lower = raw.toLowerCase().replace(/_/g, "-");
+    if (lower === "zh" || lower.startsWith("zh-")) {
+      const variant = lower.slice(3);
+      // 繁体: zh-TW / zh-HK / zh-MO / zh-Hant*。それ以外 (zh / zh-CN / zh-SG / zh-Hans*) は簡体。
+      return (variant === "tw" || variant === "hk" || variant === "mo" || variant.startsWith("hant"))
+        ? "zh-Hant" : "zh-Hans";
+    }
+    const base = lower.split("-")[0];
+    return (byCode[base] && base !== "auto") ? base : null;
+  }
+
   const Lang = Object.freeze({
     LANGUAGES: Object.freeze(LANGUAGES.map((l) => Object.freeze(l))),
     get,
     promptName,
     targets,
+    normalizeCode,
   });
 
   globalThis.Lang = Lang;

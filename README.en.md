@@ -8,7 +8,7 @@ A Chrome / Firefox extension that translates the page you are viewing **in place
 - **In-place replacement** — replace the original text with the translation, toggle back to the original
 - **Multiple LLM providers** — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
 - **No-key option** — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
-- **Pinpoint mixed-language translation** — text already in the target language is left untouched; only the other languages are translated
+- **Page-language aware** — detects the page's main language and translates only that language; pages already in the target language are left alone (English menu items on a Japanese page are no longer swept up)
 - **Infinite scroll friendly** — content loaded later is translated automatically
 - **Image text translation (experimental)** — hover an image and click 訳 to translate the text inside it and overlay the result (vision-capable LLMs)
 - **Multilingual** — pick the source (auto-detect available) and target language freely
@@ -31,23 +31,25 @@ Get an API key here:
 
 ## 📥 Install
 
-### Load the development build (current method)
-1. Download / clone this repository
-2. Install deps and generate the icons: `pnpm install && pnpm run build` (writes `icons/icon-*.png` from the SVG — without them the unpacked load fails icon validation)
-3. Open `chrome://extensions` in Chrome and turn on "Developer mode"
-4. Click "Load unpacked" and select this folder
+### Firefox Add-ons (published)
+Install from [Firefox Add-ons (AMO)](https://addons.mozilla.org/firefox/addon/replace-translator/).
 
-Store links (Chrome Web Store / Firefox Add-ons) will be added once published.
+### Load the development build
+1. Download / clone this repository (no build step required)
+2. Open `chrome://extensions` in Chrome and turn on "Developer mode"
+3. Click "Load unpacked" and select this folder
+
+The Chrome Web Store link will be added once published.
 
 ## 🚀 Usage
-1. Open the toolbar icon and enter your API key in the **"Keys" tab** (MyMemory needs no key)
-2. In the **"Translate" tab**, pick a service and target language, then "Translate". Use "Restore" to go back
-3. You can also toggle translate/restore with the **floating button (文 → 訳) at the bottom-right of the page** (drag it anywhere you like)
+1. Open the toolbar icon, pick a service in the **"API settings" tab** and enter your API key (auto-saved on blur; MyMemory needs no key)
+2. In the **"Translate" tab**, pick a target language, then "Translate". Use "Restore" to go back
+3. You can also toggle translate/restore with the **floating button (訳 / 原) at the bottom-right of the page** (drag it anywhere you like, or hide it from the "Translate" tab)
 4. The right-click menu also offers "Translate this page" / "Restore original"
-5. Turn on **image text translation** in the "Keys" tab, then hover an image and click 訳 to translate text inside it (experimental, vision-capable LLMs)
+5. Turn on **image text translation** in the "Translate" tab, then hover an image and click 訳 to translate text inside it (experimental, vision-capable LLMs)
 
 ### Source / target
-- **Source** — leave it on "Detect language" and only text that differs from the target gets translated (great for mixed-language pages). You can also pin a specific source language.
+- **Source** — leave it on "Detect language" and the extension detects the page's main language and translates only that language. Pages already in the target language are left untouched (stray fragments in other languages are not swept up). You can also pin a specific source language.
 - **Target** — pick the language you want.
 
 ## 🌐 Supported languages
