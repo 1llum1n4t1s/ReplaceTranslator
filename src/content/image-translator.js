@@ -168,7 +168,15 @@
         layer.appendChild(el); // clientWidth/Height 計測のため先に DOM へ
         const targetW = Math.max(8, el.clientWidth - 8);   // 左右 padding 4px*2 (負値ガード)
         const targetH = Math.max(8, el.clientHeight - 2);  // 上下 padding 1px*2 (負値ガード)
-        const maxFs = Math.min(48, Math.max(9, Math.round(boxHpx)));
+        let maxFs = Math.min(48, Math.max(9, Math.round(boxHpx)));
+        // 多行の箱 (box.h が数行ぶん) に短い訳語1行が入ると、箱の高さいっぱい (最大48px) まで膨らみ巨大化が再発する。
+        // 原文の文字数と箱の面積から「ソース1行ぶんの高さ」を逆算して上限にする (1行あたりの字サイズへ揃える)。
+        // 面積モデル: 行高 L で文字幅≈0.6L とすると origLen·0.6·L² ≈ boxW·boxH → L = √(boxW·boxH / (origLen·0.6))。
+        const origLen = (blk.original || "").trim().length;
+        if (origLen > 1) {
+          const lineHpx = Math.sqrt((targetW * boxHpx) / (origLen * 0.6));
+          maxFs = Math.min(maxFs, Math.max(9, Math.round(lineHpx / 1.15))); // line-height 1.15 ぶんを割り戻す
+        }
         fitFontSize(span, targetW, targetH, 9, maxFs);
         // 9px でも枠に収まらない多行訳文は、中央寄せだと全行が均等に欠ける。上寄せにして先頭行を必ず丸ごと残す。
         if (span.getBoundingClientRect().height > targetH + 0.5) el.style.alignItems = "flex-start";
