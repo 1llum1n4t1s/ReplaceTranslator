@@ -431,7 +431,9 @@
       const block = entry.target;
       io.unobserve(block);        // 一度可視になったら監視解除 (翻訳は一度きり)
       flushedBlocks.add(block);
-      const y = (entry.boundingClientRect ? entry.boundingClientRect.top : 0) + sy; // entry の rect を流用 (追加読みなし)
+      // entry.boundingClientRect は IO 仕様上常に存在し追加読みなし。万一欠落時のみ block を実測フォールバック
+      // (0 固定だと画面下部の block が y=sy で上位に誤ソートされるのを防ぐ)。
+      const y = (entry.boundingClientRect ? entry.boundingClientRect.top : block.getBoundingClientRect().top) + sy;
       for (const node of collectNodes(block)) { enqueue(node, y); added = true; }
     }
     if (added) scheduleFlush();
