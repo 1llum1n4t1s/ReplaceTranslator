@@ -30,7 +30,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 
 ## 翻訳エンジン translator.js（速度と網羅の要）
 - **ビューポート優先**: IntersectionObserver で各ブロックを observe し、可視(+`PREFETCH_MARGIN` 1200px 先読み)に入った順にテキストノードを enqueue。`sortTopDown` で**ページ上→下の優先順位**に並べてから投げる
-- **直列 flush + 動的バッチ + ワーカープール**: `flush()` は `flushing` ガードで**1本に直列化**（同時多発を防ぎ 429 を抑える＝BatchTuner が育つ）。共有カーソルから**その時点の `currentBatchSize`** 個ずつ取り出すので、自動学習の成長が同一 flush 内で即反映される。並列度は `concurrencyFor()`（LLM=`CONCURRENCY` 10 / MyMemory 等 `batch:false` は直列 1）。初回 flush は即時、以降 200ms デバウンス
+- **直列 flush + 動的バッチ + ワーカープール**: `flush()` は `flushing` ガードで**1本に直列化**（同時多発を防ぎ 429 を抑える＝BatchTuner が育つ）。共有カーソルから**その時点の `currentBatchSize`** 個ずつ取り出すので、自動学習の成長が同一 flush 内で即反映される。並列度は `concurrencyFor()`（LLM=`CONCURRENCY` 24 / MyMemory 等 `batch:false` は直列 1）。初回 flush は即時、以降 200ms デバウンス
 - **失敗の局所化**: 1 バッチが 429/通信エラーでも全停止せず、指数バックオフでリトライ→ダメなら飛ばして続行。NMT(MyMemory)の 429 は解けないので即諦める
 - **Shadow DOM**: `collectNodes` は TreeWalker でなく**開いた shadowRoot を辿る DFS**。辿った shadow root は MutationObserver にも登録し内部の動的更新も拾う（closed shadow は仕様上不可）
 - **iframe**: `allFrames:true` 注入で各フレームが独立翻訳。広告枠対策に `frameHasEnoughText()`（サブフレームは翻訳対象 50 字未満なら訳さない＝Immersive の mainFrameMinTextCount 相当。メインフレームは常時）
@@ -60,7 +60,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 ## 画像翻訳（オプション `imageTranslate`）— ホバー手動のみ
 - **ホバー手動翻訳に一本化**（一括翻訳 `translateAllImages` / 後追い watcher / iframe 一括注入は廃止＝「読みたい1枚だけ訳す」）。`image-translator.js` が画像ホバーで「訳」ボタンを出し、クリックで `translateImg`→`TRANSLATE_IMAGE`、background が画像を fetch→base64→LLM vision に投げ、`parseImageBlocks` の正規化 bbox をオーバーレイ。`<img>` 限定（**動画は送らない**。background でも非画像 mime を弾く）
 - ページ翻訳とは**非連動**。`APPLY_TRANSLATE_CS` では何もせず、`APPLY_RESTORE_CS`（原文復元）でだけ `clearAllImages` がオーバーレイを消す。`imageTranslate` が ON のときだけホバーボタンを出す（`enabled` で gate）
-- 速度/コスト優先: 各 provider の軽量 `visionModel` を既定使用、出力上限 `IMAGE_MAX_OUTPUT_TOKENS`(2048)。`ensureWrap` は元 img の表示ボックス(`getBoundingClientRect`)・display・object-fit を wrap に px 固定で引き継ぎ（レスポンシブ画像が inline-block ラップで拡大されるのを防ぐ）、復元時に元 inline style を戻す。オーバーレイ文字は `box.h × 画像高さ × 0.7` で元サイズに追従。vision 対応 LLM のみ（MyMemory 不可）
+- 速度/コスト優先: 各 provider の軽量 `visionModel` を既定使用、出力上限 `IMAGE_MAX_OUTPUT_TOKENS`(2048)。`ensureWrap` は元 img の表示ボックス(`getBoundingClientRect`)・display・object-fit を wrap に px 固定で引き継ぎ（レスポンシブ画像が inline-block ラップで拡大されるのを防ぐ）、復元時に元 inline style を戻す。オーバーレイ文字サイズは `fitFontSize` が訳文 span を**枠(幅×高さ)に収まる最大フォント(9〜48px)へ二分探索でフィット**（係数ベースを廃止し多行枠での巨大化を解消）。上限は原文文字数と枠面積から推定した1行ぶんの高さでもクランプ（短い訳語が縦長枠で膨らむのを防ぐ）。枠の高さは box に固定し（`min-height` だと訳文が伸びて隣に重なる）、極小枠は ~14px を下限に、9px でも収まらない多行は `align-items:flex-start` で先頭行を残す。vision 対応 LLM のみ（MyMemory 不可）
 - `image-translator.js` は manifest `content_scripts` で**トップフレームのみ常駐**（iframe には注入しない）
 
 ## UI 構成（popup 2タブ + FAB）

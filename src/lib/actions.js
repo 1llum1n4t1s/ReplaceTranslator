@@ -171,33 +171,6 @@
     return `${y}-${m}`;
   }
 
-  // usage 加算 (純粋関数: 入力を破壊せず新しい store を返す)
-  function addUsage(store, monthKey, provider, input, output) {
-    const next = (store && typeof store === "object") ? JSON.parse(JSON.stringify(store)) : {};
-    if (!next[monthKey]) next[monthKey] = {};
-    if (!next[monthKey][provider]) next[monthKey][provider] = { input: 0, output: 0 };
-    next[monthKey][provider].input += Number(input) || 0;
-    next[monthKey][provider].output += Number(output) || 0;
-    return next;
-  }
-
-  // 当月のプロバイダ別 + 合計を取り出す
-  function usageForMonth(store, monthKey) {
-    const month = (store && store[monthKey]) ? store[monthKey] : {};
-    const perProvider = {};
-    let totalIn = 0;
-    let totalOut = 0;
-    for (const id of PROVIDER_IDS) {
-      const u = month[id] || { input: 0, output: 0 };
-      const input = Number(u.input) || 0;
-      const output = Number(u.output) || 0;
-      perProvider[id] = { input, output, total: input + output };
-      totalIn += input;
-      totalOut += output;
-    }
-    return { perProvider, total: { input: totalIn, output: totalOut, total: totalIn + totalOut } };
-  }
-
   // 古い月キーを間引く (最新 keepMonths 件だけ残す。"YYYY-MM" は辞書順 = 時系列順)
   function pruneUsage(store, keepMonths) {
     if (!store || typeof store !== "object") return {};
@@ -210,8 +183,6 @@
 
   const TokenUsage = Object.freeze({
     currentMonthKey,
-    addUsage,
-    usageForMonth,
     pruneUsage,
   });
 

@@ -10,9 +10,9 @@
   },
   "devDependencies": {
     "chrome-webstore-upload-cli": "^4.0.0",
-    "eslint": "^10.4.0",
+    "eslint": "^10.5.0",
     "globals": "^17.6.0",
-    "web-ext": "^10.3.0"
+    "web-ext": "^10.4.0"
   },
   "keywords": [
     "chrome-extension",

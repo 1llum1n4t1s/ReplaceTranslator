@@ -44,12 +44,34 @@ if (typeof importScripts === "function") {
     return rest;
   }
 
+  // content script (fab/image-translator) が読む非機密フラグだけを抽出する。saveSettings と
+  // ensureContentFlags の両所で使い、フラグ追加時の片側更新漏れ (= content 側だけ欠落) を防ぐ。
+  function contentFlagsOf(s) {
+    return { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate, showFab: s.showFab };
+  }
+
+  // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。
+  function keyFor(settings, providerId) {
+    return (settings.apiKeys && settings.apiKeys[providerId]) || "";
+  }
+
+  // content が送ってきた設定の apiKeys は信用せず、必ず bg 保管値で上書きする (キー漏洩防止)。
+  // この不変条件を 1 箇所に集約し、TRANSLATE_BATCH / TRANSLATE_IMAGE での書き忘れ事故を防ぐ。
+  function resolveSettings(incoming, stored) {
+    return incoming ? Object.assign({}, incoming, { apiKeys: stored.apiKeys }) : stored;
+  }
+
+  // HTTP エラー応答の本文を安全に読む (失敗吸収 + 300 字に切り詰め)。各 fetch のエラー message 生成で共用。
+  async function readDetail(res) {
+    try { return (await res.text()).slice(0, 300); } catch (_e) { return ""; }
+  }
+
   async function saveSettings(raw) {
     const normalized = SettingsSchema.normalize(raw);
     await chrome.storage.local.set({
       [StorageKeys.SETTINGS]: normalized,
       // content script (fab/image-translator) が読む非機密フラグ。apiKeys を content 文脈に出さないため分離する。
-      [StorageKeys.CONTENT_FLAGS]: { autoTranslate: normalized.autoTranslate, imageTranslate: normalized.imageTranslate, showFab: normalized.showFab },
+      [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(normalized),
     });
     settingsMem = normalized; // キャッシュを最新化 (onChanged より先に確定させる)
     return normalized;
@@ -77,7 +99,7 @@ if (typeof importScripts === "function") {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
     if (cur) return;
     const s = await getSettings();
-    await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate, showFab: s.showFab } });
+    await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(s) });
   }
 
   // ---- メモリ集約: BATCH_TUNING / TOKEN_USAGE を SW メモリに保持し、毎バッチの storage I/O を
@@ -103,11 +125,19 @@ if (typeof importScripts === "function") {
     }, 2000);
   }
 
-  // ---- トークン使用量の記録 / 取得 (メモリ上で集約・同期) ----
+  // ---- トークン使用量の記録 (SW 専有の usageMem にインプレース加算・デバウンス永続化) ----
+  // usageMem は SW 専有の可変 state。毎成功バッチで呼ばれるため、store 全体の deep-copy/再構築を避け
+  // インプレース加算 (O(1)) する。間引き (pruneUsage) は新しい月キーを初めて作ったときだけ走らせる。
   function recordUsage(providerId, usage) {
     if (!usage || (!usage.input && !usage.output)) return;
+    if (!usageMem) usageMem = {};
     const monthKey = TokenUsage.currentMonthKey();
-    usageMem = TokenUsage.pruneUsage(TokenUsage.addUsage(usageMem || {}, monthKey, providerId, usage.input, usage.output), 12);
+    const isNewMonth = !usageMem[monthKey];
+    if (isNewMonth) usageMem[monthKey] = {};
+    const slot = usageMem[monthKey][providerId] || (usageMem[monthKey][providerId] = { input: 0, output: 0 });
+    slot.input += Number(usage.input) || 0;
+    slot.output += Number(usage.output) || 0;
+    if (isNewMonth) usageMem = TokenUsage.pruneUsage(usageMem, 12); // 月が変わったときだけ古い月を間引く
     schedulePersist();
   }
 
@@ -133,7 +163,7 @@ if (typeof importScripts === "function") {
     const providerId = settings.provider;
     const tune = !(opts && opts.tune === false); // quick translate (単発) は学習(BatchTuner)を汚さない
     const provider = Providers.get(providerId);
-    const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
+    const apiKey = keyFor(settings, providerId);
     const requiresKey = !provider || provider.requiresKey !== false;
     if (requiresKey && !apiKey) return { ok: false, error: "no_api_key", provider: providerId };
 
@@ -173,11 +203,10 @@ if (typeof importScripts === "function") {
     const durationMs = Date.now() - t0;
 
     if (!res.ok) {
-      let detail = "";
-      try { detail = await res.text(); } catch (_e) { /* noop */ }
+      const detail = await readDetail(res);
       if (res.status === 429 && tune) updateBatchTuning(providerId, texts.length, durationMs, true);
       return {
-        ok: false, error: "http", status: res.status, message: detail.slice(0, 300),
+        ok: false, error: "http", status: res.status, message: detail,
         nextBatchSize: currentBatchSizeFor(providerId),
       };
     }
@@ -214,7 +243,7 @@ if (typeof importScripts === "function") {
   async function translateBatchStream(settings, texts, signal, onPartial) {
     const providerId = settings.provider;
     if (providerId !== "openai" && providerId !== "xai") return null; // stream 対応は OpenAI/xAI のみ
-    const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
+    const apiKey = keyFor(settings, providerId);
     if (!apiKey) return { ok: false, error: "no_api_key", provider: providerId };
     const model = (settings.models && settings.models[providerId]) || undefined;
     let req;
@@ -235,10 +264,9 @@ if (typeof importScripts === "function") {
     if (!res.ok) {
       // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
       // content 側のリトライ/バックオフ/サイズ縮小に委ねる (429 は学習サイズを縮小)。null フォールバックは stream 非対応時のみ。
-      let detail = "";
-      try { detail = await res.text(); } catch (_e) { /* noop */ }
+      const detail = await readDetail(res);
       if (res.status === 429) updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
-      return { ok: false, error: "http", status: res.status, message: detail.slice(0, 300), nextBatchSize: currentBatchSizeFor(providerId) };
+      return { ok: false, error: "http", status: res.status, message: detail, nextBatchSize: currentBatchSizeFor(providerId) };
     }
     if (!res.body || typeof res.body.getReader !== "function") return null; // stream 非対応レスポンス → 非stream フォールバック
 
@@ -455,7 +483,7 @@ if (typeof importScripts === "function") {
     const provider = Providers.get(providerId);
     if (!provider || provider.batch === false) return { ok: true, models: [] };
     const settings = await getSettings();
-    const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
+    const apiKey = keyFor(settings, providerId);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     const cached = cacheAll[providerId];
     // 静的な既定モデルを価格付きで返すフォールバック
@@ -581,7 +609,7 @@ if (typeof importScripts === "function") {
     const providerId = settings.provider;
     const provider = Providers.get(providerId);
     if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
-    const apiKey = (settings.apiKeys && settings.apiKeys[providerId]) || "";
+    const apiKey = keyFor(settings, providerId);
     if (!apiKey) return { ok: false, error: "no_api_key" };
     // 危険な fetch 先 (内部/ローカル/特殊スキーム) は取得も中継もしない
     if (isForbiddenImageUrl(imageUrl)) return { ok: false, error: "forbidden_target" };
@@ -607,7 +635,7 @@ if (typeof importScripts === "function") {
       // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
       // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
       const ctype = (r.headers.get("content-type") || "").toLowerCase().split(";")[0].trim();
-      if (ctype.indexOf("image/") === 0) {
+      if (ctype.startsWith("image/")) {
         mime = ctype;
       } else if (!ctype) {
         mime = sniffImageMime(bytes);
@@ -642,9 +670,8 @@ if (typeof importScripts === "function") {
       return { ok: false, error: "network", message: String((e && e.message) || e) };
     }
     if (!res.ok) {
-      let detail = "";
-      try { detail = await res.text(); } catch (_e) { /* noop */ }
-      return { ok: false, error: "http", status: res.status, message: detail.slice(0, 300) };
+      const detail = await readDetail(res);
+      return { ok: false, error: "http", status: res.status, message: detail };
     }
     let json;
     try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
@@ -678,9 +705,16 @@ if (typeof importScripts === "function") {
     // 設定変更直後に翻訳開始しても、ページ全体が旧 provider/旧言語で走り出すのを防ぐ。
     await settingsWriteChain;
     const settings = await getSettings();
-    await injectTranslator(tabId);
+    try {
+      await injectTranslator(tabId);
+    } catch (_e) {
+      // chrome:// / Web Store / PDF ビューア等の注入不可ページ。restorePage と同じく経路を局所化し、汎用 exception
+      // ではなく専用エラーで返す (popup は !ok を一律 "Error" 表示するので UX は同値、将来の個別文言にも備える)。
+      return { ok: false, error: "not_injectable" };
+    }
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
     await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_TRANSLATE_CS, settings: publicSettings(settings) });
+    return { ok: true };
   }
 
   async function restorePage(tabId) {
@@ -771,11 +805,8 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.TRANSLATE_BATCH: {
-            // content が送ってきた設定の apiKeys は信用せず、必ず bg 保管値で上書きする (キー漏洩防止)
             const stored = await getSettingsCached();
-            const settings = msg.settings
-              ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
-              : stored;
+            const settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録
@@ -802,9 +833,7 @@ if (typeof importScripts === "function") {
             // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回 OCR が旧 provider/旧言語で実行されるのを防ぐ。
             await settingsWriteChain;
             const stored = await getSettingsCached();
-            const settings = msg.settings
-              ? Object.assign({}, msg.settings, { apiKeys: stored.apiKeys })
-              : stored;
+            const settings = resolveSettings(msg.settings, stored);
             const controller = new AbortController();
             const untrack = trackController(sender.tab && sender.tab.id, controller);
             try { sendResponse(await translateImage(settings, msg.imageUrl, controller.signal)); }
@@ -814,8 +843,7 @@ if (typeof importScripts === "function") {
           case Actions.TRANSLATE_PAGE: {
             const tabId = msg.tabId || (sender.tab && sender.tab.id);
             if (!tabId) { sendResponse({ ok: false, error: "no_tab" }); break; }
-            await translatePage(tabId);
-            sendResponse({ ok: true });
+            sendResponse(await translatePage(tabId));
             break;
           }
           case Actions.RESTORE_PAGE: {

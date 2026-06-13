@@ -63,7 +63,7 @@
     const id = String(modelId).toLowerCase();
     let best = null;
     for (const row of TABLE) {
-      if (id.indexOf(row[0]) >= 0 && (!best || row[0].length > best[0].length)) best = row;
+      if (id.includes(row[0]) && (!best || row[0].length > best[0].length)) best = row;
     }
     if (!best) return null;
     return { input: best[1], output: best[2], total: best[1] + best[2] };

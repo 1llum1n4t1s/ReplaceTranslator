@@ -166,16 +166,20 @@
     return out;
   }
 
-  // ブロックがビューポート(+先読みマージン)内にあるか。rootMargin "1200px 0px" 相当(縦に先読み)。
-  // IntersectionObserver の初期通知に依存せず、初期表示分を確実に即翻訳するための判定。
-  function isNearViewport(el) {
+  // ブロックの rect を 1 回だけ読み、(a) ビューポート(+先読みマージン)内か near と、
+  // (b) ページ絶対 Y (= top + scrollY、スクロール不変) を返す。near は rootMargin "1200px 0px" 相当(縦に先読み)で、
+  // IntersectionObserver の初期通知に頼らず初期表示分を即翻訳するための判定。絶対 Y を enqueue 時に確定させることで、
+  // flush の sortTopDown が node 毎に getBoundingClientRect を読み直さずに済む (reflow を block 数ぶんに削減)。
+  function blockMeta(el) {
     try {
       const r = el.getBoundingClientRect();
-      if (r.width <= 0 && r.height <= 0) return false; // 非表示/0サイズは IO に委ねる
+      const sy = window.scrollY || window.pageYOffset || 0;
       const vh = window.innerHeight || document.documentElement.clientHeight || 0;
       const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-      return r.top <= vh + PREFETCH_PX && r.bottom >= -PREFETCH_PX && r.left < vw && r.right > 0;
-    } catch (_e) { return false; }
+      const visible = !(r.width <= 0 && r.height <= 0); // 非表示/0サイズは IO に委ねる
+      const near = visible && r.top <= vh + PREFETCH_PX && r.bottom >= -PREFETCH_PX && r.left < vw && r.right > 0;
+      return { near, y: r.top + sy };
+    } catch (_e) { return { near: false, y: 0 }; }
   }
 
   // root 配下を翻訳対象に取り込む:
@@ -185,19 +189,23 @@
   function ingest(root) {
     if (!io) return;
     const toObserve = new Set();
-    const nearCache = new Map(); // block→bool: 同一ブロックの getBoundingClientRect 重複読みを避ける
+    const metaCache = new Map(); // block→{near,y}: 同一ブロックの getBoundingClientRect 重複読みを避ける
+    const metaOf = (block) => {
+      let m = metaCache.get(block);
+      if (m === undefined) { m = blockMeta(block); metaCache.set(block, m); }
+      return m;
+    };
     let immediate = false;
     for (const node of collectNodes(root)) {
       const block = blockAncestor(node);
-      if (flushedBlocks.has(block)) { enqueue(node); immediate = true; continue; }
-      if (observedBlocks.has(block)) continue; // 監視中(画面外)ブロックは IO 発火を待つ
-      let near = nearCache.get(block);
-      if (near === undefined) { near = isNearViewport(block); nearCache.set(block, near); }
-      if (near) {
+      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; continue; }
+      if (observedBlocks.has(block)) continue; // 監視中(画面外)ブロックは IO 発火を待つ (rect を読まない)
+      const meta = metaOf(block);
+      if (meta.near) {
         // 既に可視(+先読み)圏内 → IO の初期通知に頼らず即翻訳に回す(スクロールしないと訳されない問題の解消)
         flushedBlocks.add(block);
         observedBlocks.add(block);
-        enqueue(node);
+        enqueue(node, meta.y);
         immediate = true;
       } else {
         toObserve.add(block);
@@ -209,8 +217,8 @@
 
   // collectNodes() が accept() 済みノードだけを返すため、ここでは再検証しない (二重 accept=closest 走査の回避)。
   // 全呼び出し元 (ingest / onIntersect) が collectNodes 経由なのが前提。
-  function enqueue(node) {
-    queue.push({ node, text: node.nodeValue });
+  function enqueue(node, y) {
+    queue.push({ node, text: node.nodeValue, _y: y || 0 }); // _y = 所属ブロックのページ絶対Y (sortTopDown 用)
   }
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
@@ -296,16 +304,10 @@
     for (let i = 0; i < batch.length; i++) applyOne(batch[i], translations[i]);
   }
 
-  // 翻訳の優先順位を「ページ上から下」にする: 各アイテムの絶対Y位置で昇順ソートする。
-  // rect 読みは applyTranslations の書き込みより前に一括で行うので reflow は1回で済む。
+  // 翻訳の優先順位を「ページ上から下」にする: enqueue 時に確定した各アイテムの所属ブロック絶対Y(_y)で昇順ソート。
+  // 絶対Y(top+scrollY)はスクロール不変なので、flush 時に node 毎の getBoundingClientRect を読み直す必要はない
+  // (旧実装は pending 全件で rect を読んでいた → block 単位で enqueue 時に 1 回読む方式に変更し reflow を削減)。
   function sortTopDown(items) {
-    const sy = window.scrollY || window.pageYOffset || 0;
-    for (const it of items) {
-      const el = it.node && it.node.parentElement; // queue は {node,text} のみ (block は持たない)
-      let y = 0;
-      try { if (el) y = el.getBoundingClientRect().top + sy; } catch (_e) { y = 0; }
-      it._y = y;
-    }
     items.sort((a, b) => a._y - b._y);
   }
 
@@ -412,20 +414,27 @@
 
   function notifyProgress(state, extra) {
     try {
-      chrome.runtime.sendMessage(Object.assign({ action: A.TRANSLATION_PROGRESS, state }, extra || {}));
-    } catch (_e) { /* 受信側が無ければ無視 */ }
+      // callback 省略の sendMessage は Promise を返す。受信側不在 (SW 起動の隙間等) の reject は
+      // 同期 catch では拾えず unhandled rejection になるので、戻り Promise にも .catch を付けて無視する。
+      const p = chrome.runtime.sendMessage(Object.assign({ action: A.TRANSLATION_PROGRESS, state }, extra || {}));
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch (_e) { /* context 失効 (同期例外) は無視 */ }
   }
 
   // ---- IntersectionObserver: ビューポート(+先読み)に入ったブロックを翻訳 ----
   function onIntersect(entries) {
     if (!translating) return;
     let added = false;
+    const sy = window.scrollY || window.pageYOffset || 0;
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       const block = entry.target;
       io.unobserve(block);        // 一度可視になったら監視解除 (翻訳は一度きり)
       flushedBlocks.add(block);
-      for (const node of collectNodes(block)) { enqueue(node); added = true; }
+      // entry.boundingClientRect は IO 仕様上常に存在し追加読みなし。万一欠落時のみ block を実測フォールバック
+      // (0 固定だと画面下部の block が y=sy で上位に誤ソートされるのを防ぐ)。
+      const y = (entry.boundingClientRect ? entry.boundingClientRect.top : block.getBoundingClientRect().top) + sy;
+      for (const node of collectNodes(block)) { enqueue(node, y); added = true; }
     }
     if (added) scheduleFlush();
   }
