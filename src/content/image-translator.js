@@ -22,6 +22,28 @@
   let enabled = false;
   let btn = null;
   let target = null;
+  let dead = false; // shutdown 済みフラグ (リスナー解除後の再入を弾く)
+
+  // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
+  // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
+  function contextAlive() {
+    try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
+  }
+  // context 失効時などに、登録リスナーを解除し btn 除去・state クリアして、これ以上 chrome API / DOM を
+  // 触らないよう静かに停止する。各操作は try/catch で例外を吸収する (translator.js の shutdown と同パターン)。
+  function shutdown() {
+    if (dead) return;
+    dead = true;
+    enabled = false;
+    try { document.removeEventListener("mouseover", onMouseOver, true); } catch (_e) { /* noop */ }
+    try { document.removeEventListener("mouseout", onMouseOut, true); } catch (_e) { /* noop */ }
+    try { window.removeEventListener("scroll", onScroll, true); } catch (_e) { /* noop */ }
+    try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch (_e) { /* noop */ }
+    try { chrome.runtime.onMessage.removeListener(onRuntimeMessage); } catch (_e) { /* noop */ }
+    try { if (btn) btn.remove(); } catch (_e) { /* noop */ }
+    btn = null;
+    target = null;
+  }
 
   const tr = (k, f) => {
     try { return (chrome.i18n && chrome.i18n.getMessage(k)) || f; } catch (_e) { return f; }
@@ -32,11 +54,10 @@
     if (!enabled && btn) btn.style.display = "none";
   }
   try { chrome.storage.local.get(CFLAGS_KEY, (d) => applyEnabled(d && d[CFLAGS_KEY])); } catch (_e) { /* noop */ }
-  try {
-    chrome.storage.onChanged.addListener((c, area) => {
-      if (area === "local" && c[CFLAGS_KEY]) applyEnabled(c[CFLAGS_KEY].newValue);
-    });
-  } catch (_e) { /* noop */ }
+  function onStorageChanged(c, area) {
+    if (area === "local" && c[CFLAGS_KEY]) applyEnabled(c[CFLAGS_KEY].newValue);
+  }
+  try { chrome.storage.onChanged.addListener(onStorageChanged); } catch (_e) { /* noop */ }
 
   function eligible(el) {
     if (!el || el.tagName !== "IMG") return false;
@@ -72,19 +93,29 @@
     b.textContent = "訳";
   }
 
-  document.addEventListener("mouseover", (e) => {
+  function onMouseOver(e) {
+    if (dead) return;
+    if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (!enabled) return;
     if (eligible(e.target)) { target = e.target; placeBtn(e.target); }
-  }, true);
+  }
 
-  document.addEventListener("mouseout", (e) => {
-    if (!enabled || !btn) return;
+  function onMouseOut(e) {
+    if (dead || !enabled || !btn) return;
     const to = e.relatedTarget;
     if (to === btn || to === target || eligible(to)) return;
     btn.style.display = "none";
-  }, true);
+  }
 
-  window.addEventListener("scroll", () => { if (btn) btn.style.display = "none"; }, true);
+  function onScroll() {
+    if (dead) return;
+    if (!contextAlive()) { shutdown(); return; }
+    if (btn) btn.style.display = "none";
+  }
+
+  document.addEventListener("mouseover", onMouseOver, true);
+  document.addEventListener("mouseout", onMouseOut, true);
+  window.addEventListener("scroll", onScroll, true);
 
   function ensureWrap(img) {
     const p = img.parentElement;
@@ -149,6 +180,7 @@
     try {
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
         if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
+        if (!contextAlive()) { shutdown(); return; } // 応答到着時に失効していたら DOM を触らず停止
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
         if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
@@ -194,11 +226,10 @@
 
   // 画像翻訳はホバー手動のみ (一括は廃止)。ページ翻訳には連動せず、原文復元時にだけ
   // ホバーで付けたオーバーレイを消す (= ページを元に戻すと画像も元に戻る)。
-  try {
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (!msg || typeof msg.action !== "string") return undefined;
-      if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
-      return undefined;
-    });
-  } catch (_e) { /* noop */ }
+  function onRuntimeMessage(msg) {
+    if (!msg || typeof msg.action !== "string") return undefined;
+    if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
+    return undefined;
+  }
+  try { chrome.runtime.onMessage.addListener(onRuntimeMessage); } catch (_e) { /* noop */ }
 })();
