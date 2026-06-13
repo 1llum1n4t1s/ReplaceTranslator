@@ -111,6 +111,22 @@
     return wrap;
   }
 
+  // 訳文 span が枠 (boxW×boxH px) に収まる最大フォント (px) を二分探索で求める。
+  // 係数ベース (高さ×0.7) だと元が複数行の枠で box.h が数行ぶんになり字が巨大化したが、
+  // 実測フィットなら多行ブロックは自動で小さくなり、訳文が日本語化で伸びても枠内に収まる。
+  function fitFontSize(span, boxW, boxH, minFs, maxFs) {
+    let lo = minFs, hi = Math.max(minFs, maxFs), best = minFs;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      span.style.fontSize = `${mid}px`;
+      const r = span.getBoundingClientRect();
+      if (r.height <= boxH + 0.5 && r.width <= boxW + 0.5) { best = mid; lo = mid + 1; }
+      else { hi = mid - 1; }
+    }
+    span.style.fontSize = `${best}px`;
+    return best;
+  }
+
   function renderBlocks(img, blocks) {
     const wrap = ensureWrap(img);
     let layer = wrap.querySelector(".__rt-img-layer");
@@ -120,24 +136,53 @@
       wrap.appendChild(layer);
     }
     layer.replaceChildren();
-    // 元のフォントサイズに追従させるため、画像の表示高さ × ブロック高さ から字サイズを推定する
     const rect = img.getBoundingClientRect();
     const imgH = rect.height || img.clientHeight || 0;
+    const imgW = rect.width || img.clientWidth || 0;
     blocks.forEach((blk) => {
       const el = document.createElement("div");
       el.className = "__rt-img-block";
-      el.textContent = blk.translation;
       if (blk.original) el.title = blk.original;
-      el.style.left = `${blk.box.x * 100}%`;
+      // 訳文は span に入れて実測する (flex 中央寄せの div を直接測ると不安定なため)。
+      const span = document.createElement("span");
+      span.className = "__rt-img-text";
+      span.textContent = blk.translation;
+      el.appendChild(span);
       el.style.top = `${blk.box.y * 100}%`;
-      el.style.width = `${Math.max(0.04, blk.box.w) * 100}%`;
-      el.style.minHeight = `${Math.max(0.03, blk.box.h) * 100}%`;
-      // ブロック高さ(box.h)×画像高さ ≒ その文字の縦サイズ。1行ぶんに寄せて係数(やや小さめ 0.7)を掛け、極端値をクランプ。
+      // 幅は box.w を使うが、極小幅 (LLM が w≈0 の劣化 bbox を返す等) は判読不能な縦帯になるため px 下限 (~48px) を
+      // 設ける。画像幅の 60% は超えない (枠を画像いっぱいに広げない)。
+      let wPct = Math.max(0.04, blk.box.w);
+      if (imgW > 0) wPct = Math.max(wPct, Math.min(0.6, 48 / imgW));
+      // 下限で広げた枠が画像右端をはみ出すと、layer の overflow:hidden で画面外が切れる一方、fitFontSize は
+      // はみ出し分込みの clientWidth で測るため見えない幅向けに組まれ訳文がクリップされる。左へずらして画像内へ収める。
+      let leftPct = blk.box.x;
+      if (leftPct + wPct > 1) leftPct = Math.max(0, 1 - wPct);
+      el.style.left = `${leftPct * 100}%`;
+      el.style.width = `${wPct * 100}%`;
+      // 高さも OCR の元枠 (box.h) に固定。min-height だと訳文が伸びたとき div が下へ膨張し隣のブロックに重なる。
+      // ただし極小画像/極小 box.h で 1 行も描けない高さ (例 60px 画像 × box.h 0.03 = 1.8px) に潰れないよう、
+      // 最小フォント (9px) 1 行ぶん (~14px) を下限にする (旧 min-height が 1 行ぶん確保していた挙動の代替)。
+      const boxHpx = Math.max(14, Math.max(0.03, blk.box.h) * imgH);
       if (imgH > 0) {
-        const fs = Math.max(9, Math.min(36, Math.round(imgH * Math.max(0.02, blk.box.h) * 0.7)));
-        el.style.fontSize = `${fs}px`;
+        el.style.height = `${boxHpx}px`;
+        layer.appendChild(el); // clientWidth/Height 計測のため先に DOM へ
+        const targetW = Math.max(8, el.clientWidth - 8);   // 左右 padding 4px*2 (負値ガード)
+        const targetH = Math.max(8, el.clientHeight - 2);  // 上下 padding 1px*2 (負値ガード)
+        let maxFs = Math.min(48, Math.max(9, Math.round(boxHpx)));
+        // 多行の箱 (box.h が数行ぶん) に短い訳語1行が入ると、箱の高さいっぱい (最大48px) まで膨らみ巨大化が再発する。
+        // 原文の文字数と箱の面積から「ソース1行ぶんの高さ」を逆算して上限にする (1行あたりの字サイズへ揃える)。
+        // 面積モデル: 行高 L で文字幅≈0.6L とすると origLen·0.6·L² ≈ boxW·boxH → L = √(boxW·boxH / (origLen·0.6))。
+        const origLen = (blk.original || "").trim().length;
+        if (origLen > 1) {
+          const lineHpx = Math.sqrt((targetW * boxHpx) / (origLen * 0.6));
+          maxFs = Math.min(maxFs, Math.max(9, Math.round(lineHpx / 1.15))); // line-height 1.15 ぶんを割り戻す
+        }
+        fitFontSize(span, targetW, targetH, 9, maxFs);
+        // 9px でも枠に収まらない多行訳文は、中央寄せだと全行が均等に欠ける。上寄せにして先頭行を必ず丸ごと残す。
+        if (span.getBoundingClientRect().height > targetH + 0.5) el.style.alignItems = "flex-start";
+      } else {
+        layer.appendChild(el); // 画像高さ不明時は CSS フォールバック (12px) のまま
       }
-      layer.appendChild(el);
     });
   }
 
