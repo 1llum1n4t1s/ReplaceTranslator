@@ -30,7 +30,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 
 ## 翻訳エンジン translator.js（速度と網羅の要）
 - **ビューポート優先**: IntersectionObserver で各ブロックを observe し、可視(+`PREFETCH_MARGIN` 1200px 先読み)に入った順にテキストノードを enqueue。`sortTopDown` で**ページ上→下の優先順位**に並べてから投げる
-- **直列 flush + 動的バッチ + ワーカープール**: `flush()` は `flushing` ガードで**1本に直列化**（同時多発を防ぎ 429 を抑える＝BatchTuner が育つ）。共有カーソルから**その時点の `currentBatchSize`** 個ずつ取り出すので、自動学習の成長が同一 flush 内で即反映される。並列度は `concurrencyFor()`（LLM=`CONCURRENCY` 10 / MyMemory 等 `batch:false` は直列 1）。初回 flush は即時、以降 200ms デバウンス
+- **直列 flush + 動的バッチ + ワーカープール**: `flush()` は `flushing` ガードで**1本に直列化**（同時多発を防ぎ 429 を抑える＝BatchTuner が育つ）。共有カーソルから**その時点の `currentBatchSize`** 個ずつ取り出すので、自動学習の成長が同一 flush 内で即反映される。並列度は `concurrencyFor()`（LLM=`CONCURRENCY` 24 / MyMemory 等 `batch:false` は直列 1）。初回 flush は即時、以降 200ms デバウンス
 - **失敗の局所化**: 1 バッチが 429/通信エラーでも全停止せず、指数バックオフでリトライ→ダメなら飛ばして続行。NMT(MyMemory)の 429 は解けないので即諦める
 - **Shadow DOM**: `collectNodes` は TreeWalker でなく**開いた shadowRoot を辿る DFS**。辿った shadow root は MutationObserver にも登録し内部の動的更新も拾う（closed shadow は仕様上不可）
 - **iframe**: `allFrames:true` 注入で各フレームが独立翻訳。広告枠対策に `frameHasEnoughText()`（サブフレームは翻訳対象 50 字未満なら訳さない＝Immersive の mainFrameMinTextCount 相当。メインフレームは常時）

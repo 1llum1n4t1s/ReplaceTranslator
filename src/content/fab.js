@@ -24,7 +24,10 @@
 
   // 拡張 context 失効時 (Extension context invalidated) は静かに無視する送信ラッパ
   function send(msg) {
-    try { chrome.runtime.sendMessage(msg); } catch (_e) { /* noop */ }
+    try {
+      const p = chrome.runtime.sendMessage(msg); // callback 省略時は Promise。受信側不在の reject も無視する
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch (_e) { /* noop */ }
   }
 
   let state = "off"; // "off" | "loading" | "on"

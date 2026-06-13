@@ -23,6 +23,12 @@
   // 文字量の多い画像(漫画・図表)では足りずに切れることがあるので、その場合はここを上げる。
   const IMAGE_MAX_OUTPUT_TOKENS = 2048;
 
+  // 出力上限パラメータ。OpenAI の gpt-5/o 系は max_tokens 非対応のため max_completion_tokens、
+  // xAI(Grok) は max_tokens。テキスト/画像の両 buildRequest が同じ分岐を持つので 1 箇所に集約する。
+  function maxTokensCap(providerId, n) {
+    return providerId === "openai" ? { max_completion_tokens: n } : { max_tokens: n };
+  }
+
   /**
    * 混在翻訳を担保する system 指示文を組み立てる。
    * 「すでに target 言語の要素はそのまま、それ以外のみ翻訳」を明示し、要件 A を実現する。
@@ -128,10 +134,7 @@
     if (providerId === "openai" || providerId === "xai") {
       // xAI(Grok) は OpenAI 互換なので chat/completions 形式を共有する。
       // 出力上限を付け、prompt injection / format drift で verbose 化したときの遅延・課金枠浪費を防ぐ。
-      // OpenAI の gpt-5/o 系は max_tokens 非対応のため max_completion_tokens を使う。
-      const cap = providerId === "openai"
-        ? { max_completion_tokens: MAX_OUTPUT_TOKENS }
-        : { max_tokens: MAX_OUTPUT_TOKENS };
+      const cap = maxTokensCap(providerId, MAX_OUTPUT_TOKENS);
       const body = tuneReasoning(providerId, model, Object.assign({
         model,
         response_format: { type: "json_object" },
@@ -327,7 +330,7 @@
       return (json.models || [])
         .filter((m) => {
           const methods = m.supportedGenerationMethods || m.supported_actions;
-          return !methods || methods.indexOf("generateContent") >= 0;
+          return !methods || methods.includes("generateContent");
         })
         .map((m) => ({ id: String(m.name || "").replace(/^models\//, ""), created: 0, version: m.version || "" }));
     }
@@ -367,10 +370,7 @@
 
     if (providerId === "openai" || providerId === "xai") {
       // 出力上限を付け、verbose 化による課金枠の浪費を防ぐ (Anthropic/Gemini と同じ IMAGE_MAX_OUTPUT_TOKENS)。
-      // OpenAI の gpt-5/o 系は max_tokens 非対応なので max_completion_tokens を使う。xAI(Grok) は max_tokens。
-      const cap = providerId === "openai"
-        ? { max_completion_tokens: IMAGE_MAX_OUTPUT_TOKENS }
-        : { max_tokens: IMAGE_MAX_OUTPUT_TOKENS };
+      const cap = maxTokensCap(providerId, IMAGE_MAX_OUTPUT_TOKENS);
       const body = tuneReasoning(providerId, model, Object.assign({
         model, response_format: { type: "json_object" },
         messages: [{ role: "user", content: [

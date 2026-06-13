@@ -127,7 +127,7 @@
     const r = img.getBoundingClientRect();
     const wrap = document.createElement("span");
     wrap.className = "__rt-img-wrap";
-    wrap.style.display = (cs.display === "" || cs.display.indexOf("inline") === 0) ? "inline-block" : "block";
+    wrap.style.display = (cs.display === "" || cs.display.startsWith("inline")) ? "inline-block" : "block";
     wrap.style.width = Math.round(r.width) + "px";
     wrap.style.height = Math.round(r.height) + "px";
     wrap.style.verticalAlign = cs.verticalAlign; // 行内画像のベースラインずれを抑える

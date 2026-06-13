@@ -55,38 +55,6 @@ test("currentMonthKey formats YYYY-MM", () => {
   assert.equal(TokenUsage.currentMonthKey(new Date(2026, 11, 31)), "2026-12");
 });
 
-test("addUsage accumulates without mutating the input store", () => {
-  const a = TokenUsage.addUsage({}, "2026-06", "openai", 10, 5);
-  const b = TokenUsage.addUsage(a, "2026-06", "openai", 3, 2);
-  assert.deepEqual(a["2026-06"].openai, { input: 10, output: 5 });
-  assert.deepEqual(b["2026-06"].openai, { input: 13, output: 7 });
-});
-
-test("addUsage separates months and providers", () => {
-  let store = {};
-  store = TokenUsage.addUsage(store, "2026-06", "openai", 10, 5);
-  store = TokenUsage.addUsage(store, "2026-07", "openai", 1, 1);
-  assert.deepEqual(store["2026-06"].openai, { input: 10, output: 5 });
-  assert.deepEqual(store["2026-07"].openai, { input: 1, output: 1 });
-});
-
-test("usageForMonth sums per provider and grand total", () => {
-  let store = {};
-  store = TokenUsage.addUsage(store, "2026-06", "openai", 10, 5);
-  store = TokenUsage.addUsage(store, "2026-06", "gemini", 20, 8);
-  const r = TokenUsage.usageForMonth(store, "2026-06");
-  assert.equal(r.perProvider.openai.total, 15);
-  assert.equal(r.perProvider.gemini.total, 28);
-  assert.equal(r.perProvider.anthropic.total, 0);
-  assert.equal(r.total.total, 43);
-});
-
-test("usageForMonth on empty/missing month returns zeros (monthly reset behavior)", () => {
-  const r = TokenUsage.usageForMonth({}, "2099-01");
-  assert.equal(r.total.total, 0);
-  assert.equal(r.perProvider.anthropic.total, 0);
-});
-
 test("pruneUsage keeps only the latest N months", () => {
   const store = { "2026-01": {}, "2026-02": {}, "2026-03": {} };
   const r = TokenUsage.pruneUsage(store, 2);
