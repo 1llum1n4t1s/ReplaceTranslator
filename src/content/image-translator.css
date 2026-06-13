@@ -44,3 +44,10 @@
   align-items: center;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .5);
 }
+
+/* 訳文。JS が枠に収まる最大フォントを実測フィットする。長い URL/英単語も枠幅で折り返す。 */
+.__rt-img-text {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+}

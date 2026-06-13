@@ -111,6 +111,22 @@
     return wrap;
   }
 
+  // 訳文 span が枠 (boxW×boxH px) に収まる最大フォント (px) を二分探索で求める。
+  // 係数ベース (高さ×0.7) だと元が複数行の枠で box.h が数行ぶんになり字が巨大化したが、
+  // 実測フィットなら多行ブロックは自動で小さくなり、訳文が日本語化で伸びても枠内に収まる。
+  function fitFontSize(span, boxW, boxH, minFs, maxFs) {
+    let lo = minFs, hi = Math.max(minFs, maxFs), best = minFs;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      span.style.fontSize = `${mid}px`;
+      const r = span.getBoundingClientRect();
+      if (r.height <= boxH + 0.5 && r.width <= boxW + 0.5) { best = mid; lo = mid + 1; }
+      else { hi = mid - 1; }
+    }
+    span.style.fontSize = `${best}px`;
+    return best;
+  }
+
   function renderBlocks(img, blocks) {
     const wrap = ensureWrap(img);
     let layer = wrap.querySelector(".__rt-img-layer");
@@ -120,24 +136,39 @@
       wrap.appendChild(layer);
     }
     layer.replaceChildren();
-    // 元のフォントサイズに追従させるため、画像の表示高さ × ブロック高さ から字サイズを推定する
     const rect = img.getBoundingClientRect();
     const imgH = rect.height || img.clientHeight || 0;
+    const imgW = rect.width || img.clientWidth || 0;
     blocks.forEach((blk) => {
       const el = document.createElement("div");
       el.className = "__rt-img-block";
-      el.textContent = blk.translation;
       if (blk.original) el.title = blk.original;
+      // 訳文は span に入れて実測する (flex 中央寄せの div を直接測ると不安定なため)。
+      const span = document.createElement("span");
+      span.className = "__rt-img-text";
+      span.textContent = blk.translation;
+      el.appendChild(span);
       el.style.left = `${blk.box.x * 100}%`;
       el.style.top = `${blk.box.y * 100}%`;
-      el.style.width = `${Math.max(0.04, blk.box.w) * 100}%`;
-      el.style.minHeight = `${Math.max(0.03, blk.box.h) * 100}%`;
-      // ブロック高さ(box.h)×画像高さ ≒ その文字の縦サイズ。1行ぶんに寄せて係数(やや小さめ 0.7)を掛け、極端値をクランプ。
+      // 幅は box.w を使うが、極小幅 (LLM が w≈0 の劣化 bbox を返す等) は判読不能な縦帯になるため px 下限 (~48px) を
+      // 設ける。画像幅の 60% は超えない (枠を画像いっぱいに広げない)。
+      let wPct = Math.max(0.04, blk.box.w);
+      if (imgW > 0) wPct = Math.max(wPct, Math.min(0.6, 48 / imgW));
+      el.style.width = `${wPct * 100}%`;
+      // 高さも OCR の元枠 (box.h) に固定。min-height だと訳文が伸びたとき div が下へ膨張し隣のブロックに重なる。
+      const boxHpx = Math.max(0.03, blk.box.h) * imgH;
       if (imgH > 0) {
-        const fs = Math.max(9, Math.min(36, Math.round(imgH * Math.max(0.02, blk.box.h) * 0.7)));
-        el.style.fontSize = `${fs}px`;
+        el.style.height = `${boxHpx}px`;
+        layer.appendChild(el); // clientWidth/Height 計測のため先に DOM へ
+        const targetW = Math.max(8, el.clientWidth - 8);   // 左右 padding 4px*2 (負値ガード)
+        const targetH = Math.max(8, el.clientHeight - 2);  // 上下 padding 1px*2 (負値ガード)
+        const maxFs = Math.min(48, Math.max(9, Math.round(boxHpx)));
+        fitFontSize(span, targetW, targetH, 9, maxFs);
+        // 9px でも枠に収まらない多行訳文は、中央寄せだと全行が均等に欠ける。上寄せにして先頭行を必ず丸ごと残す。
+        if (span.getBoundingClientRect().height > targetH + 0.5) el.style.alignItems = "flex-start";
+      } else {
+        layer.appendChild(el); // 画像高さ不明時は CSS フォールバック (12px) のまま
       }
-      layer.appendChild(el);
     });
   }
 
