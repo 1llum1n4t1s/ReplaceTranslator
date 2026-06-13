@@ -148,12 +148,16 @@
       span.className = "__rt-img-text";
       span.textContent = blk.translation;
       el.appendChild(span);
-      el.style.left = `${blk.box.x * 100}%`;
       el.style.top = `${blk.box.y * 100}%`;
       // 幅は box.w を使うが、極小幅 (LLM が w≈0 の劣化 bbox を返す等) は判読不能な縦帯になるため px 下限 (~48px) を
       // 設ける。画像幅の 60% は超えない (枠を画像いっぱいに広げない)。
       let wPct = Math.max(0.04, blk.box.w);
       if (imgW > 0) wPct = Math.max(wPct, Math.min(0.6, 48 / imgW));
+      // 下限で広げた枠が画像右端をはみ出すと、layer の overflow:hidden で画面外が切れる一方、fitFontSize は
+      // はみ出し分込みの clientWidth で測るため見えない幅向けに組まれ訳文がクリップされる。左へずらして画像内へ収める。
+      let leftPct = blk.box.x;
+      if (leftPct + wPct > 1) leftPct = Math.max(0, 1 - wPct);
+      el.style.left = `${leftPct * 100}%`;
       el.style.width = `${wPct * 100}%`;
       // 高さも OCR の元枠 (box.h) に固定。min-height だと訳文が伸びたとき div が下へ膨張し隣のブロックに重なる。
       // ただし極小画像/極小 box.h で 1 行も描けない高さ (例 60px 画像 × box.h 0.03 = 1.8px) に潰れないよう、
