@@ -156,7 +156,9 @@
       if (imgW > 0) wPct = Math.max(wPct, Math.min(0.6, 48 / imgW));
       el.style.width = `${wPct * 100}%`;
       // 高さも OCR の元枠 (box.h) に固定。min-height だと訳文が伸びたとき div が下へ膨張し隣のブロックに重なる。
-      const boxHpx = Math.max(0.03, blk.box.h) * imgH;
+      // ただし極小画像/極小 box.h で 1 行も描けない高さ (例 60px 画像 × box.h 0.03 = 1.8px) に潰れないよう、
+      // 最小フォント (9px) 1 行ぶん (~14px) を下限にする (旧 min-height が 1 行ぶん確保していた挙動の代替)。
+      const boxHpx = Math.max(14, Math.max(0.03, blk.box.h) * imgH);
       if (imgH > 0) {
         el.style.height = `${boxHpx}px`;
         layer.appendChild(el); // clientWidth/Height 計測のため先に DOM へ

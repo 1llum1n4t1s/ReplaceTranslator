@@ -49,5 +49,7 @@
 .__rt-img-text {
   display: block;
   width: 100%;
+  /* host ページが white-space:nowrap (カルーセル/ツールバー等) でもオーバーレイは独立して折り返す */
+  white-space: normal;
   overflow-wrap: anywhere;
 }
