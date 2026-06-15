@@ -342,17 +342,50 @@
 
   const CANVAS_FONT = 'system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif';
 
+  // Phase 2: 平坦背景のとき box(+余白)内で背景色と差のある画素=文字インクの外接矩形へ box を引き締める。
+  // LLM の緩い/わずかにズレた box を実 glyph 位置にスナップし、消去のはみ出しと配置ズレを減らす。
+  // 文字が見つからない/探索域がほぼ全面インク(背景判定ミス)なら null を返してスナップしない。
+  function snapToInk(ctx, x, y, w, h, bg, W, H) {
+    const mx = w * 0.18, my = h * 0.28; // 少しはみ出た glyph も拾うため探索域を広げる
+    const sx = Math.max(0, Math.floor(x - mx)), sy = Math.max(0, Math.floor(y - my));
+    const ex = Math.min(W, Math.ceil(x + w + mx)), ey = Math.min(H, Math.ceil(y + h + my));
+    const rw = ex - sx, rh = ey - sy;
+    if (rw < 3 || rh < 3) return null;
+    let d;
+    try { d = ctx.getImageData(sx, sy, rw, rh).data; } catch (_e) { return null; }
+    const step = Math.max(1, Math.round(Math.min(rw, rh) / 120)); // 大きい box は間引いて高速化
+    let minx = rw, miny = rh, maxx = -1, maxy = -1, count = 0, sampled = 0;
+    for (let py = 0; py < rh; py += step) {
+      for (let px = 0; px < rw; px += step) {
+        sampled++;
+        const o = (py * rw + px) * 4;
+        const dr = d[o] - bg[0], dg = d[o + 1] - bg[1], db = d[o + 2] - bg[2];
+        if (dr * dr + dg * dg + db * db > 3600) { // RGB ユークリッド距離 ~60 超 = 文字インク
+          if (px < minx) minx = px; if (px > maxx) maxx = px;
+          if (py < miny) miny = py; if (py > maxy) maxy = py; count++;
+        }
+      }
+    }
+    if (count < 4 || maxx < minx || maxy < miny) return null;     // 文字らしき画素が無い
+    if (count / sampled > 0.9) return null;                       // 探索域のほぼ全面=背景判定ミス/textured
+    const nx = sx + Math.max(0, minx - 1), ny = sy + Math.max(0, miny - 1);
+    const nex = sx + Math.min(rw, maxx + step + 1), ney = sy + Math.min(rh, maxy + step + 1);
+    return { x: nx, y: ny, w: Math.max(2, nex - nx), h: Math.max(2, ney - ny) };
+  }
+
   // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
   function drawInpaintBlock(ctx, blk, W, H) {
-    const w = Math.max(2, blk.box.w * W);
-    const h = Math.max(2, blk.box.h * H);
-    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
-    const cy = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
-    const y = Math.min(Math.max(0, cy * H - h / 2), Math.max(0, H - h));
+    let w = Math.max(2, blk.box.w * W);
+    let h = Math.max(2, blk.box.h * H);
+    let x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
+    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
+    let y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
     const st = ringStats(ctx, x, y, w, h, W, H);
     const flat = st && st.std < 24; // 外周の色ブレが小さい=平坦背景 → 背景色 fill で原文を消せる
     if (flat) {
-      const dx = Math.max(1, w * 0.04), dy = Math.max(1, h * 0.12); // glyph の食み出しも消すため box を少し膨らます
+      const snap = snapToInk(ctx, x, y, w, h, st.color, W, H); // Phase 2: 実 glyph へ box を引き締める
+      if (snap) { x = snap.x; y = snap.y; w = snap.w; h = snap.h; }
+      const dx = Math.max(1, w * 0.06), dy = Math.max(1, h * 0.14); // glyph の食み出しも消すため box を少し膨らます
       ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
       ctx.fillRect(x - dx, y - dy, w + 2 * dx, h + 2 * dy);
     } else {
