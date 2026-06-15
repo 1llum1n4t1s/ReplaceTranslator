@@ -78,9 +78,10 @@ jobs:
 
       - name: Firefox 用ソースディレクトリを構築
         run: |
-          # 単一 manifest.json を共有（Firefox は background.scripts、Chrome は service_worker を使う）
+          # ソース manifest.json は Chrome 純正(service_worker)。Firefox は service_worker 非対応のため
+          # build-firefox-manifest.mjs で background.scripts 形式へ変換する(importScripts を単一ソースに生成)。
           mkdir -p firefox-build
-          cp manifest.json firefox-build/manifest.json
+          node build-firefox-manifest.mjs firefox-build/manifest.json
           cp -r icons firefox-build/
           cp -r src firefox-build/
           cp -r _locales firefox-build/

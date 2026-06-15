@@ -190,6 +190,16 @@ body {
 .pc-body { padding: 0 13px 12px; display: flex; flex-direction: column; gap: 8px; }
 .pc-foot { display: flex; align-items: center; gap: 8px; min-height: 16px; }
 
+/* アコーディオン: キー入力は選択中サービスのカードだけ開く (プロバイダが増えても縦に伸びすぎない)。
+   未選択カードはヘッダ(ラジオ + 名前 + バッジ)だけのコンパクト表示。 */
+.provider-card:not(.selected) .pc-body { display: none; }
+.provider-card.selected .pc-body { animation: fadeDown .22s ease both; }
+.provider-card:not(.selected) .pc-head { padding-bottom: 11px; }
+
+/* モデル一覧は選択中カードのアコーディオン内に入る (キー + モデルを 1 枚のカードにまとめる)。
+   キー欄との間に細い区切り線を引いて視覚的に分ける。 */
+.pc-body > #model-row { margin-top: 2px; padding-top: 10px; border-top: 0.5px solid var(--rule); }
+
 .pi-radio { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--ink-soft); flex-shrink: 0; position: relative; transition: border-color .18s ease; }
 .provider-card.selected .pi-radio { border-color: var(--vermilion); }
 .provider-card.selected .pi-radio::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: var(--vermilion); }

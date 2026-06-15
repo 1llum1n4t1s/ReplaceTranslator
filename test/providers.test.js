@@ -77,6 +77,34 @@ test("buildRequest falls back to provider default model", () => {
   assert.equal(r.body.model, g.Providers.openai.defaultModel);
 });
 
+test("OpenAI 互換プロバイダ(openrouter/deepseek/groq)は chat/completions 形状を共有する", () => {
+  // OpenAI と同形 (Bearer 認証・chat/completions・json_object・max_tokens) を新 3 社で確認。
+  ["openrouter", "deepseek", "groq"].forEach((id) => {
+    const provider = g.Providers.get(id);
+    const r = ProviderApi.buildRequest(id, { texts: ["Hello"], sourceLang: "auto", targetLang: "ja", apiKey: "k-" + id });
+    assert.equal(r.url, provider.endpoint, `${id} endpoint`);
+    assert.equal(r.method, "POST", `${id} method`);
+    assert.equal(r.headers.Authorization, "Bearer k-" + id, `${id} auth`);
+    assert.equal(r.body.model, provider.defaultModel, `${id} default model`);
+    assert.equal(r.body.response_format.type, "json_object", `${id} response_format`);
+    assert.ok(r.body.max_tokens > 0, `${id} uses max_tokens (not max_completion_tokens)`);
+    assert.ok(!("max_completion_tokens" in r.body), `${id} は max_completion_tokens を使わない`);
+    assert.equal(r.body.messages.length, 2, `${id} messages`);
+    assert.match(r.body.messages[1].content, /Hello/, `${id} user content`);
+    // 非 OpenAI なので reasoning_effort は付かず temperature:0
+    assert.equal(r.body.temperature, 0, `${id} temperature`);
+    assert.ok(!("reasoning_effort" in r.body), `${id} no reasoning_effort`);
+  });
+});
+
+test("OpenAI 互換プロバイダは parseResponse / streamDelta も openai と同じ経路に乗る", () => {
+  ["openrouter", "deepseek", "groq"].forEach((id) => {
+    const json = { choices: [{ message: { content: '{"translations":["やあ"]}' } }] };
+    assert.deepEqual(ProviderApi.parseResponse(id, json), ["やあ"], `${id} parseResponse`);
+    assert.equal(ProviderApi.streamDelta(id, { choices: [{ delta: { content: "あ" } }] }), "あ", `${id} streamDelta`);
+  });
+});
+
 test("OpenAI は reasoning_effort をモデル別の最小値に、旧モデルは temperature:0", () => {
   // gpt-5.1 以降: temperature を送らず reasoning_effort:"none" (推論OFF・最速)
   const rNew = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4-nano", apiKey: "k" });
@@ -342,4 +370,29 @@ test("parseImageBlocks returns [] when there are no blocks", () => {
 test("parseImageBlocks rejects non-string translation (schema slip → no [object Object])", () => {
   const json = { choices: [{ message: { content: '{"blocks":[{"translation":{"text":"x"},"box":{"x":0,"y":0,"w":0.5,"h":0.1}}]}' } }] };
   assert.deepEqual(ProviderApi.parseImageBlocks("openai", json), []);
+});
+
+test("parseImageBlocks captures cy (midline) and falls back to box center", () => {
+  const withCy = { choices: [{ message: { content: '{"blocks":[{"translation":"訳","cy":0.5,"box":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}]}' } }] };
+  assert.equal(ProviderApi.parseImageBlocks("openai", withCy)[0].cy, 0.5); // 明示 cy を採用
+  const noCy = { choices: [{ message: { content: '{"blocks":[{"translation":"訳","box":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}]}' } }] };
+  assert.ok(Math.abs(ProviderApi.parseImageBlocks("openai", noCy)[0].cy - 0.25) < 1e-9); // 欠落時は y+h/2 = 0.25
+});
+
+test("parseImageBlocks converts Gemini box_2d [ymin,xmin,ymax,xmax]/1000 to box + cy", () => {
+  const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[200,100,400,600],"original":"Hi","translation":"やあ"}]' }] } }] };
+  const r = ProviderApi.parseImageBlocks("gemini", g);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].translation, "やあ");
+  // ymin .2 / xmin .1 / ymax .4 / xmax .6 → x .1, y .2, w .5, h .2, cy .3 (x/y 反転していないことの確認)
+  assert.ok(Math.abs(r[0].box.x - 0.1) < 1e-9);
+  assert.ok(Math.abs(r[0].box.y - 0.2) < 1e-9);
+  assert.ok(Math.abs(r[0].box.w - 0.5) < 1e-9);
+  assert.ok(Math.abs(r[0].box.h - 0.2) < 1e-9);
+  assert.ok(Math.abs(r[0].cy - 0.3) < 1e-9);
+});
+
+test("parseImageBlocks (gemini) drops items without a valid 4-element box_2d", () => {
+  const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[1,2,3],"translation":"x"},{"translation":"y"}]' }] } }] };
+  assert.deepEqual(ProviderApi.parseImageBlocks("gemini", g), []);
 });

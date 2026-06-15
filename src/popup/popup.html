@@ -43,13 +43,6 @@
       <div class="opts">
         <div class="switch-field">
           <div class="switch-text">
-            <label class="switch-label" for="image-translate" data-i18n="optImageTranslate">画像内テキストの翻訳</label>
-            <div class="switch-desc" data-i18n="optImageTranslateDesc">ページ翻訳時に画像内の文字も一括翻訳します（画像にホバーして「訳」で個別翻訳も可）。vision 対応 LLM のみ・MyMemory 不可。</div>
-          </div>
-          <input id="image-translate" type="checkbox">
-        </div>
-        <div class="switch-field">
-          <div class="switch-text">
             <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
             <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
           </div>
@@ -171,6 +164,63 @@
             </div>
             <div class="pc-foot">
               <a class="hint" id="link-xai" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- OpenRouter (OpenAI 互換・多モデル中継) -->
+        <div class="provider-card" data-provider="openrouter">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="openrouter">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">OpenRouter</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-openrouter" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-...">
+              <button class="toggle" type="button" data-target="key-openrouter" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-openrouter" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- DeepSeek (OpenAI 互換) -->
+        <div class="provider-card" data-provider="deepseek">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="deepseek">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">DeepSeek</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-deepseek" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+              <button class="toggle" type="button" data-target="key-deepseek" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-deepseek" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Groq (OpenAI 互換・超高速) -->
+        <div class="provider-card" data-provider="groq">
+          <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="groq">
+            <span class="pi-radio" aria-hidden="true"></span>
+            <span class="pi-name">Groq</span>
+            <span class="pi-badge" data-badge aria-hidden="true"></span>
+          </button>
+          <div class="pc-body">
+            <div class="key-row">
+              <input id="key-groq" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
+              <button class="toggle" type="button" data-target="key-groq" data-i18n="optShow">表示</button>
+            </div>
+            <div class="pc-foot">
+              <a class="hint" id="link-groq" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
               <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
             </div>
           </div>

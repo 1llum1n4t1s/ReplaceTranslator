@@ -47,7 +47,7 @@ if (typeof importScripts === "function") {
   // content script (fab/image-translator) が読む非機密フラグだけを抽出する。saveSettings と
   // ensureContentFlags の両所で使い、フラグ追加時の片側更新漏れ (= content 側だけ欠落) を防ぐ。
   function contentFlagsOf(s) {
-    return { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate, showFab: s.showFab };
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。
@@ -63,7 +63,9 @@ if (typeof importScripts === "function") {
 
   // HTTP エラー応答の本文を安全に読む (失敗吸収 + 300 字に切り詰め)。各 fetch のエラー message 生成で共用。
   async function readDetail(res) {
-    try { return (await res.text()).slice(0, 300); } catch (_e) { return ""; }
+    // 600 字確保: Gemini 等の 429 本文は quota_id ("...PerDayPerProjectPerModel-FreeTier" 等) が
+    // 後方にあることがあり、content 側の quotaScope 判定 (日次 vs 分次) に必要なため広めに取る。
+    try { return (await res.text()).slice(0, 600); } catch (_e) { return ""; }
   }
 
   async function saveSettings(raw) {
@@ -237,12 +239,12 @@ if (typeof importScripts === "function") {
     return { ok: true, translations, usage, nextBatchSize };
   }
 
-  // OpenAI/xAI を SSE ストリーミングで翻訳し、確定要素ごとに onPartial(index, text) を呼ぶ (早出し)。
+  // OpenAI 互換社を SSE ストリーミングで翻訳し、確定要素ごとに onPartial(index, text) を呼ぶ (早出し)。
   // 戻り値: 非stream と同形の結果、stream 不可/通信失敗時は null (呼び出し側が非stream にフォールバック)。
   // 翻訳の真実は蓄積した完全 JSON の extractTranslations。partial がズレても最終結果が確定し直す。
   async function translateBatchStream(settings, texts, signal, onPartial) {
     const providerId = settings.provider;
-    if (providerId !== "openai" && providerId !== "xai") return null; // stream 対応は OpenAI/xAI のみ
+    if (!ProviderApi.supportsStream(providerId)) return null; // stream 対応は OpenAI 互換社のみ
     const apiKey = keyFor(settings, providerId);
     if (!apiKey) return { ok: false, error: "no_api_key", provider: providerId };
     const model = (settings.models && settings.models[providerId]) || undefined;
@@ -412,7 +414,11 @@ if (typeof importScripts === "function") {
       gemini: /gemini-/i,
       xai: /^grok-/i,
     }[providerId];
-    const exclude = /embed|whisper|tts|dall-e|image|audio|realtime|moderation|search|guard/i;
+    // 翻訳に使えない非テキスト系を除外する: 埋め込み(embed)/音声(whisper/tts/transcribe/audio/realtime)/
+    // 画像生成(dall-e/image/imagine)/動画生成(video/veo/sora)/モデレーション(moderation/guard)/検索(search)。
+    // ※ "imagine"(xAI grok-imagine 等の生成) は "image" の部分文字列でないため別途列挙が必要。
+    // ※ vision(画像入力チャット) は画像翻訳で使うので除外しない ("vision" は "image" にマッチしない)。
+    const exclude = /embed|whisper|tts|transcribe|dall-e|image|imagine|audio|realtime|moderation|search|guard|video|veo|sora/i;
     // 日付/版数が入った ID (例 -2024-08-06 / -20241022 / -0709) は除外し、エイリアス (latest 等) を優先。
     // ただし Anthropic は日付入り ID しか配信しないため除外せず、後段の normalizeModelList でエイリアス化+重複排除する。
     const dated = /\d{4}-\d{2}-\d{2}|\d{6,}|[-_]\d{4}$/;
@@ -421,6 +427,14 @@ if (typeof importScripts === "function") {
       (!include || include.test(m.id)) &&
       !exclude.test(m.id) &&
       (providerId === "anthropic" || !dated.test(m.id)));
+  }
+  // 価格ゲージを出せる (model-pricing に載っている) モデルだけを {id, price} 配列にして残す。
+  // ユーザーはコスト比較できない "—" モデルを選びようがないので一覧から除く。
+  // ただし 1 件も価格が付かないときは全件 (price:null 込み) を返す = 空一覧で詰むのを防ぐ保険。
+  function pickPriced(ids) {
+    const all = ids.map((id) => ({ id, price: ModelPricing.lookup(id) }));
+    const priced = all.filter((m) => m.price);
+    return priced.length ? priced : all;
   }
   // Anthropic は日付入り ID をエイリアス化し、同一エイリアスは新しい順で先頭(最新)だけ残す。
   function normalizeModelList(providerId, models) {
@@ -459,7 +473,8 @@ if (typeof importScripts === "function") {
     try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
     const sorted = sortNewest(providerId, filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
     const normalized = normalizeModelList(providerId, sorted);
-    const top = normalized.slice(0, 10).map((m) => ({ id: m.id, price: ModelPricing.lookup(m.id) }));
+    // 価格が引けるモデルだけに絞ってから上位 10 件 (圏外でも価格付きを優先して拾える)。
+    const top = pickPriced(normalized.map((m) => m.id)).slice(0, 10);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     cacheAll[providerId] = { models: top, fetchedAt: Date.now() };
     await chrome.storage.local.set({ [StorageKeys.MODELS_CACHE]: cacheAll });
@@ -486,10 +501,10 @@ if (typeof importScripts === "function") {
     const apiKey = keyFor(settings, providerId);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     const cached = cacheAll[providerId];
-    // 静的な既定モデルを価格付きで返すフォールバック
+    // 静的な既定モデルを価格付きで返すフォールバック (価格ゲージを出せるものだけ)
     const fallback = () => ({
       ok: true, fallback: true,
-      models: (provider.models || []).map((id) => ({ id, price: ModelPricing.lookup(id) })),
+      models: pickPriced(provider.models || []),
     });
     // API 通信 (取得) は force のときだけ = 「API キー入力後」と「モデル更新ボタン押下時」のみ。
     // それ以外 (provider 切替 / popup 起動) は通信せず、キャッシュ or 同梱フォールバックを表示する。
@@ -733,7 +748,13 @@ if (typeof importScripts === "function") {
   const FRAME_DONE_GRACE_MS = 8000; // 一部フレーム done 後、残りがこの時間応答しなければ離脱とみなし done を発行
   function relayProgress(tabId, msg) {
     chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ }); // FAB (content top frame)
-    try { chrome.runtime.sendMessage(msg); } catch (_e) { /* popup が無ければ無視 */ }   // popup (集約済みのみ受理)
+    // popup が閉じていると runtime.sendMessage は「Receiving end does not exist」で非同期に reject する。
+    // relayProgress は fire-and-forget で呼ばれ、同期 try/catch では捕まらないので Promise.catch で握りつぶす
+    // (content の send() ラッパと同パターン。popup/options 不在でも無害)。
+    try {
+      const p = chrome.runtime.sendMessage(msg); // popup (集約済みのみ受理)
+      if (p && typeof p.catch === "function") p.catch(() => { /* 受信端が無ければ無視 */ });
+    } catch (_e) { /* context 失効など同期例外も無視 */ }
   }
   function clearFrameTimer(st) { if (st && st.timer) { clearTimeout(st.timer); st.timer = null; } }
   function resetFrameProgress(tabId) {
@@ -757,15 +778,16 @@ if (typeof importScripts === "function") {
       case "done":
         st.active.add(frameId);
         st.done.add(frameId);
+        if (msg.partial) st.partial = true; // どれかのフレームがレート制限等で一部未訳なら集約して done に乗せる
         clearFrameTimer(st);
         if ([...st.active].every((f) => st.done.has(f))) {
-          relayProgress(tabId, msg); // 全参加フレーム完了
+          relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(st.partial) })); // 全参加フレーム完了
         } else {
           // 未完フレームが残る。iframe の離脱/ナビゲーションで永久に done が来ず FAB/popup が loading に
           // 張り付くのを防ぐため watchdog を張る (猶予後に done を発行)。
           st.timer = setTimeout(() => {
             const cur = frameProgress.get(tabId);
-            if (cur) { cur.timer = null; relayProgress(tabId, msg); }
+            if (cur) { cur.timer = null; relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(cur.partial) })); }
           }, FRAME_DONE_GRACE_MS);
         }
         break;
@@ -788,6 +810,64 @@ if (typeof importScripts === "function") {
   } catch (_e) { /* noop */ }
 
   // ---- メッセージディスパッチ ----
+  // ---- 廃止モデルの動的フォールバック (404 → 同プロバイダの現行モデルへ自動切替 + 1 回再試行) ----
+  // 静的 RETIRED_MODELS(actions.js) は通信ゼロの保険。実行時に実際に 404 を食らったらこちらが自己修復するので、
+  // 未知の廃止 (今後どのモデルがいつ死んでも) を手動メンテ無しで吸収できる。
+  const modelFallback = new Map();     // deadModelId -> goodModelId (解決結果のキャッシュ)
+  const resolvingFallback = new Map(); // deadModelId -> Promise (10 並列が同時 404 でも解決を 1 回に集約)
+
+  function isModelGone(res) {
+    // LLM の chat/completions・:generateContent での 404 はほぼ「モデル ID 無効/廃止」。
+    // フォールバックの代償は最大 1 回の再試行のみなので 404 は一律モデル起因として扱う。
+    return Boolean(res && !res.ok && res.error === "http" && res.status === 404);
+  }
+
+  // 廃止モデルの代替を解決: まず provider.defaultModel(現行に保守)、既定自体が廃止なら live /models の先頭。
+  async function resolveFallbackModel(providerId, deadModel) {
+    if (modelFallback.has(deadModel)) return modelFallback.get(deadModel);
+    if (resolvingFallback.has(deadModel)) return resolvingFallback.get(deadModel);
+    const job = (async () => {
+      const provider = Providers.get(providerId);
+      const def = provider && provider.defaultModel;
+      if (def && def !== deadModel) return def;
+      try {
+        const s = await getSettingsCached();
+        const r = await fetchModels(providerId, keyFor(s, providerId));
+        const first = r && r.ok && r.models && r.models[0] && r.models[0].id;
+        if (first && first !== deadModel) return first;
+      } catch (_e) { /* live 取得失敗 → 復旧不可 */ }
+      return null;
+    })();
+    resolvingFallback.set(deadModel, job);
+    let out = null;
+    try { out = await job; } finally { resolvingFallback.delete(deadModel); }
+    if (out) modelFallback.set(deadModel, out);
+    return out;
+  }
+
+  // 解決した現行モデルを settings に永続化 (applySettingsPatch で直列化 = 並行バッチの二重保存/lost update 回避)。
+  async function persistModelSwitch(providerId, newModel) {
+    await applySettingsPatch((base) => {
+      if (base.models[providerId] === newModel) return null;
+      return { models: Object.assign({}, base.models, { [providerId]: newModel }) };
+    });
+  }
+
+  // stream(OpenAI 互換のみ) → 非stream の順で 1 バッチ翻訳する (404 フォールバックで 2 回呼べるよう関数化)。
+  async function translateWith(settings, texts, signal, batchId, tabId, frameId, quick) {
+    let res = null;
+    if (batchId != null && ProviderApi.supportsStream(settings.provider)) {
+      res = await translateBatchStream(settings, texts, signal, (index, text) => {
+        if (tabId != null) {
+          chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId, index, text }, { frameId })
+            .catch(() => { /* 受信端が無ければ無視 */ });
+        }
+      });
+    }
+    if (!res) res = await translateBatch(settings, texts, signal, { tune: !quick }); // stream 非対応/失敗は非stream へ。quick は学習しない
+    return res;
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.action !== "string") return undefined;
     // 自拡張由来のみ受理 (content / popup / options はいずれも sender.id が拡張 ID)
@@ -806,24 +886,28 @@ if (typeof importScripts === "function") {
           }
           case Actions.TRANSLATE_BATCH: {
             const stored = await getSettingsCached();
-            const settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
+            let settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録
             const controller = new AbortController();
             const untrack = trackController(tabId, controller);
             try {
-              let res = null;
-              // OpenAI/xAI かつ content が batchId 付き(=逐次適用に対応)なら SSE ストリームで早出しを試す
-              if (msg.batchId != null && (settings.provider === "openai" || settings.provider === "xai")) {
-                res = await translateBatchStream(settings, msg.texts || [], controller.signal, (index, text) => {
-                  if (tabId != null) {
-                    chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId: msg.batchId, index, text }, { frameId })
-                      .catch(() => { /* 受信端が無ければ無視 */ });
-                  }
-                });
+              const texts = msg.texts || [];
+              let res = await translateWith(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
+              // 廃止モデルの 404 は、同プロバイダの現行モデルへ自動フォールバックして 1 回だけ再試行する
+              // (静的 RETIRED に依存せず、未知の廃止も実際に死んだ瞬間に自己修復)。MyMemory はモデル概念なし。
+              if (isModelGone(res) && settings.provider !== "mymemory") {
+                const dead = (settings.models && settings.models[settings.provider]) || "";
+                const good = await resolveFallbackModel(settings.provider, dead);
+                if (good && good !== dead) {
+                  await persistModelSwitch(settings.provider, good); // 保存 → 以後のバッチ/popup 表示も現行に揃う
+                  settings = Object.assign({}, settings, {
+                    models: Object.assign({}, settings.models, { [settings.provider]: good }),
+                  });
+                  res = await translateWith(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
+                }
               }
-              if (!res) res = await translateBatch(settings, msg.texts || [], controller.signal, { tune: !msg.quick }); // stream 非対応/失敗は非stream へ。quick は学習しない
               sendResponse(res);
             } finally { untrack(); }
             break;

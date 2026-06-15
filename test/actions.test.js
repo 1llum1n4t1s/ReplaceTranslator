@@ -35,10 +35,19 @@ test("normalize preserves provided apiKeys/models and fills the rest", () => {
   assert.equal(s.models.openai, "gpt-5.4-mini"); // default
 });
 
+test("normalize migrates retired models to the provider default (404 復旧)", () => {
+  // Google が 2026-06-01 に廃止した gemini-2.0-flash が保存設定に残っていると 404 で詰む → 既定へ移行
+  const s = SettingsSchema.normalize({ models: { gemini: "gemini-2.0-flash" } });
+  assert.equal(s.models.gemini, Providers.get("gemini").defaultModel);
+  assert.notEqual(s.models.gemini, "gemini-2.0-flash");
+  // 現行モデルはそのまま保持する
+  assert.equal(SettingsSchema.normalize({ models: { gemini: "gemini-3.5-flash" } }).models.gemini, "gemini-3.5-flash");
+});
+
 test("normalize coerces boolean flags", () => {
-  const s = SettingsSchema.normalize({ imageTranslate: "yes", autoTranslate: 0 });
-  assert.equal(s.imageTranslate, true);
-  assert.equal(s.autoTranslate, false);
+  const s = SettingsSchema.normalize({ autoTranslate: "yes" });
+  assert.equal(s.autoTranslate, true);
+  assert.equal(SettingsSchema.normalize({ autoTranslate: 0 }).autoTranslate, false);
 });
 
 test("normalize defaults showFab to true when missing (existing installs keep the FAB)", () => {
@@ -64,7 +73,7 @@ test("pruneUsage keeps only the latest N months", () => {
 // ---- Providers ----
 
 test("Providers expose ids and get()", () => {
-  assert.deepEqual(Providers.ids, ["openai", "anthropic", "gemini", "xai", "mymemory"]);
+  assert.deepEqual(Providers.ids, ["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "mymemory"]);
   assert.equal(Providers.get("openai").label, "OpenAI");
   assert.equal(Providers.get("gemini").defaultModel, "gemini-2.5-flash");
   assert.equal(Providers.get("nope"), null);

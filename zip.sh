@@ -6,8 +6,8 @@
 #   ./zip.sh chrome          # Chrome のみ
 #   ./zip.sh firefox         # Firefox のみ
 #
-# Chrome/Firefox は単一 manifest.json を共有する（background に service_worker と scripts を併記）。
-# Chrome 版は .zip、Firefox 版は .xpi 拡張子で出力する（中身は同一）。
+# ソース manifest.json は Chrome 純正（background.service_worker のみ）。Chrome 版はそのまま .zip 出力。
+# Firefox は service_worker 非対応のため build-firefox-manifest.mjs で background.scripts 形式へ変換して .xpi 出力する。
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -37,7 +37,12 @@ build_pkg() {
   rm -rf "$tmp"
   mkdir -p "$tmp"
 
-  cp manifest.json "$tmp/manifest.json"
+  if [ "$variant" = "firefox" ]; then
+    # Firefox は background.service_worker 非対応 → scripts 形式へ変換 (importScripts を単一ソースに生成)
+    node build-firefox-manifest.mjs "$tmp/manifest.json"
+  else
+    cp manifest.json "$tmp/manifest.json"  # Chrome はソース manifest (service_worker のみ) をそのまま
+  fi
   cp -r icons "$tmp/"
   cp -r src "$tmp/"
   cp -r _locales "$tmp/"

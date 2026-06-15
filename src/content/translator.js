@@ -45,6 +45,7 @@
   let firstFlush = true;                // 初回 flush は即時(最初の訳を早く出す)、以降デバウンス
   let announced = false;                // 初回 done 通知済みか (以降のスクロール翻訳では戻さない)
   let fatal = null;                     // 致命的エラー (no_api_key) で全体中断
+  let droppedTransient = 0;             // 一時エラー(429/503/通信)でリトライ枯渇し未訳のまま諦めたノード数 (run 単位)。done 時に partial 通知に使う
   let currentBatchSize = 0;
   let warmupLeft = 0;                   // 残り warm-up バッチ数 (>0 の間は小サイズで投げ TTF を縮める)
   let batchSeq = 0;                     // TRANSLATE_BATCH 連番 (streaming の partial を batchId で紐付ける)
@@ -74,9 +75,13 @@
     return Boolean(p && p.batch === false);
   }
   // 同時に投げるバッチ数。NMT (MyMemory) は translator 側を直列(1)にし、実効同時数は background の
-  // translateEach 側 (8 並列) で決める。LLM 系はそのまま CONCURRENCY 並列。
+  // translateEach 側 (8 並列) で決める。LLM 系は CONCURRENCY が既定だが、provider が maxConcurrency を
+  // 宣言していればそちらで上限を絞る (例: 無料枠 RPM の低い Gemini は 3。429/503 多発を防ぐ)。
   function concurrencyFor() {
-    return isNmtProvider() ? 1 : CONCURRENCY;
+    if (isNmtProvider()) return 1;
+    const p = (globalThis.Providers && settings) ? globalThis.Providers.get(settings.provider) : null;
+    const cap = p && Number(p.maxConcurrency);
+    return (cap && cap > 0) ? Math.min(cap, CONCURRENCY) : CONCURRENCY;
   }
 
   // インライン要素。テキストノードからブロック祖先を求めるとき、これらは透過して上に辿る。
@@ -261,6 +266,17 @@
 
   function sleep(ms) { return new Promise((r) => window.setTimeout(r, ms)); }
 
+  // 429 の理由を API 本文(res.message)から判定する。無料枠の「1日上限(RPD)」や残高切れ(insufficient_quota)は
+  // その日ずっと 429 を返すので、リトライや並列削減では解けない。解ける「分あたり上限(RPM)」と区別する。
+  function quotaScope(res) {
+    if (!res || res.error !== "http" || res.status !== 429) return null;
+    const m = String(res.message || "").toLowerCase();
+    if (m.includes("perminute") || m.includes("per minute") || m.includes("per-minute")) return "minute";
+    if (m.includes("perday") || m.includes("per day") || m.includes("per-day") || m.includes("daily")) return "day";
+    if (m.includes("insufficient_quota")) return "day"; // OpenAI 互換: 残高切れ = リトライ無駄
+    return null;
+  }
+
   // 一時エラー (429 / 通信 / 5xx) は指数バックオフでリトライ。致命的/恒久エラーはそのまま返す。
   async function sendBatchWithRetry(batch, myRun) {
     for (let attempt = 0; ; attempt++) {
@@ -273,7 +289,7 @@
       const isNmt = isNmtProvider();
       const transient = e === "network" || e === "runtime" || e === "incomplete" ||
         (e === "http" && res.status >= 500) ||
-        (e === "http" && res.status === 429 && !isNmt);
+        (e === "http" && res.status === 429 && !isNmt && quotaScope(res) !== "day");
       if (transient && attempt < MAX_RETRY) {
         // 429 時のバッチ縮小は background(BatchTuner) を単一ソースにし、res.nextBatchSize で反映する
         // (クライアント側の自前半減は廃止 = 二重管理の解消)。ジッタで 10 並列ワーカーの同時リトライを分散。
@@ -356,9 +372,17 @@
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
-        } else if (res && res.error === "http" && (res.status === 401 || res.status === 403) && !isNmtProvider()) {
-          // LLM のキー無効/失効(401/403)は恒久エラー。skip して done になると「翻訳済みなのに原文のまま」に
-          // 見えるため、no_api_key 同様に全体中断して popup/FAB に設定問題を通知する (NMT は per-text 制限なので除外)。
+        } else if (res && res.error === "http" && (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404) && !isNmtProvider()) {
+          // LLM の恒久エラーは全体中断して popup/FAB に理由を通知する (NMT は per-text 制限なので除外):
+          //  401/403 = キー無効/失効、400 = リクエスト不正 (モデル非対応パラメータ等)、404 = モデルが見つからない。
+          // いずれもリクエスト形状/設定が原因で全バッチ同型 → 1 バッチ失敗なら残りも必ず失敗する。
+          // skip して done にすると「未翻訳なのにエラーも出ない (理由不明で詰む)」ため、無言 skip せず原因を見せる。
+          fatal = res;
+          return;
+        } else if (res && res.error === "http" && res.status === 429 && quotaScope(res) === "day" && !isNmtProvider()) {
+          // 無料枠の 1 日上限 (RPD) / 残高切れによる 429。その日は何度投げても・並列を下げても全て 429 になり、
+          // リトライ(指数バックオフ)は時間の無駄、droppedTransient で「一部未翻訳」に流すと原因が分からず詰む。
+          // 全体中断して popup/FAB に「利用上限に達した」と明示する (errorText が statusQuotaDaily へ展開)。
           fatal = res;
           return;
         } else if (res && res.allFailed) {
@@ -383,8 +407,15 @@
             queue.push(b);
           }
         } else {
-          // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける
-          for (const b of batch) translatedNodes.add(b.node);
+          // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける。
+          // 429/503/通信などレート制限・混雑由来の諦めは未訳ノード数を数え、done 時に「一部未翻訳」を正直に通知する
+          // (無言 skip で「完了なのに訳されてない」を防ぐ)。
+          const isTransientDrop = res && (res.error === "network" || res.error === "runtime" ||
+            (res.error === "http" && (res.status === 429 || res.status >= 500)));
+          for (const b of batch) {
+            translatedNodes.add(b.node);
+            if (isTransientDrop) droppedTransient++;
+          }
         }
       }
     }
@@ -408,7 +439,9 @@
     if (myRun !== runId || !translating || announced) return;
     if (!flushing && queue.length === 0 && !flushTimer) {
       announced = true;
-      notifyProgress("done");
+      // レート制限/混雑(429/503)でリトライ枯渇し未訳のまま諦めたノードがあれば partial を立て、
+      // popup が「完了」ではなく「一部未翻訳(レート制限)」を出せるようにする (一部は訳せているので state は done のまま)。
+      notifyProgress("done", droppedTransient > 0 ? { partial: true } : undefined);
     }
   }
 
@@ -602,6 +635,7 @@
     const myRun = runId;
     announced = false;
     fatal = null;
+    droppedTransient = 0;
     flushing = false;
     firstFlush = true;
     currentBatchSize = 0;

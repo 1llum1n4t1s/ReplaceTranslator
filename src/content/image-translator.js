@@ -1,11 +1,12 @@
 "use strict";
 
 /**
- * image-translator.js — 画像内テキストの翻訳 (オプション・LLM vision)
+ * image-translator.js — 画像内テキストの翻訳 (LLM vision・ホバー手動)
  *
- * 設定 imageTranslate が ON のとき、画像ホバーで「訳」ボタンを出し、クリックで background の
- * TRANSLATE_IMAGE (vision) に投げ、返ってきた {translation, box} を画像の上にオーバーレイする。
- * Immersive Translate の画像翻訳を参考にした実験的機能。actions.js が先に注入される前提。
+ * 画像ホバーで「訳」ボタンを出し、クリックで background の TRANSLATE_IMAGE (vision) に投げ、
+ * 返ってきた {translation, box} を画像の上にオーバーレイする。オーバーレイ後はボタンが「原」に
+ * 変わり、押すとその画像だけ原文に戻せる。Immersive Translate の画像翻訳を参考にした機能。
+ * actions.js が先に注入される前提。
  */
 
 (function () {
@@ -13,13 +14,11 @@
   window.__rtImgLoaded = true;
   // 画像翻訳はホバー手動のみ (一括・後追い watcher・iframe 一括注入は廃止)。本スクリプトは manifest の
   // content_scripts で top フレームにのみ常駐する (all_frames 指定なし) ため、フレーム判定は不要。
+  // 設定トグルは廃止: 翻訳はホバー+クリックの明示操作でしか起きないので、ホバーボタンは常時出す。
 
   const A = globalThis.Actions;
-  // content には API キーを入れない: 全体 settings ではなく非機密フラグ (CONTENT_FLAGS) だけ読む
-  const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
   if (!A) return;
 
-  let enabled = false;
   let btn = null;
   let target = null;
   let dead = false; // shutdown 済みフラグ (リスナー解除後の再入を弾く)
@@ -34,11 +33,9 @@
   function shutdown() {
     if (dead) return;
     dead = true;
-    enabled = false;
     try { document.removeEventListener("mouseover", onMouseOver, true); } catch (_e) { /* noop */ }
     try { document.removeEventListener("mouseout", onMouseOut, true); } catch (_e) { /* noop */ }
     try { window.removeEventListener("scroll", onScroll, true); } catch (_e) { /* noop */ }
-    try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch (_e) { /* noop */ }
     try { chrome.runtime.onMessage.removeListener(onRuntimeMessage); } catch (_e) { /* noop */ }
     try { if (btn) btn.remove(); } catch (_e) { /* noop */ }
     btn = null;
@@ -49,22 +46,27 @@
     try { return (chrome.i18n && chrome.i18n.getMessage(k)) || f; } catch (_e) { return f; }
   };
 
-  function applyEnabled(f) {
-    enabled = Boolean(f && f.imageTranslate);
-    if (!enabled && btn) btn.style.display = "none";
-  }
-  try { chrome.storage.local.get(CFLAGS_KEY, (d) => applyEnabled(d && d[CFLAGS_KEY])); } catch (_e) { /* noop */ }
-  function onStorageChanged(c, area) {
-    if (area === "local" && c[CFLAGS_KEY]) applyEnabled(c[CFLAGS_KEY].newValue);
-  }
-  try { chrome.storage.onChanged.addListener(onStorageChanged); } catch (_e) { /* noop */ }
-
   function eligible(el) {
     if (!el || el.tagName !== "IMG") return false;
     // <picture> 内の img は直接の子である必要があり、ensureWrap で span に包むと responsive な
     // source 選択が壊れる。translate 対象から外す (オーバーレイより元レイアウト維持を優先)。
     if (el.parentElement && el.parentElement.tagName === "PICTURE") return false;
     return el.clientWidth >= 80 && el.clientHeight >= 60 && Boolean(el.currentSrc || el.src);
+  }
+
+  // img が翻訳オーバーレイ付きか (ensureWrap で包まれ layer を持つ)。ボタンの 訳/原 切替に使う。
+  function isTranslated(img) {
+    const p = img && img.parentElement;
+    return Boolean(p && p.classList.contains("__rt-img-wrap") && p.querySelector(".__rt-img-layer"));
+  }
+
+  // ボタンの見た目を img の状態に合わせる (未翻訳=「訳」/ 翻訳済み=「原」で元に戻す)。
+  function setBtnMode(img) {
+    if (!btn) return;
+    const on = isTranslated(img);
+    btn.textContent = on ? "原" : "訳";
+    btn.title = on ? tr("imgRevert", "画像の翻訳を消して元に戻す") : tr("imgBtn", "画像内のテキストを翻訳");
+    btn.classList.toggle("__rt-img-btn-on", on);
   }
 
   function ensureBtn() {
@@ -78,7 +80,9 @@
       if (!e.isTrusted) return; // 合成 click を無視 (サイトが勝手に OCR させ、ページ内の機微画像を vision へ送るのを防ぐ)
       e.preventDefault();
       e.stopPropagation();
-      if (target) translateImg(target);
+      if (!target) return;
+      if (isTranslated(target)) revertImg(target); // 翻訳済み → その 1 枚だけ原文に戻す
+      else translateImg(target);
     });
     document.documentElement.appendChild(btn);
     return btn;
@@ -87,21 +91,21 @@
   function placeBtn(img) {
     const b = ensureBtn();
     const r = img.getBoundingClientRect();
-    b.style.left = `${Math.round(r.right - 32)}px`;
-    b.style.top = `${Math.round(r.top + 6)}px`;
+    // 左下に配置 (他サービスの翻訳/保存ボタンが画像右上に被りがちなのを避ける)。ボタンは 28px (image-translator.css)。
+    b.style.left = `${Math.round(r.left + 6)}px`;
+    b.style.top = `${Math.round(r.bottom - 34)}px`;
     b.style.display = "block";
-    b.textContent = "訳";
+    setBtnMode(img);
   }
 
   function onMouseOver(e) {
     if (dead) return;
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
-    if (!enabled) return;
     if (eligible(e.target)) { target = e.target; placeBtn(e.target); }
   }
 
   function onMouseOut(e) {
-    if (dead || !enabled || !btn) return;
+    if (dead || !btn) return;
     const to = e.relatedTarget;
     if (to === btn || to === target || eligible(to)) return;
     btn.style.display = "none";
@@ -179,7 +183,6 @@
       span.className = "__rt-img-text";
       span.textContent = blk.translation;
       el.appendChild(span);
-      el.style.top = `${blk.box.y * 100}%`;
       // 幅は box.w を使うが、極小幅 (LLM が w≈0 の劣化 bbox を返す等) は判読不能な縦帯になるため px 下限 (~48px) を
       // 設ける。画像幅の 60% は超えない (枠を画像いっぱいに広げない)。
       let wPct = Math.max(0.04, blk.box.w);
@@ -196,23 +199,32 @@
       const boxHpx = Math.max(14, Math.max(0.03, blk.box.h) * imgH);
       if (imgH > 0) {
         el.style.height = `${boxHpx}px`;
+        // 垂直位置は cy (テキストの縦中央) に帯の中心を合わせる。VLM は box.y (枠上端) より cy を桁違いに
+        // 安定して当てるため、box.y の系統的な上ズレに依存せず原文行へ重なる (align-items:center で訳文中央=cy)。
+        // cy 欠落時は box の縦中央へフォールバック。最後に画像内へクランプ。
+        const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1)
+          ? blk.cy
+          : Math.min(1, Math.max(0, blk.box.y + Math.max(0.03, blk.box.h) / 2));
+        const topPx = Math.min(Math.max(0, cyN * imgH - boxHpx / 2), Math.max(0, imgH - boxHpx));
+        el.style.top = `${topPx}px`;
         layer.appendChild(el); // clientWidth/Height 計測のため先に DOM へ
         const targetW = Math.max(8, el.clientWidth - 8);   // 左右 padding 4px*2 (負値ガード)
         const targetH = Math.max(8, el.clientHeight - 2);  // 上下 padding 1px*2 (負値ガード)
-        let maxFs = Math.min(48, Math.max(9, Math.round(boxHpx)));
-        // 多行の箱 (box.h が数行ぶん) に短い訳語1行が入ると、箱の高さいっぱい (最大48px) まで膨らみ巨大化が再発する。
-        // 原文の文字数と箱の面積から「ソース1行ぶんの高さ」を逆算して上限にする (1行あたりの字サイズへ揃える)。
-        // 面積モデル: 行高 L で文字幅≈0.6L とすると origLen·0.6·L² ≈ boxW·boxH → L = √(boxW·boxH / (origLen·0.6))。
+        // 「文字が枠を埋める1行ぶんの高さ」を文字面積モデルで推定し、フォント上限にする。これを常に効かせて、
+        // 原文 (original) が来ないとき上限が箱の高さ (最大48px) に張り付き、短い訳文が巨大化するのを防ぐ。
+        // 面積モデル: 行高 L・文字幅≈0.6L とすると len·0.6·L² ≈ boxW·boxH → L = √(boxW·boxH / (len·0.6))。
+        // original が来れば密度信号に使う。無い/極短なら訳文長から原文長を概算する (EN→JA は訳文が原文の約半分の文字数)。
         const origLen = (blk.original || "").trim().length;
-        if (origLen > 1) {
-          const lineHpx = Math.sqrt((targetW * boxHpx) / (origLen * 0.6));
-          maxFs = Math.min(maxFs, Math.max(9, Math.round(lineHpx / 1.15))); // line-height 1.15 ぶんを割り戻す
-        }
+        const effLen = origLen > 1 ? origLen : Math.max(2, (blk.translation || "").trim().length) * 2;
+        const lineHpx = Math.sqrt((targetW * boxHpx) / (effLen * 0.6));
+        // 単一行の箱 (高さが小さい) は箱の高さで頭打ち、複数行の箱は1行ぶんに抑える。絶対上限も 40px に控える。
+        const maxFs = Math.min(40, Math.max(9, Math.round(Math.min(boxHpx, lineHpx) / 1.15)));
         fitFontSize(span, targetW, targetH, 9, maxFs);
         // 9px でも枠に収まらない多行訳文は、中央寄せだと全行が均等に欠ける。上寄せにして先頭行を必ず丸ごと残す。
         if (span.getBoundingClientRect().height > targetH + 0.5) el.style.alignItems = "flex-start";
       } else {
-        layer.appendChild(el); // 画像高さ不明時は CSS フォールバック (12px) のまま
+        el.style.top = `${blk.box.y * 100}%`; // 画像高さ不明時は cy→px 換算できないので従来どおり box.y
+        layer.appendChild(el); // CSS フォールバック (12px) のまま
       }
     });
   }
@@ -230,7 +242,7 @@
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
         if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
-          try { renderBlocks(img, res.blocks); if (btn) btn.style.display = "none"; }
+          try { renderBlocks(img, res.blocks); setBtnMode(img); } // 翻訳済み → ボタンを「原」(元に戻す) に切替
           catch (_e) { if (btn) btn.textContent = "訳"; } // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
           btn.textContent = "×";
@@ -242,23 +254,33 @@
 
   let imgRunId = 0; // 画像翻訳の世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
 
+  // 1 つの wrap (ensureWrap で挿入) を解除して元 DOM 構造に戻す。layer 除去 + img の退避 style 復元 + ラッパー除去。
+  function unwrapImage(wrap) {
+    const img = wrap.querySelector("img");
+    const parent = wrap.parentNode;
+    wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
+    if (img && parent) {
+      if (img.__rtPrevStyle !== undefined) { // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)
+        if (img.__rtPrevStyle) img.setAttribute("style", img.__rtPrevStyle); else img.removeAttribute("style");
+        try { delete img.__rtPrevStyle; } catch (_e) { img.__rtPrevStyle = undefined; }
+      }
+      parent.insertBefore(img, wrap);  // img をラッパーの外へ戻す
+      wrap.remove();                   // 空になったラッパーを除去
+    }
+  }
+
+  // ホバーボタンの「原」で、その 1 枚だけオーバーレイを消して原文に戻す (ページ全体の復元とは独立)。
+  function revertImg(img) {
+    const wrap = img && img.parentElement;
+    if (wrap && wrap.classList.contains("__rt-img-wrap")) unwrapImage(wrap);
+    setBtnMode(img); // ボタンを「訳」に戻す (続けて再翻訳できる)
+  }
+
   // 画像オーバーレイをすべて消し、ensureWrap で挿入した span.__rt-img-wrap も解除して
   // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
     imgRunId++; // 世代を進めて進行中ホバー OCR の遅延描画を無効化する
-    document.querySelectorAll(".__rt-img-wrap").forEach((wrap) => {
-      const img = wrap.querySelector("img");
-      const parent = wrap.parentNode;
-      wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
-      if (img && parent) {
-        if (img.__rtPrevStyle !== undefined) { // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)
-          if (img.__rtPrevStyle) img.setAttribute("style", img.__rtPrevStyle); else img.removeAttribute("style");
-          try { delete img.__rtPrevStyle; } catch (_e) { img.__rtPrevStyle = undefined; }
-        }
-        parent.insertBefore(img, wrap);  // img をラッパーの外へ戻す
-        wrap.remove();                   // 空になったラッパーを除去
-      }
-    });
+    document.querySelectorAll(".__rt-img-wrap").forEach(unwrapImage);
     // 念のため: ラッパー解除前に取り残された __rtPrevStyle 付き img があれば素の状態へ戻す (二重防御)
     document.querySelectorAll("img[style*='100%']").forEach((im) => {
       if (im.__rtPrevStyle === undefined) return;

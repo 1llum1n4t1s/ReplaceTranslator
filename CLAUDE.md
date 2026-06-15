@@ -30,8 +30,11 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 
 ## 翻訳エンジン translator.js（速度と網羅の要）
 - **ビューポート優先**: IntersectionObserver で各ブロックを observe し、可視(+`PREFETCH_MARGIN` 1200px 先読み)に入った順にテキストノードを enqueue。`sortTopDown` で**ページ上→下の優先順位**に並べてから投げる
-- **直列 flush + 動的バッチ + ワーカープール**: `flush()` は `flushing` ガードで**1本に直列化**（同時多発を防ぎ 429 を抑える＝BatchTuner が育つ）。共有カーソルから**その時点の `currentBatchSize`** 個ずつ取り出すので、自動学習の成長が同一 flush 内で即反映される。並列度は `concurrencyFor()`（LLM=`CONCURRENCY` 24 / MyMemory 等 `batch:false` は直列 1）。初回 flush は即時、以降 200ms デバウンス
+- **直列 flush + 動的バッチ + ワーカープール**: `flush()` は `flushing` ガードで**1本に直列化**（同時多発を防ぎ 429 を抑える＝BatchTuner が育つ）。共有カーソルから**その時点の `currentBatchSize`** 個ずつ取り出すので、自動学習の成長が同一 flush 内で即反映される。並列度は `concurrencyFor()`（LLM=`CONCURRENCY` 24 / MyMemory 等 `batch:false` は直列 1 / **provider が `maxConcurrency` を宣言していればそれで上限**＝無料枠 RPM の低い Gemini は 3 で 429/503 多発を回避）。初回 flush は即時、以降 200ms デバウンス
+- **プロバイダ別の並列上限 `maxConcurrency`**: 無料枠の RPM が低い社（Gemini flash ~10 RPM）は既定 24 並列だと起動直後に 429/503 が多発 → リトライ枯渇で大量 skip → 未翻訳になる。`actions.js` の provider 定義に `maxConcurrency` を足すと `concurrencyFor()` が `min(maxConcurrency, CONCURRENCY)` に絞る（有料枠は遅くなる代償。レート制限の緩い社は無指定＝24 のまま）
 - **失敗の局所化**: 1 バッチが 429/通信エラーでも全停止せず、指数バックオフでリトライ→ダメなら飛ばして続行。NMT(MyMemory)の 429 は解けないので即諦める
+- **恒久エラーは握り潰さず理由を出す**: LLM の HTTP **400/401/403/404** は設定/リクエスト形状が原因で全バッチ同型に必ず失敗するため `fatal` 扱いで全体中断し `notifyProgress("error", {detail})` で通知する（401/403=キー無効・400=リクエスト不正・404=モデル無し）。429/通信などの一時エラーだけ skip して継続。popup は `errorText(detail)` で「`<provider>`: HTTP 400 — `<API本文の error.message>`」等に展開し、ただの「エラー」表示で原因不明にならないようにする（無言 skip で「未翻訳なのにエラーも出ない」を防ぐ）
+- **一時エラーでの大量 skip は「完了」と嘘をつかず partial で出す**: 429/503/通信エラーはリトライ（5xx もバックオフ対象）後それでも解けなければ skip して継続するが、その未訳ノード数を `droppedTransient` に数え、done 時に `notifyProgress("done", {partial:true})` を立てる。SW `handleFrameProgress` が全フレームの partial を OR 集約して最終 done に乗せ、popup は `statusPartial`「一部未翻訳（レート制限/混雑）。少し待って再実行」を出す。一部は訳せているので state は `done` のまま（FAB は翻訳済み表示）。無料枠 Gemini の 429/503 で「完了なのに訳されてない」を防ぐ
 - **Shadow DOM**: `collectNodes` は TreeWalker でなく**開いた shadowRoot を辿る DFS**。辿った shadow root は MutationObserver にも登録し内部の動的更新も拾う（closed shadow は仕様上不可）
 - **iframe**: `allFrames:true` 注入で各フレームが独立翻訳。広告枠対策に `frameHasEnoughText()`（サブフレームは翻訳対象 50 字未満なら訳さない＝Immersive の mainFrameMinTextCount 相当。メインフレームは常時）
 - **SPA 追従**: `onMutate` で `location.href` 変化を検知 + `popstate` リスナー → `scheduleReingest()`（350/1200ms の 2 回 ingest）で遷移後ページを訳し直す
@@ -42,7 +45,8 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 
 ## 重要パターン（このとおりに実装する）
 - **API キーを content に渡さない**: LLM fetch は必ず background(SW) で代理実行。content は翻訳対象テキストを `TRANSLATE_BATCH` で送る。これでキーがページ文脈に漏れず host_permissions で CORS も回避できる
-- **プロバイダを追加するとき**: `actions.js` の `Providers` に定義（`requiresKey`/`batch`/`visionModel`/`defaultModel`/`models` 等）を足し、`providers.js` の `buildRequest`/`parseResponse`/`parseUsage`/`buildModelsRequest`/`parseModels` に分岐を足し、`test/providers.test.js` にケースを足す
+- **プロバイダを追加するとき**: `actions.js` の `Providers` に定義（`requiresKey`/`batch`/`visionModel`/`defaultModel`/`models`/`keyUrl` 等）を足し、`Providers.ids` と `DEFAULT_SETTINGS.apiKeys`/`models` にも id を追加、`providers.js` の `buildRequest`/`parseResponse`/`parseUsage`/`buildModelsRequest`/`parseModels` に分岐を足し、`test/providers.test.js` にケースを足す。**popup の UI は静的カードを 1 個追加するだけ**（`popup.html` に `.provider-card[data-provider="X"]`＝`#key-X`/`#link-X` の id 規約に従う。`popup.js` の `setLinks`/`reflectKeys`/`collectKeys`/`bindKeyAutosave` は `Providers.ids` をループするので個別配線は不要）
+- **OpenAI 互換プロバイダは `OPENAI_COMPAT` 集合に id を足すだけ**: chat/completions・Bearer・usage 同形・`/models` 一覧・OpenAI 画像形式を共有する provider（openai/xai/openrouter/deepseek/groq）は `providers.js` の `const OPENAI_COMPAT` 配列に id を追加すれば、`buildRequest`/`extractContent`/`streamDelta`/`parseUsage`/`buildModelsRequest`/`parseModels`/`buildImageRequest` の全分岐（`isOpenAICompat(id)`）に一括で乗る（各所の条件を二重管理しない）。models URL は endpoint の `/chat/completions` を `/models` に置換して導出。**OpenAI 固有分岐は 2 箇所だけ別扱い**＝`maxTokensCap`（gpt-5/o 系のみ `max_completion_tokens`、他は `max_tokens`）と `tuneReasoning`（`providerId === "openai"` のモデル別 reasoning_effort）。新 OpenAI 互換社は temperature:0 のパススルーで動く。OpenRouter のモデル ID はベンダ接頭辞付き（`google/gemini-2.5-flash` 等）で `model-pricing.js` の部分一致に自然に当たる。vision 非対応の社（DeepSeek）は `visionModel` を付けない（画像翻訳は使えない）
 - **各社の推論を最小化して高速化**: 翻訳は推論不要。`providers.js` の `tuneReasoning` が OpenAI を**モデル別**に振り分ける（gpt-5.1+→`reasoning_effort:"none"` / gpt-5.0系→`"minimal"` / o系→`"low"`、**reasoning モデルには temperature を送らない**＝gpt-5.5 の 400 回避）。Anthropic は思考対応(3.7/4.x)に `thinking:{type:"disabled"}`、Gemini 2.5+ は `thinkingConfig.thinkingBudget`(flash 0/pro 128)、xAI reasoning grok は `reasoning_effort:"low"`。旧 gpt-4 系・非 reasoning は `temperature:0`
 - **ページ言語ベースの翻訳元解決**: `sourceLang:"auto"` は translator.js の `detectPageLang()` がページ主要言語に解決してから TRANSLATE_BATCH に載せる（実テキストの `chrome.i18n.detectLanguage`(CLD) を優先し `html lang` 属性は補助、`Lang.normalizeCode` で `ja-JP`→`ja` / `zh`→`zh-Hans` 等に正規化）。**ページ言語=翻訳先のページは翻訳しない**（日本語ページの英語メニュー等の断片を巻き込まない + API 呼び出しゼロ）。メインフレームは `skipped` を通知し、SW の `handleFrameProgress` は他フレームが翻訳中でないときだけ中継 → FAB は未翻訳状態へ・popup は `statusSameLang` 表示。iframe の skip は静かに終わる
 - **混在言語のピンポイント翻訳**: `providers.js` の `buildSystemPrompt` で「すでに target 言語の要素はそのまま、同数同順 JSON で返す」と LLM に指示。翻訳元が確定しているとき（ユーザー明示 or ページ言語検出）は「**source 言語の要素だけ**翻訳し他言語はそのまま」、未確定（auto で検出不能）のときだけ「target 以外を翻訳」。クライアント側は accept() で数値/記号/URL/1文字や `code/pre/svg/math/[translate=no]/.notranslate` subtree を事前除外
@@ -50,23 +54,31 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - **DOM 構築は innerHTML を使わない**: 動的代入は `createElement` + `textContent` + `replaceChildren()`（AMO 静的解析 `UNSAFE_VAR_ASSIGNMENT` 回避 + XSS 防止）
 
 ## 動的モデル取得 & バッチ自動学習
-- **モデル一覧**: `GET_MODELS` で各社 models API から動的取得（`buildModelsRequest`/`parseModels`）。`fetchModels` が新しい順(created / Gemini はバージョン)に並べ翻訳系に絞り、**上位 10 件**に `ModelPricing` で価格を付け `MODELS_CACHE`(24h) に保存。選択中が一覧に無ければ `migrateModel` が先頭へ
+- **モデル一覧**: `GET_MODELS` で各社 models API から動的取得（`buildModelsRequest`/`parseModels`）。`fetchModels` が新しい順(created / Gemini はバージョン)に並べ、`filterTranslationModels` で翻訳に使えない非テキスト系（embed/whisper/tts/transcribe/audio/realtime/dall-e/image/**imagine**/video/veo/sora/moderation/guard/search）を除外し、`pickPriced` で **`ModelPricing.lookup` が価格を返すモデルだけ**に絞ってから **上位 10 件** を `MODELS_CACHE`(24h) に保存（価格不明＝"—" でコスト比較できないモデルはユーザーに見せない。ただし全件価格不明なら空一覧回避の保険で全件返す）。選択中が一覧に無ければ `migrateModel` が先頭へ（判定は表示用 top10 でなく全取得 `allIds`＝価格圏外の有効モデルを勝手に載せ替えない）。fallback（同梱モデルの静的表示）にも同じ価格フィルタを適用
 - **取得は force のときだけ通信** = 「API キー入力後（保存）」と「モデル更新ボタン押下時」。provider 切替/popup 起動は通信せずキャッシュ/同梱フォールバック表示
+- **廃止モデルの動的フォールバック（本命・自己修復）**: SW の `TRANSLATE_BATCH` ハンドラが翻訳バッチの **404 を `isModelGone` で検知 → `resolveFallbackModel`（provider.defaultModel、既定自体が廃止なら live `/models` 先頭）→ `persistModelSwitch` で settings に保存 → 同バッチを 1 回だけ再試行**。`modelFallback`/`resolvingFallback` Map で 10 並列の同時 404 でも解決を 1 回に集約。これで**どのモデルがいつ廃止されても、実際に死んだ瞬間に手動メンテ無しで現行へ自動移行**する（`translateWith` が stream→非stream を関数化し 2 回呼べる）
+- **廃止モデルの静的保険 `RETIRED_MODELS`(actions.js)**: 通信ゼロ・キー前でも効く保険。各社が retire した ID を Set に列挙すると `normalizeSettings` が保存設定の該当モデルを既定へ自動移行する。同梱 `models`/`model-pricing.js` からも死んだ ID を外し、`defaultModel`/`DEFAULT_SETTINGS.models` が廃止 ID を指さないようにする。確認済み廃止: Gemini 2.0系(2026-06-01)、xAI grok-4-1-fast系(2026-05-15)、Groq kimi-k2。廃止予定（動的フォールバックが死亡時に吸収）: Gemini/OpenRouter gemini-2.5-flash(2026-10-16)、DeepSeek deepseek-chat/reasoner(2026-07-24)
+- **恒久エラーの可視化**: LLM の 400/401/403/404 は fatal(全体中断+error通知)。429 は本文を見て `quotaScope`(translator.js) が日次(RPD)/残高切れ(`PerDay`/`insufficient_quota`)を判定し、解けない 429 は fatal 化して popup が `statusQuotaDaily`「利用上限に達した」を表示（リトライ無駄を回避）。分次(RPM)/5xx/通信の一時 429 は従来どおりリトライ→残れば partial
 - **Anthropic は日付入りスナップショット ID しか配信しない** → `anthropicAlias()` で日付を剥がしてエイリアス化し重複排除（除外正規表現で全弾きしないこと）
 - **価格**: 各社 models API は価格を返さないため `model-pricing.js` の同梱表（部分一致・最長優先）。新モデルが出たら表を更新する
 - **バッチサイズは自動学習**: `BatchTuner`(actions.js・純粋関数)が texts/秒 を hill-climbing（DEFAULT 50 / STEP 25 / MIN5 / MAX100、429 でサイズ半減）。`background` はメモリ(`tuningMem`)で同期更新し、storage 永続化はデバウンス集約（**毎バッチ storage I/O と 10 並列の read-modify-write 競合を避ける**）
 - **トークン集計はメモリ保持・非表示**: `recordUsage` が `usageMem`(`tokenUsage[YYYY-MM][provider]`) に加算しデバウンス永続化。popup のトークン表示 UI は撤去済み（表示は無いが集計は残る）
 
-## 画像翻訳（オプション `imageTranslate`）— ホバー手動のみ
+## 画像翻訳 — ホバー手動のみ（設定トグルは廃止・常時有効）
 - **ホバー手動翻訳に一本化**（一括翻訳 `translateAllImages` / 後追い watcher / iframe 一括注入は廃止＝「読みたい1枚だけ訳す」）。`image-translator.js` が画像ホバーで「訳」ボタンを出し、クリックで `translateImg`→`TRANSLATE_IMAGE`、background が画像を fetch→base64→LLM vision に投げ、`parseImageBlocks` の正規化 bbox をオーバーレイ。`<img>` 限定（**動画は送らない**。background でも非画像 mime を弾く）
-- ページ翻訳とは**非連動**。`APPLY_TRANSLATE_CS` では何もせず、`APPLY_RESTORE_CS`（原文復元）でだけ `clearAllImages` がオーバーレイを消す。`imageTranslate` が ON のときだけホバーボタンを出す（`enabled` で gate）
-- 速度/コスト優先: 各 provider の軽量 `visionModel` を既定使用、出力上限 `IMAGE_MAX_OUTPUT_TOKENS`(2048)。`ensureWrap` は元 img の表示ボックス(`getBoundingClientRect`)・display・object-fit を wrap に px 固定で引き継ぎ（レスポンシブ画像が inline-block ラップで拡大されるのを防ぐ）、復元時に元 inline style を戻す。オーバーレイ文字サイズは `fitFontSize` が訳文 span を**枠(幅×高さ)に収まる最大フォント(9〜48px)へ二分探索でフィット**（係数ベースを廃止し多行枠での巨大化を解消）。上限は原文文字数と枠面積から推定した1行ぶんの高さでもクランプ（短い訳語が縦長枠で膨らむのを防ぐ）。枠の高さは box に固定し（`min-height` だと訳文が伸びて隣に重なる）、極小枠は ~14px を下限に、9px でも収まらない多行は `align-items:flex-start` で先頭行を残す。vision 対応 LLM のみ（MyMemory 不可）
+- **設定トグル `imageTranslate` は廃止**: 翻訳はホバー+クリックの明示操作でしか起きない（＝勝手に翻訳しない）ので、gate を撤去しホバーボタンは常時出す。`SettingsSchema` / `CONTENT_FLAGS` からも除去済み
+- **1 枚ずつ元に戻せる**: 翻訳成功でボタンは「原」に切替（`setBtnMode`／`isTranslated` で判定）、クリックで `revertImg`→`unwrapImage` がその画像だけオーバーレイ除去＋ラッパー解除して原文に戻す（`btn.__rt-img-btn-on` は墨色）
+- ページ翻訳とは**非連動**。`APPLY_TRANSLATE_CS` では何もせず、`APPLY_RESTORE_CS`（原文復元）でだけ `clearAllImages`（=全 wrap を `unwrapImage`）がオーバーレイを消す
+- **垂直位置は `cy`（テキストの縦中央/midline）に帯の中心を合わせる**: VLM は枠上端 `box.y` より縦中央を桁違いに安定して当てるため、`buildImagePrompt` は `cy` を**最重要フィールド**として要求し、`parseImageBlocks` が取り込む（欠落時は `box.y+box.h/2`）。`renderBlocks` は `top = cy*imgH − boxHpx/2`（`align-items:center` で訳文中央=cy）で配置し、`box.y` の系統的な上ズレに依存しない（**訳文が原文より上にずれる問題の対策**）。水平は `box.x/box.w` のまま
+- **Gemini はネイティブ bbox 形式**を使う: `buildImagePromptGemini` が `box_2d=[ymin,xmin,ymax,xmax]`(0–1000 正規化・object detection の訓練フォーマット)＋`responseSchema` で取得し、`parseImageBlocks` の gemini 分岐が `{x,y,w,h}0..1`+`cy` へ変換（**x/y 反転が致命的なので test 必須**）。他社は共通プロンプト（`cy`+`{x,y,w,h}`）。bbox 精度はモデル依存で、画像翻訳は Gemini が最も正確
+- 速度/コスト優先: 各 provider の軽量 `visionModel` を既定使用、出力上限 `IMAGE_MAX_OUTPUT_TOKENS`(2048)。`ensureWrap` は元 img の表示ボックス(`getBoundingClientRect`)・display・object-fit を wrap に px 固定で引き継ぎ（レスポンシブ画像が inline-block ラップで拡大されるのを防ぐ）、復元時に元 inline style を戻す。オーバーレイ文字サイズは `fitFontSize` が訳文 span を**枠(幅×高さ)に収まる最大フォント(9〜40px)へ二分探索でフィット**（係数ベースを廃止し多行枠での巨大化を解消）。上限は文字面積モデル（`L=√(boxW·boxH/(len·0.6))`）で推定した1行ぶんの高さで**常にクランプ**し、単一行の箱は箱高さで頭打ち。`original` が来ないとき（vision が省略）は訳文長×2 を原文長の概算に使う（**原文欠落時に上限が箱高さ＝最大化して訳文が巨大化するのを防ぐ**・短い訳語が縦長枠で膨らむのも防ぐ）。枠の高さは box に固定し（`min-height` だと訳文が伸びて隣に重なる）、極小枠は ~14px を下限に、9px でも収まらない多行は `align-items:flex-start` で先頭行を残す。vision 対応 LLM のみ（MyMemory 不可）
 - `image-translator.js` は manifest `content_scripts` で**トップフレームのみ常駐**（iframe には注入しない）
 
 ## UI 構成（popup 2タブ + FAB）
-- **popup 2タブ**: 「翻訳」＝自動翻訳トグル / 言語(元・先) / オプション(画像翻訳) / 翻訳・復元ボタン / status / クイック翻訳。「API設定」＝**各プロバイダのカードに「選択ラジオ + 名前 + バッジ + キー入力 + 取得リンク」を合体**＋選択中サービスのモデル一覧(更新ボタン・コスト相対バー)
+- **popup 2タブ**: 「翻訳」＝自動翻訳トグル / 言語(元・先) / オプション(フローティングボタン表示) / 翻訳・復元ボタン / status / クイック翻訳。「API設定」＝**各プロバイダのカードに「選択ラジオ + 名前 + バッジ + キー入力 + 取得リンク」を合体**＋選択中サービスのモデル一覧(更新ボタン・コスト相対バー)
+- **API設定はアコーディオン**: プロバイダが 8 社に増えて縦が伸びるため、キー入力欄（`.pc-body`）は**選択中カードだけ開く**（CSS `.provider-card:not(.selected) .pc-body { display:none }` ＋ 開くとき `fadeDown`）。未選択カードはヘッダ（ラジオ + 名前 + バッジ）だけのコンパクト表示。カードヘッダのクリックで `selectProvider` → `renderProviderList` が `.selected` を付け替え＝そのカードのキー欄が開く。キーは従来どおり blur 自動保存（カード切替時は旧入力の blur が先に走り保存される）
 - **キーは blur 自動保存**: 入力欄からフォーカスが外れたら保存し、そのカードに緑チェックを一瞬出す（保存ボタンは無い）
-- FAB は content 常駐（`fab.js`+`fab.css`、トップフレームのみ）。クリックで `TRANSLATE_PAGE`/`RESTORE_PAGE`、`TRANSLATION_PROGRESS` で状態同期。グリフは「訳=これから翻訳 / 原=原文に戻す」、**処理中はボタン表面のシマー**（外周リングは廃止）。ドラッグ移動（位置は `StorageKeys.FAB_POSITION`）。`#__rt_fab` の id プレフィックス + `all:initial` でページ CSS と衝突しない
+- FAB は content 常駐（`fab.js`+`fab.css`、トップフレームのみ）。クリックで `TRANSLATE_PAGE`/`RESTORE_PAGE`、`TRANSLATION_PROGRESS` で状態同期。中央は**文字を描かないアイコン**（地球儀=これから翻訳 / 戻る矢印=原文に戻す。インライン SVG・`stroke=currentColor` で状態色を継承、出し分けは `.__rt-on` で CSS）、**処理中はボタン表面のシマー**（外周リングは廃止）。**デザインは「目立たない」フロスト調**（普段は半透明 `--rt-rest:.5` で背景に溶け、ホバー/フォーカスで不透明に立ち上がる。ON は墨塗り `.8`、処理中は `1`。`prefers-color-scheme: dark` で配色反転）。**右端固定で縦方向のみドラッグ移動**（水平は CSS の `right:20px` に固定し右側から離れない。`applyTop`/`clampTop` で縦のみ動かし、縦位置だけ `StorageKeys.FAB_POSITION` に `{top}` 保存。旧 `{left,top}` 形式は top のみ採用）。`#__rt_fab` の id プレフィックス + `all:initial` でページ CSS と衝突しない
 - **自動翻訳**（`autoTranslate`）: **popup の「全ページ自動翻訳」トグルのみ**が永続フラグを保存する。ワンショット翻訳（popup 翻訳ボタン / FAB / 右クリック）は永続化しない（1 ページ訳しただけで以後の全ページが自動翻訳されるのを防ぐ）。ON なら常駐 fab.js が開いたページを自動翻訳。進捗は `TRANSLATION_PROGRESS` で 3 者同期（トグルの ON/OFF はワンショット進捗では切り替えない）
 - **クイック翻訳**（popup「翻訳」タブ末尾・常時表示）: 上部の翻訳元⇄翻訳先を流用し、入力を debounce して `TRANSLATE_BATCH` に 1 件投げる。ページは翻訳しない短文用。コピー/クリア/文字数/`Ctrl+Enter`
 - デザインはパステル・モダン（生成り × 墨 × 朱のテーマ色を維持しつつ柔らかく）
@@ -74,9 +86,12 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 ## popup フォント（IBM Plex Sans JP を同梱）
 - MV3 拡張は CSP/プライバシー/審査の都合で**外部 CDN フォント不可** → フル TTF を `pyftsubset` で必要範囲(Latin/かな/漢字 U+4E00-9FFF/記号)だけサブセット化した woff2 を `src/popup/fonts/` に同梱し `@font-face` で `'self'` から読む（400/600/700）。`popup.css` の `--display`/`--sans` 先頭に指定。明朝は使わない
 
-## Firefox 対応（単一 manifest.json で Chrome / Firefox 共用）
-- `manifest.json` の `background` に **`service_worker`（Chrome 用）と `scripts`（Firefox 用 = lib 全ファイル + `src/service_worker.js`）を併記**する。Chrome は `service_worker` を読み、`src/service_worker.js` 冒頭の `importScripts(...)` で lib をロード。Firefox は `scripts` 配列を順次ロード。`typeof importScripts === "function"` ガードで両対応（`manifest.firefox.json` は廃止）
-- `browser_specific_settings.gecko`（id / strict_min_version / data_collection_permissions）は `manifest.json` に inline（Chrome は無視するので安全）
+## Firefox 対応（ソース manifest は Chrome 純正・Firefox はビルド時に変換）
+- **`manifest.json` の `background` は Chrome 純正 = `service_worker` のみ**。`background.scripts` を入れると Chrome が「`'background.scripts' requires manifest version of 2 or lower.`」警告を開発・ストア両方で出し続けるため除去した。Chrome は `src/service_worker.js` 冒頭の `importScripts(...)` で lib をロード
+- **Firefox は `background.service_worker` 非対応**なので、xpi/AMO ビルド時に **`build-firefox-manifest.mjs`** が `background` を `{scripts:[...]}` 形式へ変換する（`service_worker` キーは外す）。`scripts` 配列は `src/service_worker.js` の `importScripts(...)` を**単一ソースに自動生成**（lib 群 → 末尾に `src/service_worker.js`）＝ Chrome/Firefox のロード対象が二重管理にならない。`typeof importScripts === "function"` ガードで両対応
+- 変換を噛ませる箇所: `zip.sh`/`zip.ps1` の firefox variant、CI `publish.yml` の「Firefox 用ソースディレクトリ構築」。Chrome zip はソース manifest をそのまま使う（警告なし）
+- **Firefox で unpacked 動作確認するときは `manifest.json` 直読みでなく `./zip.sh firefox` で生成した xpi / firefox-build を使う**（ソース manifest には `scripts` が無いため background が動かない）
+- `browser_specific_settings.gecko`（id / strict_min_version / data_collection_permissions）は `manifest.json` に inline（Chrome は警告なく無視する）
 - offscreen / tabCapture など Firefox 未対応 API は不使用のため strip マーカー不要
 
 ## Lint / i18n 方針

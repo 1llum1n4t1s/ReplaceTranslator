@@ -1,7 +1,7 @@
 /* フローティング翻訳ボタン (content script で全ページに常駐) */
-/* 拡張リソースとして注入されるためページ CSP の影響を受けない。       */
-/* id プレフィックス + all:initial でページ CSS と完全に隔離する。      */
-/* デザイン: パステル・モダン (テーマ色の朱/墨/生成りは維持し、トーンを柔らかく)。 */
+/* ページ CSP の影響を受けない拡張リソース。id プレフィックス + all:initial でページ CSS と完全隔離する。 */
+/* デザイン方針:「あまり目立たない」を主眼にした静かなフロスト調。普段は半透明で背景に溶け、       */
+/* ホバー/フォーカスでだけ立ち上がる。テーマ色 (墨/生成り/朱) は彩度を大きく落として“気配”だけ残す。 */
 
 #__rt_fab {
   all: initial;
@@ -9,9 +9,15 @@
   right: 20px;
   bottom: 20px;
   z-index: 2147483646;
-  /* 46px の 80% = 約 37px */
-  width: 37px;
-  height: 37px;
+
+  /* --- テーマ変数 (淡色) --- */
+  --rt-paper: 252, 250, 246;  /* 生成り (rgb 値・透過合成に使う) */
+  --rt-ink: #2b3645;          /* 墨 */
+  --rt-accent: #d8462b;       /* 朱 (使用は最小限・done のさざ波のみ) */
+  --rt-rest: .5;              /* 静止時の存在感 (低め = 目立たない)。状態で上書きする */
+
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   cursor: grab;
   touch-action: none;
@@ -21,62 +27,71 @@
   isolation: isolate;
   font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Segoe UI", system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
-  /* パステル朱: 明るいコーラルの艶 → 朱 (テーマ色の朱を核に残す) */
-  background: radial-gradient(135% 135% at 30% 22%, #ffb6a3 0%, #f5876c 44%, #e0573b 100%);
-  box-shadow:
-    0 6px 16px rgba(216, 70, 43, .26),
-    0 1px 4px rgba(0, 0, 0, .08),
-    inset 0 1px 0 rgba(255, 255, 255, .6);
+
+  /* フロストした生成りの薄膜。背景を拾って溶け込む (派手な塗り・色付き影は使わない) */
+  background: rgba(var(--rt-paper), .55);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1);
+  backdrop-filter: blur(8px) saturate(1.1);
+  border: 1px solid rgba(43, 54, 69, .14);
+  box-shadow: 0 2px 8px rgba(20, 22, 30, .10);
+
+  opacity: var(--rt-rest);
   transition:
-    transform .28s cubic-bezier(.2, .9, .3, 1.3),
-    box-shadow .28s ease,
-    background .3s ease;
+    opacity .25s ease,
+    transform .25s cubic-bezier(.2, .8, .3, 1),
+    box-shadow .25s ease,
+    background .25s ease,
+    border-color .25s ease;
 }
 
-#__rt_fab:hover {
-  transform: translateY(-2px) scale(1.07);
-  box-shadow:
-    0 10px 22px rgba(216, 70, 43, .32),
-    0 2px 6px rgba(0, 0, 0, .1),
-    inset 0 1px 0 rgba(255, 255, 255, .65);
+/* ホバー/フォーカスで“立ち上がる” = 普段は控えめ、探したときだけはっきり見える */
+#__rt_fab:hover,
+#__rt_fab:focus-visible {
+  opacity: 1;
+  background: rgba(var(--rt-paper), .94);
+  border-color: rgba(43, 54, 69, .22);
+  box-shadow: 0 6px 18px rgba(20, 22, 30, .16);
+  transform: translateY(-1px);
 }
-#__rt_fab:active { transform: scale(.93); }
-#__rt_fab.__rt-dragging { transition: none; cursor: grabbing; transform: scale(1.05); }
-#__rt_fab:focus-visible { outline: 2px solid #1b2330; outline-offset: 3px; }
+#__rt_fab:active { transform: scale(.94); }
+#__rt_fab:focus-visible { outline: 2px solid rgba(43, 54, 69, .5); outline-offset: 3px; }
+#__rt_fab.__rt-dragging { transition: none; cursor: grabbing; opacity: 1; transform: scale(1.04); }
 
-/* ---- グリフ (訳 = これから翻訳 / 原 = 原文に戻す) ---- */
+/* ---- 中央アイコン (文字は描かない。地球儀=翻訳 / 戻る矢印=原文復元) ---- */
 #__rt_fab .__rt-fab-glyph {
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1;
-  font-weight: 700;
-  color: #fffaf4;
-  letter-spacing: .02em;
-  text-shadow: 0 1px 1.5px rgba(150, 45, 25, .4);
-  transition: opacity .2s ease, color .3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(43, 54, 69, .72);
+  transition: color .25s ease, opacity .25s ease;
   z-index: 1;
 }
+/* SVG は stroke=currentColor。上のグリフ色 (状態別) を継承し、出し分けは .__rt-on で行う */
+#__rt_fab .__rt-ico { width: 17px; height: 17px; display: block; }
+#__rt_fab .__rt-ico-og { display: none; }            /* 翻訳前 = 地球儀のみ */
+#__rt_fab.__rt-on .__rt-ico-tr { display: none; }     /* 翻訳済み = 戻る矢印に切替 */
+#__rt_fab.__rt-on .__rt-ico-og { display: block; }
+#__rt_fab:hover .__rt-fab-glyph,
+#__rt_fab:focus-visible .__rt-fab-glyph { color: var(--rt-ink); }
 
-/* ---- ホバーで滑り出るラベル (フロスト調のパステル) ---- */
+/* ---- ホバーで滑り出るラベル (控えめな墨のチップ) ---- */
 #__rt_fab .__rt-fab-label {
   position: absolute;
-  right: calc(100% + 10px);
+  right: calc(100% + 9px);
   top: 50%;
   white-space: nowrap;
-  background: rgba(255, 252, 247, .94);
-  color: #2b3340;
+  background: rgba(43, 54, 69, .9);
+  color: #fbfaf7;
   font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 500;
   letter-spacing: .02em;
-  padding: 6px 11px;
-  border-radius: 11px;
-  box-shadow: 0 6px 18px rgba(40, 35, 30, .16);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
+  padding: 5px 10px;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(20, 22, 30, .18);
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%) translateX(7px);
+  transform: translateY(-50%) translateX(6px);
   transition: opacity .2s ease, transform .2s ease;
 }
 #__rt_fab .__rt-fab-label::after {
@@ -86,70 +101,95 @@
   top: 50%;
   transform: translateY(-50%);
   border: 5px solid transparent;
-  border-left-color: rgba(255, 252, 247, .94);
+  border-left-color: rgba(43, 54, 69, .9);
 }
 #__rt_fab:hover .__rt-fab-label {
   opacity: 1;
   transform: translateY(-50%) translateX(0);
 }
 
-/* ---- 翻訳済み (ON) = やわらかい墨の球 + 生成りのグリフ「原」 ---- */
+/* ---- 翻訳済み (ON) = 静かな墨の塗り + 生成りグリフ「原」。active 状態だけ少し存在感を上げる ---- */
 #__rt_fab.__rt-on {
-  background: radial-gradient(135% 135% at 30% 22%, #44506180 0%, #2b3645 45%, #1b2330 100%);
-  box-shadow:
-    0 6px 16px rgba(27, 35, 48, .34),
-    0 1px 4px rgba(0, 0, 0, .12),
-    inset 0 1px 0 rgba(255, 255, 255, .18);
+  --rt-rest: .8;
+  background: rgba(38, 46, 58, .82);
+  border-color: rgba(43, 54, 69, .3);
 }
-#__rt_fab.__rt-on .__rt-fab-glyph { color: #ffe2cf; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+#__rt_fab.__rt-on:hover,
+#__rt_fab.__rt-on:focus-visible { background: rgba(30, 37, 48, .94); }
+#__rt_fab.__rt-on .__rt-fab-glyph { color: rgba(255, 240, 228, .85); }
+#__rt_fab.__rt-on:hover .__rt-fab-glyph,
+#__rt_fab.__rt-on:focus-visible .__rt-fab-glyph { color: #fff0e4; }
 
-/* ---- 処理中 = ボタン「表面」を斜めの光沢が流れるシマー (周囲は光らせない) ---- */
+/* ---- 処理中 = ごく淡いシマー (ボタン表面だけ・周囲は光らせない) ---- */
 #__rt_fab::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 50%;                 /* 光沢を円形の表面内にクリップ */
   background: linear-gradient(115deg,
-    transparent 28%,
-    rgba(255, 255, 255, .15) 42%,
-    rgba(255, 255, 255, .62) 50%,
-    rgba(255, 255, 255, .15) 58%,
-    transparent 72%);
+    transparent 30%,
+    rgba(255, 255, 255, .10) 44%,
+    rgba(255, 255, 255, .42) 50%,
+    rgba(255, 255, 255, .10) 56%,
+    transparent 70%);
   background-size: 230% 230%;
   background-position: 175% 0;
   opacity: 0;
   pointer-events: none;
 }
-#__rt_fab.__rt-loading { cursor: progress; pointer-events: none; }
-#__rt_fab.__rt-loading::after { opacity: 1; animation: rt-shimmer 1.25s ease-in-out infinite; }
-#__rt_fab.__rt-loading .__rt-fab-glyph { opacity: .85; }
+#__rt_fab.__rt-loading { --rt-rest: 1; cursor: progress; pointer-events: none; }
+#__rt_fab.__rt-loading::after { opacity: 1; animation: rt-shimmer 1.4s ease-in-out infinite; }
+#__rt_fab.__rt-loading .__rt-fab-glyph { opacity: .8; }
 @keyframes rt-shimmer {
   0% { background-position: 175% 0; }
   100% { background-position: -75% 0; }
 }
 
-/* ON 切替時の波紋 */
+/* ON 切替時のさざ波 (朱の気配を一瞬だけ) */
 #__rt_fab::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 2px solid currentcolor;
-  color: #f5876c;
+  border: 1.5px solid var(--rt-accent);
   opacity: 0;
   pointer-events: none;
 }
-#__rt_fab.__rt-on::before { color: #ffe2cf; }
-#__rt_fab.__rt-pulse::before { animation: rt-ripple .6s ease-out; }
+#__rt_fab.__rt-pulse::before { animation: rt-ripple .55s ease-out; }
 @keyframes rt-ripple {
-  0% { opacity: .5; transform: scale(1); }
-  100% { opacity: 0; transform: scale(1.7); }
+  0% { opacity: .35; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+/* ---- ダークなページにも溶けるよう配色を反転 (= 目立たなさを優先) ---- */
+@media (prefers-color-scheme: dark) {
+  #__rt_fab {
+    background: rgba(28, 32, 40, .5);
+    border-color: rgba(255, 255, 255, .14);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+  }
+  #__rt_fab:hover,
+  #__rt_fab:focus-visible {
+    background: rgba(34, 39, 48, .9);
+    border-color: rgba(255, 255, 255, .22);
+  }
+  #__rt_fab .__rt-fab-glyph { color: rgba(238, 240, 244, .7); }
+  #__rt_fab:hover .__rt-fab-glyph,
+  #__rt_fab:focus-visible .__rt-fab-glyph { color: #f3f5f8; }
+  #__rt_fab .__rt-fab-label { background: rgba(245, 246, 248, .94); color: #1b2330; }
+  #__rt_fab .__rt-fab-label::after { border-left-color: rgba(245, 246, 248, .94); }
+  #__rt_fab.__rt-on { background: rgba(244, 245, 248, .9); border-color: rgba(255, 255, 255, .28); }
+  #__rt_fab.__rt-on:hover,
+  #__rt_fab.__rt-on:focus-visible { background: rgba(255, 255, 255, .96); }
+  #__rt_fab.__rt-on .__rt-fab-glyph { color: #1b2330; }
+  #__rt_fab.__rt-on:hover .__rt-fab-glyph,
+  #__rt_fab.__rt-on:focus-visible .__rt-fab-glyph { color: #11161f; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   #__rt_fab,
   #__rt_fab .__rt-fab-glyph,
   #__rt_fab .__rt-fab-label { transition: none; }
-  #__rt_fab.__rt-loading::after { animation: none; opacity: .5; }
+  #__rt_fab.__rt-loading::after { animation: none; opacity: .4; }
   #__rt_fab.__rt-pulse::before { animation: none; }
 }

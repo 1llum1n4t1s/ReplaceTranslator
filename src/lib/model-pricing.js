@@ -44,18 +44,28 @@
     // Google Gemini
     ["gemini-1.5-flash-8b", 0.0375, 0.15],
     ["gemini-1.5-flash", 0.075, 0.30],
-    ["gemini-2.0-flash-lite", 0.075, 0.30],
-    ["gemini-2.0-flash", 0.10, 0.40],
+    ["gemini-2.5-flash-lite", 0.10, 0.40],
     ["gemini-2.5-flash", 0.30, 2.50],
     ["gemini-2.5-pro", 1.25, 10.00],
+    ["gemini-3.5-flash", 1.50, 9.00],
     ["gemini-1.5-pro", 1.25, 5.00],
-    // xAI Grok
-    ["grok-4-1-fast", 0.20, 0.50],
-    ["grok-4-fast", 0.20, 0.50],
+    // xAI Grok (grok-4-1-fast / grok-4-fast は 2026-05-15 廃止 → grok-4.3 へリダイレクトされ 1.25/2.50 課金。
+    // 旧 0.20/0.50 は実コストを約6倍過小表示するため行ごと削除した。RETIRED_MODELS 入りで一覧にも出ない)
     ["grok-4.3", 1.25, 2.50],
+    ["grok-4.20", 1.25, 2.50],
     ["grok-4", 3.00, 15.00],
     ["grok-3-mini", 0.30, 0.50],
     ["grok-3", 3.00, 15.00],
+    // DeepSeek (OpenRouter の deepseek/* もこの部分一致に当たる)
+    ["deepseek-v4-flash", 0.14, 0.28],
+    ["deepseek-v4-pro", 0.435, 0.87],
+    ["deepseek-reasoner", 0.55, 2.19],
+    ["deepseek-chat", 0.27, 1.10],
+    // Groq 提供モデル (openai/gpt-oss・moonshotai/kimi も部分一致)
+    ["llama-3.3-70b", 0.59, 0.79],
+    ["gpt-oss-120b", 0.15, 0.75],
+    ["gpt-oss-20b", 0.075, 0.30],
+    ["kimi-k2", 1.00, 3.00],
   ];
 
   function lookup(modelId) {
