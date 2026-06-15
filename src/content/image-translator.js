@@ -48,16 +48,16 @@
 
   function eligible(el) {
     if (!el || el.tagName !== "IMG") return false;
-    // <picture> 内の img は直接の子である必要があり、ensureWrap で span に包むと responsive な
-    // source 選択が壊れる。translate 対象から外す (オーバーレイより元レイアウト維持を優先)。
-    if (el.parentElement && el.parentElement.tagName === "PICTURE") return false;
+    // <picture> 内の img も対象にする。直接 span 包みすると <source> 解像度選択が壊れるため、
+    // ensureWrap が <picture> ごと包んで source 選択を保つ (旧: picture を一律除外していた)。
     return el.clientWidth >= 80 && el.clientHeight >= 60 && Boolean(el.currentSrc || el.src);
   }
 
   // img が翻訳オーバーレイ付きか (ensureWrap で包まれ layer を持つ)。ボタンの 訳/原 切替に使う。
+  // <picture> ごと包むケースでは img の親が <picture> になるため closest で wrap を辿る。
   function isTranslated(img) {
-    const p = img && img.parentElement;
-    return Boolean(p && p.classList.contains("__rt-img-wrap") && p.querySelector(".__rt-img-layer"));
+    const w = img && img.closest(".__rt-img-wrap");
+    return Boolean(w && w.querySelector(".__rt-img-layer"));
   }
 
   // ボタンの見た目を img の状態に合わせる (未翻訳=「訳」/ 翻訳済み=「原」で元に戻す)。
@@ -147,7 +147,10 @@
   window.addEventListener("scroll", onScroll, true);
 
   function ensureWrap(img) {
-    const p = img.parentElement;
+    // <picture> 内の img は、img だけ span で包むと img が <picture> の外に出て <source> 解像度選択が
+    // 外れる (別解像度/プレースホルダ化)。その場合は <picture> 自体を host として包み、source 選択を保つ。
+    const host = (img.parentElement && img.parentElement.tagName === "PICTURE") ? img.parentElement : img;
+    const p = host.parentElement;
     if (p && p.classList.contains("__rt-img-wrap")) return p;
     // 元 img の「表示中のボックス」を wrap に px 固定で引き継ぐ。これをしないと、親にサイズ指定されていた
     // レスポンシブ画像 (例: width:100% の img を持つ Twitter 等) が inline-block ラップ内で自然サイズに膨らみ
@@ -160,14 +163,21 @@
     wrap.style.width = Math.round(r.width) + "px";
     wrap.style.height = Math.round(r.height) + "px";
     wrap.style.verticalAlign = cs.verticalAlign; // 行内画像のベースラインずれを抑える
-    img.parentNode.insertBefore(wrap, img);
-    wrap.appendChild(img);
+    host.parentNode.insertBefore(wrap, host);
+    wrap.appendChild(host);
     // img を wrap いっぱいにフィット。元の inline style は退避し、復元 (clearAllImages) で戻す。
     if (img.__rtPrevStyle === undefined) img.__rtPrevStyle = img.getAttribute("style") || "";
     img.style.width = "100%";
     img.style.height = "100%";
     img.style.maxWidth = "100%";
     img.style.objectFit = cs.objectFit || "contain";
+    // host が <picture> のときは picture 自体も wrap を満たすようにする (picture 既定の inline だと潰れる)。
+    if (host !== img) {
+      if (host.__rtPrevStyle === undefined) host.__rtPrevStyle = host.getAttribute("style") || "";
+      host.style.display = "block";
+      host.style.width = "100%";
+      host.style.height = "100%";
+    }
     return wrap;
   }
 
@@ -279,25 +289,31 @@
 
   let imgRunId = 0; // 画像翻訳の世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
 
-  // 1 つの wrap (ensureWrap で挿入) を解除して元 DOM 構造に戻す。layer 除去 + img の退避 style 復元 + ラッパー除去。
+  // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)。
+  function restorePrevStyle(el) {
+    if (!el || el.__rtPrevStyle === undefined) return;
+    if (el.__rtPrevStyle) el.setAttribute("style", el.__rtPrevStyle); else el.removeAttribute("style");
+    try { delete el.__rtPrevStyle; } catch (_e) { el.__rtPrevStyle = undefined; }
+  }
+
+  // 1 つの wrap (ensureWrap で挿入) を解除して元 DOM 構造に戻す。layer 除去 + 退避 style 復元 + ラッパー除去。
+  // 包んだ実体 (host) は <picture> ごと包んだなら picture、そうでなければ img。host を外へ戻す。
   function unwrapImage(wrap) {
     const img = wrap.querySelector("img");
+    const host = wrap.querySelector("picture") || img;
     const parent = wrap.parentNode;
     wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
-    if (img && parent) {
-      if (img.__rtPrevStyle !== undefined) { // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)
-        if (img.__rtPrevStyle) img.setAttribute("style", img.__rtPrevStyle); else img.removeAttribute("style");
-        try { delete img.__rtPrevStyle; } catch (_e) { img.__rtPrevStyle = undefined; }
-      }
-      parent.insertBefore(img, wrap);  // img をラッパーの外へ戻す
-      wrap.remove();                   // 空になったラッパーを除去
-    }
+    if (!host || !parent) return;
+    restorePrevStyle(img);
+    if (host !== img) restorePrevStyle(host); // picture に付けた display/width/height も戻す
+    parent.insertBefore(host, wrap);          // host (picture か img) をラッパーの外へ戻す
+    wrap.remove();                            // 空になったラッパーを除去
   }
 
   // ホバーボタンの「原」で、その 1 枚だけオーバーレイを消して原文に戻す (ページ全体の復元とは独立)。
   function revertImg(img) {
-    const wrap = img && img.parentElement;
-    if (wrap && wrap.classList.contains("__rt-img-wrap")) unwrapImage(wrap);
+    const wrap = img && img.closest(".__rt-img-wrap"); // <picture> ネストでも wrap を辿れる
+    if (wrap) unwrapImage(wrap);
     setBtnMode(img); // ボタンを「訳」に戻す (続けて再翻訳できる)
   }
 
@@ -306,12 +322,8 @@
   function clearAllImages() {
     imgRunId++; // 世代を進めて進行中ホバー OCR の遅延描画を無効化する
     document.querySelectorAll(".__rt-img-wrap").forEach(unwrapImage);
-    // 念のため: ラッパー解除前に取り残された __rtPrevStyle 付き img があれば素の状態へ戻す (二重防御)
-    document.querySelectorAll("img[style*='100%']").forEach((im) => {
-      if (im.__rtPrevStyle === undefined) return;
-      if (im.__rtPrevStyle) im.setAttribute("style", im.__rtPrevStyle); else im.removeAttribute("style");
-      try { delete im.__rtPrevStyle; } catch (_e) { im.__rtPrevStyle = undefined; }
-    });
+    // 念のため: ラッパー解除前に取り残された __rtPrevStyle 付き img/picture があれば素の状態へ戻す (二重防御)
+    document.querySelectorAll("img[style*='100%']").forEach(restorePrevStyle);
     // ラッパー無しで残っているレイヤーがあれば後始末
     document.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
   }
