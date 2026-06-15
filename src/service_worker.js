@@ -620,17 +620,11 @@ if (typeof importScripts === "function") {
     return out;
   }
 
-  async function translateImage(settings, imageUrl, signal) {
-    const providerId = settings.provider;
-    const provider = Providers.get(providerId);
-    if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
-    const apiKey = keyFor(settings, providerId);
-    if (!apiKey) return { ok: false, error: "no_api_key" };
-    // 危険な fetch 先 (内部/ローカル/特殊スキーム) は取得も中継もしない
+  // 画像 URL を host_permissions 経由で取得し base64 化する (cloud vision / ローカル OCR で共用)。
+  // SSRF 防御 (forbidden 判定 / manual redirect / 最終 URL 再検証)・サイズ上限・MIME 確定を一括で行う。
+  // 返り値: { ok:true, b64, mime } または { ok:false, error, ... }。
+  async function fetchImageBytes(imageUrl, signal) {
     if (isForbiddenImageUrl(imageUrl)) return { ok: false, error: "forbidden_target" };
-
-    // 画像を取得して base64 化 (host_permissions により CORS を回避)
-    let b64, mime;
     try {
       // redirect:"manual" で 30x をフォローしない。公開 URL → 30x で内部ホスト (nas / 127.0.0.1 等) へ飛ばす
       // SSRF を、フォロー前=内部ホストへリクエストが飛ぶ前に遮断する。opaqueredirect は Location を読めないので
@@ -650,6 +644,7 @@ if (typeof importScripts === "function") {
       // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
       // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
       const ctype = (r.headers.get("content-type") || "").toLowerCase().split(";")[0].trim();
+      let mime;
       if (ctype.startsWith("image/")) {
         mime = ctype;
       } else if (!ctype) {
@@ -658,11 +653,24 @@ if (typeof importScripts === "function") {
       } else {
         return { ok: false, error: "not_image", mime: ctype };
       }
-      b64 = base64FromBytes(bytes);
+      return { ok: true, b64: base64FromBytes(bytes), mime };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "image_fetch", message: String((e && e.message) || e) };
     }
+  }
+
+  async function translateImage(settings, imageUrl, signal) {
+    const providerId = settings.provider;
+    const provider = Providers.get(providerId);
+    if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
+    const apiKey = keyFor(settings, providerId);
+    if (!apiKey) return { ok: false, error: "no_api_key" };
+
+    // 画像を取得して base64 化 (host_permissions により CORS を回避)
+    const got = await fetchImageBytes(imageUrl, signal);
+    if (!got.ok) return got;
+    const b64 = got.b64, mime = got.mime;
 
     let req;
     try {
@@ -699,6 +707,37 @@ if (typeof importScripts === "function") {
     // 取得済みの base64 を渡し content は createImageBitmap(blob) で CORS-safe に再構築する。
     // neuralErase: content が MI-GAN(offscreen)で原文を消すかの判断に使う (Chrome のみ。設定で OFF が既定)。
     return { ok: true, blocks, image: { base64: b64, mime }, neuralErase: settings.neuralErase };
+  }
+
+  // ローカル OCR 経路 (Chrome offscreen + ONNX)。画像を取得 → offscreen の PaddleOCR で原文抽出 →
+  // 通常の翻訳パイプライン (translateWith) で訳す。content には cloud と同形 {blocks, image, neuralErase} を返す。
+  // vision モデル不要なので MyMemory 等の非 vision プロバイダでも画像が訳せる (OCR はローカル・翻訳は任意社)。
+  async function translateImageLocal(settings, imageUrl, signal) {
+    const got = await fetchImageBytes(imageUrl, signal);
+    if (!got.ok) return got;
+    let ocr;
+    try {
+      ocr = await runInference(Actions.OCR_IMAGE, { base64: got.b64, mime: got.mime, maxSide: 2048 });
+    } catch (e) {
+      return { ok: false, error: "ocr", message: String((e && e.message) || e) };
+    }
+    const blocks = (ocr && Array.isArray(ocr.blocks) ? ocr.blocks : []).filter((b) => b && b.original && b.original.trim());
+    const image = { base64: got.b64, mime: got.mime };
+    if (!blocks.length) return { ok: true, blocks: [], image, neuralErase: settings.neuralErase };
+    // 抽出した原文を通常パイプラインで翻訳 (quick=true: stream/学習/進捗を使わない単発)。
+    const texts = blocks.map((b) => b.original);
+    let tr;
+    try { tr = await translateWith(settings, texts, signal, null, null, null, true); }
+    catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
+      return { ok: false, error: "translate", message: String((e && e.message) || e) };
+    }
+    if (tr && tr.ok && Array.isArray(tr.translations)) {
+      blocks.forEach((b, i) => { b.translation = (tr.translations[i] != null ? tr.translations[i] : b.original); });
+    } else {
+      blocks.forEach((b) => { b.translation = b.original; }); // 翻訳失敗時は原文を表示 (OCR 結果は残す)
+    }
+    return { ok: true, blocks, image, neuralErase: settings.neuralErase };
   }
 
   // ---- ページ翻訳/復元の指示 ----
@@ -949,14 +988,22 @@ if (typeof importScripts === "function") {
             const settings = resolveSettings(msg.settings, stored);
             const controller = new AbortController();
             const untrack = trackController(sender.tab && sender.tab.id, controller);
-            try { sendResponse(await translateImage(settings, msg.imageUrl, controller.signal)); }
-            finally { untrack(); }
+            try {
+              // imageEngine==="local" かつ Chrome(offscreen 有) ならローカル OCR、それ以外は cloud vision。
+              // ローカルが失敗 (offscreen 無/モデル DL 失敗/OCR 例外) したときは cloud vision にフォールバックする。
+              const useLocal = settings.imageEngine === "local" && !!chrome.offscreen;
+              let out = useLocal
+                ? await translateImageLocal(settings, msg.imageUrl, controller.signal)
+                : await translateImage(settings, msg.imageUrl, controller.signal);
+              if (useLocal && (!out || !out.ok) && out && out.error !== "aborted") {
+                out = await translateImage(settings, msg.imageUrl, controller.signal);
+              }
+              sendResponse(out);
+            } finally { untrack(); }
             break;
           }
-          case Actions.INPAINT_IMAGE:
-          case Actions.OCR_DETECT:
-          case Actions.OCR_RECOGNIZE: {
-            // ローカル ONNX 推論を offscreen に中継 (Chrome のみ)。Firefox/失敗時は content が cloud/canvas にフォールバック。
+          case Actions.INPAINT_IMAGE: {
+            // content からの neural inpaint 要求を offscreen に中継 (Chrome のみ)。失敗時は content が canvas 消去にフォールバック。
             try { sendResponse({ ok: true, result: await runInference(msg.action, msg.payload || {}) }); }
             catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
             break;

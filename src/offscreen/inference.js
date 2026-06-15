@@ -21,10 +21,20 @@ ort.env.wasm.wasmPaths = {
 };
 
 // ---- モデル取得（実行時 DL + Cache API） ----
+// ★verify-on-device: 下記 URL は実機で 200 が返るか要確認。404 なら "model fetch 404" を投げて
+//   呼び出し側が cloud にフォールバックする（壊れない）。差し替えは MODEL_URLS だけ直せばよい。
 const MODEL_URLS = {
   migan: "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx",
+  // PaddleOCR(ONNX) det/rec + 日本語辞書（RapidOCR 配布物を想定）。
+  ocrDet: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
+  ocrRec: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/japan_rec_crnn_v2.onnx",
+  ocrDict: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/japan_dict.txt",
 };
 const CACHE_NAME = "rt-onnx-models-v1";
+
+// PaddleOCR rec の入力高さ。crnn_v2 は v2-era なので 32 を既定（v4/v5 系は 48）。★verify-on-device。
+const REC_HEIGHT = 32;
+const REC_MAX_WIDTH = 1024; // rec 入力幅の上限（極端に横長な行のメモリ暴走を防ぐ）
 
 async function fetchModelBytes(url) {
   let cache = null;
@@ -139,11 +149,167 @@ async function runInpaint(payload) {
   return { base64: await canvasToBase64(canvas), width: W, height: H };
 }
 
+// ---- PaddleOCR ローカル OCR（Phase 4） ----
+// 構成: DET(DBNet) でテキスト行 box を検出 → 各 box を crop → REC(CRNN+CTC) で文字認識。
+// 返り値 blocks[{box:{x,y,w,h}0..1, cy 0..1, original}] を SW が translateWith で訳して overlay に渡す。
+//
+// ★verify-on-device 多数: 入出力テンソル名・チャネル順(RGB/BGR)・正規化・REC 高さ・dict オフセットは
+//   モデル実体に依存する。実機で OCR 結果（original 文字列）を確認し、ズレたら下記の該当箇所を調整する。
+
+let dictCache = null;
+async function loadDict() {
+  if (dictCache) return dictCache;
+  let text = null;
+  let cache = null;
+  try { cache = await caches.open(CACHE_NAME); } catch (_e) { /* private mode 等 */ }
+  if (cache) { const hit = await cache.match(MODEL_URLS.ocrDict); if (hit) text = await hit.text(); }
+  if (text == null) {
+    const res = await fetch(MODEL_URLS.ocrDict, { redirect: "follow" });
+    if (!res.ok) throw new Error(`dict fetch ${res.status}`);
+    text = await res.text();
+    if (cache) { try { await cache.put(MODEL_URLS.ocrDict, new Response(text)); } catch (_e) { /* 無視 */ } }
+  }
+  // 1 行 1 文字。末尾改行ぶんの空要素だけ落とし、途中行（空白文字を含む）は保持する。
+  const lines = text.replace(/\r/g, "").split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  dictCache = lines;
+  return dictCache;
+}
+
+// DBNet 検出: 入力は ImageNet 正規化した RGB NCHW float32。出力 prob map を閾値→連結成分→軸並行 bbox。
+// 正式 DBNet は Vatti polygon の unclip を使うが、ここでは box 寸法比の dilate で近似する（HTML overlay 用途に十分）。
+async function detect(canvas) {
+  const W0 = canvas.width, H0 = canvas.height;
+  const limit = 960;
+  const scale = Math.min(1, limit / Math.max(W0, H0));
+  let rw = Math.max(32, Math.round((W0 * scale) / 32) * 32);
+  let rh = Math.max(32, Math.round((H0 * scale) / 32) * 32);
+  const rc = new OffscreenCanvas(rw, rh);
+  const rctx = rc.getContext("2d", { willReadFrequently: true });
+  rctx.drawImage(canvas, 0, 0, rw, rh);
+  const data = rctx.getImageData(0, 0, rw, rh).data;
+  const plane = rw * rh;
+  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+  const inp = new Float32Array(3 * plane); // ★RGB 想定（BGR モデルなら R/B を入れ替える）
+  for (let p = 0, i = 0; i < plane; i++, p += 4) {
+    inp[i] = (data[p] / 255 - mean[0]) / std[0];
+    inp[plane + i] = (data[p + 1] / 255 - mean[1]) / std[1];
+    inp[2 * plane + i] = (data[p + 2] / 255 - mean[2]) / std[2];
+  }
+  const session = await getSession("ocrDet", MODEL_URLS.ocrDet);
+  const inName = session.inputNames[0];
+  const out = await session.run({ [inName]: new ort.Tensor("float32", inp, [1, 3, rh, rw]) });
+  const prob = out[session.outputNames[0]].data; // [1,1,rh,rw] 0..1
+
+  const thr = 0.3;        // bin 化しきい値（DB postprocess thresh）
+  const boxThr = 0.6;     // box の平均確信度しきい値（box_thresh）
+  const visited = new Uint8Array(plane);
+  const stack = [];
+  const boxes = [];
+  for (let sy = 0; sy < rh; sy++) {
+    for (let sx = 0; sx < rw; sx++) {
+      const seed = sy * rw + sx;
+      if (visited[seed] || prob[seed] < thr) continue;
+      let minx = sx, maxx = sx, miny = sy, maxy = sy, cnt = 0, psum = 0;
+      stack.length = 0; stack.push(seed); visited[seed] = 1;
+      while (stack.length) {
+        const idx = stack.pop();
+        const y = (idx / rw) | 0, x = idx - y * rw;
+        cnt++; psum += prob[idx];
+        if (x < minx) minx = x; if (x > maxx) maxx = x;
+        if (y < miny) miny = y; if (y > maxy) maxy = y;
+        if (x > 0 && !visited[idx - 1] && prob[idx - 1] >= thr) { visited[idx - 1] = 1; stack.push(idx - 1); }
+        if (x < rw - 1 && !visited[idx + 1] && prob[idx + 1] >= thr) { visited[idx + 1] = 1; stack.push(idx + 1); }
+        if (y > 0 && !visited[idx - rw] && prob[idx - rw] >= thr) { visited[idx - rw] = 1; stack.push(idx - rw); }
+        if (y < rh - 1 && !visited[idx + rw] && prob[idx + rw] >= thr) { visited[idx + rw] = 1; stack.push(idx + rw); }
+      }
+      const bw = maxx - minx + 1, bh = maxy - miny + 1;
+      if (psum / cnt < boxThr || Math.min(bw, bh) < 3 || cnt < 12) continue;
+      // unclip 近似: 寸法の 25% だけ外側へ dilate（unclip ratio 1.5 相当）。det 縮小座標 → 元 canvas 座標へ戻す。
+      const dx = Math.round(bw * 0.25), dy = Math.round(bh * 0.25);
+      const x0 = Math.max(0, minx - dx) * (W0 / rw), y0 = Math.max(0, miny - dy) * (H0 / rh);
+      const x1 = Math.min(rw, maxx + dx) * (W0 / rw), y1 = Math.min(rh, maxy + dy) * (H0 / rh);
+      boxes.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+    }
+  }
+  boxes.sort((a, b) => (a.y - b.y) || (a.x - b.x)); // 上→下・左→右
+  return boxes;
+}
+
+// CRNN+CTC 認識: box を crop→REC_HEIGHT に高さ揃え→正規化(x/127.5-1)→ greedy CTC decode。
+// 縦長 box（縦書き等）は 90° 回転して横書き化してから認識する。
+async function recognize(canvas, box, recSession, dict) {
+  const sx = Math.max(0, Math.round(box.x)), sy = Math.max(0, Math.round(box.y));
+  const sw = Math.min(canvas.width - sx, Math.round(box.w)), sh = Math.min(canvas.height - sy, Math.round(box.h));
+  if (sw < 2 || sh < 2) return { text: "", conf: 0 };
+  const tmp = new OffscreenCanvas(sw, sh);
+  tmp.getContext("2d", { willReadFrequently: true }).drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  let cropCanvas = tmp, cropW = sw, cropH = sh;
+  if (sh > sw * 1.5) { // 縦長 → 反時計回り 90° で横長に
+    const rot = new OffscreenCanvas(sh, sw);
+    const rctx = rot.getContext("2d");
+    rctx.translate(sh / 2, sw / 2); rctx.rotate(-Math.PI / 2); rctx.drawImage(tmp, -sw / 2, -sh / 2);
+    cropCanvas = rot; cropW = sh; cropH = sw;
+  }
+  let cw = Math.min(REC_MAX_WIDTH, Math.max(1, Math.round((REC_HEIGHT * cropW) / cropH)));
+  const cc = new OffscreenCanvas(cw, REC_HEIGHT);
+  cc.getContext("2d", { willReadFrequently: true }).drawImage(cropCanvas, 0, 0, cropW, cropH, 0, 0, cw, REC_HEIGHT);
+  const d = cc.getContext("2d").getImageData(0, 0, cw, REC_HEIGHT).data;
+  const plane = cw * REC_HEIGHT;
+  const inp = new Float32Array(3 * plane); // ★RGB 想定・正規化 x/127.5-1（PaddleOCR rec の (img/255-0.5)/0.5 と等価）
+  for (let p = 0, i = 0; i < plane; i++, p += 4) {
+    inp[i] = d[p] / 127.5 - 1;
+    inp[plane + i] = d[p + 1] / 127.5 - 1;
+    inp[2 * plane + i] = d[p + 2] / 127.5 - 1;
+  }
+  const inName = recSession.inputNames[0];
+  const out = await recSession.run({ [inName]: new ort.Tensor("float32", inp, [1, 3, REC_HEIGHT, cw]) });
+  const o = out[recSession.outputNames[0]];
+  const T = o.dims[1], C = o.dims[2], od = o.data; // [1,T,C]
+  let prev = 0, psum = 0, pn = 0; // CTC: blank index 0、文字は dict[index-1]
+  const chars = [];
+  for (let t = 0; t < T; t++) {
+    let best = 0, bestV = -Infinity;
+    const base = t * C;
+    for (let c = 0; c < C; c++) { const v = od[base + c]; if (v > bestV) { bestV = v; best = c; } }
+    if (best !== 0 && best !== prev) { const ch = dict[best - 1]; if (ch != null) chars.push(ch); psum += bestV; pn++; }
+    prev = best;
+  }
+  return { text: chars.join(""), conf: pn ? psum / pn : 0 };
+}
+
+// OCR_IMAGE: 画像を decode → detect → 各 box を recognize → blocks[{box(0..1),cy,original}]。
+async function runOcr(payload) {
+  const { base64, mime, maxSide } = payload;
+  const bmp = await bitmapFromBase64(base64, mime);
+  const scale = Math.min(1, (maxSide || 2048) / Math.max(bmp.width, bmp.height));
+  const W = Math.max(1, Math.round(bmp.width * scale));
+  const H = Math.max(1, Math.round(bmp.height * scale));
+  const canvas = new OffscreenCanvas(W, H);
+  canvas.getContext("2d", { willReadFrequently: true }).drawImage(bmp, 0, 0, W, H);
+  if (bmp.close) bmp.close();
+  const boxes = await detect(canvas);
+  if (!boxes.length) return { blocks: [] };
+  const recSession = await getSession("ocrRec", MODEL_URLS.ocrRec);
+  const dict = await loadDict();
+  const blocks = [];
+  for (const box of boxes) {
+    const { text, conf } = await recognize(canvas, box, recSession, dict);
+    if (!text || !text.trim() || conf < 0.4) continue;
+    blocks.push({
+      box: { x: box.x / W, y: box.y / H, w: box.w / W, h: box.h / H },
+      cy: (box.y + box.h / 2) / H,
+      original: text,
+    });
+  }
+  return { blocks };
+}
+
 // ---- op ディスパッチャ ----
 async function handleOp(op, payload) {
   switch (op) {
     case "INPAINT_IMAGE": return await runInpaint(payload);
-    // Phase 4: case "OCR_DETECT" / "OCR_RECOGNIZE" をここに追加する
+    case "OCR_IMAGE": return await runOcr(payload);
     default: throw new Error("unknown op: " + op);
   }
 }

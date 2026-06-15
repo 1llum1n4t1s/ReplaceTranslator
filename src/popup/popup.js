@@ -240,6 +240,8 @@
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("show-fab").checked = state.settings.showFab !== false;
+    $("image-engine-local").checked = state.settings.imageEngine === "local";
+    $("neural-erase").checked = Boolean(state.settings.neuralErase);
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -429,6 +431,8 @@
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
     $("show-fab").addEventListener("change", (e) => save({ showFab: e.target.checked }));
+    $("image-engine-local").addEventListener("change", (e) => save({ imageEngine: e.target.checked ? "local" : "cloud" }));
+    $("neural-erase").addEventListener("change", (e) => save({ neuralErase: e.target.checked }));
 
     // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
     $("refresh-models").addEventListener("click", () => loadModels(true));

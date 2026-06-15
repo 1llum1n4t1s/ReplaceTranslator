@@ -26,8 +26,7 @@
     TRANSLATE_IMAGE: "TRANSLATE_IMAGE",     // 画像内テキストの翻訳 (vision・オプション)
     // content → background → offscreen (Chrome) / inline (Firefox): ローカル ONNX 推論 (Phase 3/4・オプション)
     INPAINT_IMAGE: "INPAINT_IMAGE",         // MI-GAN で原文領域を消去 (ニューラル inpaint)
-    OCR_DETECT: "OCR_DETECT",               // PaddleOCR det でテキスト box 検出 (ローカル OCR)
-    OCR_RECOGNIZE: "OCR_RECOGNIZE",         // PaddleOCR rec で box の文字認識 (ローカル OCR)
+    OCR_IMAGE: "OCR_IMAGE",                 // PaddleOCR det+rec を offscreen 内で実行し blocks[{box,cy,original}] を返す
     RUN_INFERENCE: "RUN_INFERENCE",         // background → offscreen の内部エンベロープ (上記 op を包む)
     // background → content
     APPLY_TRANSLATE_CS: "APPLY_TRANSLATE_CS", // content に翻訳開始を指示

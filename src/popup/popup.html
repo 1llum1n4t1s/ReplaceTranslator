@@ -48,6 +48,20 @@
           </div>
           <input id="show-fab" type="checkbox">
         </div>
+        <div class="switch-field">
+          <div class="switch-text">
+            <label class="switch-label" for="image-engine-local" data-i18n="optImageLocal">画像をローカル OCR で翻訳</label>
+            <div class="switch-desc" data-i18n="optImageLocalDesc">画像内の文字を端末内の OCR で読み取ってから翻訳します（Chrome 限定・実験的。初回はモデルを自動ダウンロード）。OFF は各社の画像認識（vision）を使います。</div>
+          </div>
+          <input id="image-engine-local" type="checkbox">
+        </div>
+        <div class="switch-field">
+          <div class="switch-text">
+            <label class="switch-label" for="neural-erase" data-i18n="optNeuralErase">原文をニューラル消去</label>
+            <div class="switch-desc" data-i18n="optNeuralEraseDesc">画像の原文を MI-GAN で塗りつぶしてから訳文を重ねます（Chrome 限定・実験的）。OFF は背景色で塗りつぶします。</div>
+          </div>
+          <input id="neural-erase" type="checkbox">
+        </div>
       </div>
 
       <div id="key-warning" class="warn hidden">
