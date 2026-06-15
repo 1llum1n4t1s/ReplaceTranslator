@@ -694,7 +694,10 @@ if (typeof importScripts === "function") {
     const usage = ProviderApi.parseUsage(providerId, json);
     await ensureMem(); // 既存の月次 usage を読み込んでから加算 (cold start の初回が画像翻訳でも上書きしない)
     recordUsage(providerId, usage);
-    return { ok: true, blocks };
+    // image: content 側の canvas inpaint 用に取得済みバイトを返す。ページ側で cross-origin <img> を
+    // 直接 draw すると canvas が taint され getImageData/toDataURL が封じられるため、SW が host_permissions で
+    // 取得済みの base64 を渡し content は createImageBitmap(blob) で CORS-safe に再構築する。
+    return { ok: true, blocks, image: { base64: b64, mime } };
   }
 
   // ---- ページ翻訳/復元の指示 ----

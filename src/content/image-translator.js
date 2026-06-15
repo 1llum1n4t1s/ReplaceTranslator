@@ -264,6 +264,152 @@
     });
   }
 
+  // ===== Phase 1: canvas inpaint (原文を消して訳文を画像に焼き込む) =====
+  // SW が host_permissions で取得済みの base64 から CORS-safe に ImageBitmap を作る。
+  // (cross-origin <img> を直接 canvas に draw すると taint され getImageData/toDataURL が封じられる)
+  function bitmapFromBase64(b64, mime) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return createImageBitmap(new Blob([u8], { type: mime || "image/png" }));
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // box の外周リング (内側=文字部分は除外) をサンプリングし、背景の代表色・平坦さ(std)・明暗を返す。
+  // 平坦なら「背景色 fill で原文を消す」、textured なら「半透明の帯で隠す」を選ぶ判断に使う。
+  function ringStats(ctx, x, y, w, h, W, H) {
+    const pad = Math.max(2, Math.round(Math.min(w, h) * 0.15));
+    const x0 = Math.max(0, Math.floor(x - pad)), y0 = Math.max(0, Math.floor(y - pad));
+    const x1 = Math.min(W, Math.ceil(x + w + pad)), y1 = Math.min(H, Math.ceil(y + h + pad));
+    const rw = x1 - x0, rh = y1 - y0;
+    if (rw < 2 || rh < 2) return null;
+    let data;
+    try { data = ctx.getImageData(x0, y0, rw, rh).data; } catch (_e) { return null; }
+    const ix0 = x - x0, iy0 = y - y0, ix1 = x + w - x0, iy1 = y + h - y0;
+    const step = Math.max(1, Math.round(Math.min(rw, rh) / 40));
+    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0;
+    for (let py = 0; py < rh; py += step) {
+      for (let px = 0; px < rw; px += step) {
+        if (px >= ix0 && px < ix1 && py >= iy0 && py < iy1) continue; // box 内側 (文字) は除外
+        const o = (py * rw + px) * 4;
+        const r = data[o], g = data[o + 1], b = data[o + 2];
+        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; n++;
+      }
+    }
+    if (!n) return null;
+    const mr = sr / n, mg = sg / n, mb = sb / n;
+    const variance = Math.max(0, s2 / n - (mr * mr + mg * mg + mb * mb)) / 3; // チャンネル平均分散
+    const lum = (0.299 * mr + 0.587 * mg + 0.114 * mb) / 255;
+    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5 };
+  }
+
+  // 訳文を maxWidth に折り返す。空白で割れない CJK は 1 文字ずつ詰め、長い英単語も文字単位で割る。
+  function wrapCanvasText(ctx, text, maxWidth) {
+    const lines = [];
+    let line = "";
+    for (const ch of String(text)) {
+      const test = line + ch;
+      if (ch !== " " && line && ctx.measureText(test).width > maxWidth) {
+        lines.push(line); line = ch;
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [String(text)];
+  }
+
+  // 枠 (innerW×innerH) に収まる最大フォント(px)と折り返し行を二分探索で求める (canvas 版 fitFontSize)。
+  function fitCanvasFont(ctx, text, innerW, innerH, family) {
+    let lo = 7, hi = Math.max(7, Math.floor(innerH)), best = 7, bestLines = [String(text)];
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      ctx.font = `600 ${mid}px ${family}`;
+      const lines = wrapCanvasText(ctx, text, innerW);
+      const fits = lines.length * mid * 1.18 <= innerH && lines.every((l) => ctx.measureText(l).width <= innerW);
+      if (fits) { best = mid; bestLines = lines; lo = mid + 1; } else hi = mid - 1;
+    }
+    return { fontSize: best, lines: bestLines };
+  }
+
+  const CANVAS_FONT = 'system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif';
+
+  // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
+  function drawInpaintBlock(ctx, blk, W, H) {
+    const w = Math.max(2, blk.box.w * W);
+    const h = Math.max(2, blk.box.h * H);
+    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
+    const cy = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
+    const y = Math.min(Math.max(0, cy * H - h / 2), Math.max(0, H - h));
+    const st = ringStats(ctx, x, y, w, h, W, H);
+    const flat = st && st.std < 24; // 外周の色ブレが小さい=平坦背景 → 背景色 fill で原文を消せる
+    if (flat) {
+      const dx = Math.max(1, w * 0.04), dy = Math.max(1, h * 0.12); // glyph の食み出しも消すため box を少し膨らます
+      ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
+      ctx.fillRect(x - dx, y - dy, w + 2 * dx, h + 2 * dy);
+    } else {
+      ctx.fillStyle = "rgba(20,28,38,0.84)"; // textured: 半透明の暗い帯で隠す (従来オーバーレイ相当を canvas に焼く)
+      roundRectPath(ctx, x, y, w, h, Math.min(6, h * 0.2));
+      ctx.fill();
+    }
+    const padX = w * 0.05, padY = h * 0.08;
+    const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
+    const { fontSize, lines } = fitCanvasFont(ctx, blk.translation, innerW, innerH, CANVAS_FONT);
+    ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = flat ? (st.dark ? "#f5f5f5" : "#1a1a1a") : "#ffffff";
+    if (!flat) { ctx.shadowColor = "rgba(0,0,0,0.55)"; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1; }
+    const lineH = fontSize * 1.18;
+    const startY = y + h / 2 - (lines.length - 1) * lineH / 2;
+    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  }
+
+  const INPAINT_MAX_SIDE = 4096; // 巨大画像で canvas メモリが膨らむのを抑える長辺上限
+
+  // 元画像を canvas に描き各ブロックを inpaint して、wrap の最前面レイヤーとして被せる (img 自体は触らない)。
+  // canvas は __rt-img-layer クラスを持つので isTranslated/unwrapImage/revertImg がそのまま機能する。
+  async function renderInpaint(img, blocks, image) {
+    const bmp = await bitmapFromBase64(image.base64, image.mime);
+    try {
+      const scale = Math.min(1, INPAINT_MAX_SIDE / Math.max(bmp.width, bmp.height));
+      const W = Math.max(1, Math.round(bmp.width * scale)), H = Math.max(1, Math.round(bmp.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.className = "__rt-img-layer __rt-img-canvas";
+      canvas.width = W; canvas.height = H;
+      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("no 2d ctx");
+      ctx.drawImage(bmp, 0, 0, W, H);
+      for (const blk of blocks) {
+        if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
+        try { drawInpaintBlock(ctx, blk, W, H); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
+      }
+      const wrap = ensureWrap(img);
+      wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove()); // 旧オーバーレイ/canvas を除去
+      wrap.appendChild(canvas);
+    } finally {
+      if (bmp && bmp.close) bmp.close();
+    }
+  }
+
+  // canvas inpaint を試し、画像バイトが無い/失敗時は従来の HTML オーバーレイにフォールバックする。
+  async function renderTranslated(img, blocks, image) {
+    if (image && image.base64) {
+      try { await renderInpaint(img, blocks, image); return; } catch (_e) { /* fall back to overlay */ }
+    }
+    renderBlocks(img, blocks);
+  }
+
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
@@ -277,8 +423,10 @@
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
         if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
-          try { renderBlocks(img, res.blocks); setBtnMode(img); } // 翻訳済み → ボタンを「原」(元に戻す) に切替
-          catch (_e) { if (btn) btn.textContent = "訳"; } // 画像が消えていた等で描画失敗 → 無視
+          // canvas inpaint (原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
+          renderTranslated(img, res.blocks, res.image)
+            .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
+            .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
           btn.textContent = "×";
           window.setTimeout(() => { if (btn) btn.textContent = "訳"; }, 1500);
