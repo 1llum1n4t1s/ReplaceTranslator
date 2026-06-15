@@ -67,6 +67,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 ## 画像翻訳 — ホバー手動のみ（設定トグルは廃止・常時有効）
 - **ホバー手動翻訳に一本化**（一括翻訳 `translateAllImages` / 後追い watcher / iframe 一括注入は廃止＝「読みたい1枚だけ訳す」）。`image-translator.js` が画像ホバーで「訳」ボタンを出し、クリックで `translateImg`→`TRANSLATE_IMAGE`、background が画像を fetch→base64→LLM vision に投げ、`parseImageBlocks` の正規化 bbox をオーバーレイ。`<img>` 限定（**動画は送らない**。background でも非画像 mime を弾く）
 - **設定トグル `imageTranslate` は廃止**: 翻訳はホバー+クリックの明示操作でしか起きない（＝勝手に翻訳しない）ので、gate を撤去しホバーボタンは常時出す。`SettingsSchema` / `CONTENT_FLAGS` からも除去済み
+- **オーバーレイ被り画像でもボタンを出す（`imgAtPoint`）**: 多くのサイト（カード型リンク・ホバー効果）は画像の上に `<a>` やオーバーレイを重ねるため `mouseover` の `e.target` が img にならない。`e.target` が `eligible` でないとき `document.elementsFromPoint` でカーソル直下の要素スタックを辿り、被さった要素の下の eligible な img を拾う（`pointer-events:auto` の img はスタックに含まれる）。`onMouseOut` は relatedTarget でなく**矩形ベース**（カーソルが対象画像/ボタンの矩形から外れたときだけ隠す）でカード内子要素跨ぎのちらつきを防ぐ。※`<picture>` 直下 img は今も除外（`ensureWrap` で span 包みすると `<source>` 選択が壊れるため）
 - **1 枚ずつ元に戻せる**: 翻訳成功でボタンは「原」に切替（`setBtnMode`／`isTranslated` で判定）、クリックで `revertImg`→`unwrapImage` がその画像だけオーバーレイ除去＋ラッパー解除して原文に戻す（`btn.__rt-img-btn-on` は墨色）
 - ページ翻訳とは**非連動**。`APPLY_TRANSLATE_CS` では何もせず、`APPLY_RESTORE_CS`（原文復元）でだけ `clearAllImages`（=全 wrap を `unwrapImage`）がオーバーレイを消す
 - **垂直位置は `cy`（テキストの縦中央/midline）に帯の中心を合わせる**: VLM は枠上端 `box.y` より縦中央を桁違いに安定して当てるため、`buildImagePrompt` は `cy` を**最重要フィールド**として要求し、`parseImageBlocks` が取り込む（欠落時は `box.y+box.h/2`）。`renderBlocks` は `top = cy*imgH − boxHpx/2`（`align-items:center` で訳文中央=cy）で配置し、`box.y` の系統的な上ズレに依存しない（**訳文が原文より上にずれる問題の対策**）。水平は `box.x/box.w` のまま
