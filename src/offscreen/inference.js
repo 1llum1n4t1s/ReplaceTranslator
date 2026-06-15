@@ -39,7 +39,7 @@ const CACHE_NAME = "rt-onnx-models-v1";
 
 // PaddleOCR rec(PP-OCRv1 japan_rec_crnn)の入力高さは静的に 32(ONNX 入力 [N,3,32,?] で実測確認済)。
 const REC_HEIGHT = 32;
-const REC_MAX_WIDTH = 1024; // rec 入力幅の上限（極端に横長な行のメモリ暴走を防ぐ）
+const REC_MAX_WIDTH = 1600; // rec 入力幅の上限。1024 だと長い行が横圧縮(squish)され精度低下するため緩める
 
 async function fetchModelBytes(url) {
   let cache = null;
@@ -230,8 +230,9 @@ async function detect(canvas) {
       }
       const bw = maxx - minx + 1, bh = maxy - miny + 1;
       if (psum / cnt < boxThr || Math.min(bw, bh) < 3 || cnt < 12) continue;
-      // unclip 近似: 寸法の 25% だけ外側へ dilate（unclip ratio 1.5 相当）。det 縮小座標 → 元 canvas 座標へ戻す。
-      const dx = Math.round(bw * 0.25), dy = Math.round(bh * 0.25);
+      // unclip 近似。rec 切り抜きの glyph 解像度を稼ぐため縦は控えめ(0.08)・横は字端確保で 0.12 に締める
+      // (25% だと crop 内で文字が ~67% しか占めず 32px へ縮小時に潰れ精度低下。消去は描画側マージンが補う)。
+      const dx = Math.round(bw * 0.12), dy = Math.round(bh * 0.08);
       const x0 = Math.max(0, minx - dx) * (W0 / rw), y0 = Math.max(0, miny - dy) * (H0 / rh);
       const x1 = Math.min(rw, maxx + dx) * (W0 / rw), y1 = Math.min(rh, maxy + dy) * (H0 / rh);
       boxes.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
