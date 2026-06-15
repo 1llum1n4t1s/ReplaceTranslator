@@ -433,8 +433,39 @@
     }
   }
 
+  // 段落 (shouldLinkRows で連結する flat 同色行) ごとにフォントを統一する。各 block index に対し
+  // 「そのグループ全行が収まる最小フォント」を返す (0 = グループ無し=個別 fit)。OCR は行ごとに別 box を返し
+  // 行ごとに fitCanvasFont すると見出し/本文でサイズがバラつくため、段落内で揃えて見栄えを整える。
+  function computeGroupFonts(ctx, blocks, W, H) {
+    const fonts = new Array(blocks.length).fill(0);
+    const items = [];
+    blocks.forEach((blk, idx) => { const fb = flatBoxOf(ctx, blk, W, H); if (fb && fb.h >= 6) items.push({ idx, fb, blk }); });
+    items.sort((a, b) => a.fb.y0 - b.fb.y0);
+    let group = [];
+    const flush = () => {
+      if (group.length >= 2) { // 単独行はグループ統一不要 (個別 fit のまま)
+        let minFs = Infinity;
+        for (const it of group) {
+          const w = it.fb.w, h = it.fb.h;
+          const innerW = Math.max(4, w - 2 * (w * 0.05)), innerH = Math.max(4, h - 2 * (h * 0.08));
+          const fs = fitCanvasFont(ctx, it.blk.translation, innerW, innerH, CANVAS_FONT).fontSize;
+          if (fs < minFs) minFs = fs;
+        }
+        for (const it of group) fonts[it.idx] = minFs;
+      }
+      group = [];
+    };
+    for (const it of items) {
+      if (group.length && !shouldLinkRows(group[group.length - 1].fb, it.fb)) flush();
+      group.push(it);
+    }
+    flush();
+    return fonts;
+  }
+
   // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
-  function drawInpaintBlock(ctx, blk, W, H) {
+  // forcedFont>0 のとき段落統一フォント (computeGroupFonts) を使い、行ごとのサイズばらつきを抑える。
+  function drawInpaintBlock(ctx, blk, W, H, forcedFont) {
     let w = Math.max(2, blk.box.w * W);
     let h = Math.max(2, blk.box.h * H);
     let x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
@@ -458,7 +489,10 @@
     }
     const padX = w * 0.05, padY = h * 0.08;
     const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
-    const { fontSize, lines } = fitCanvasFont(ctx, blk.translation, innerW, innerH, CANVAS_FONT);
+    const fit = fitCanvasFont(ctx, blk.translation, innerW, innerH, CANVAS_FONT);
+    // 段落統一フォントは「収まる範囲で」採用 (この box の最大に収まらないなら個別 fit に落とす=はみ出し防止)。
+    const fontSize = (forcedFont && forcedFont > 0 && forcedFont <= fit.fontSize) ? forcedFont : fit.fontSize;
+    const lines = (fontSize === fit.fontSize) ? fit.lines : (ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`, wrapCanvasText(ctx, blk.translation, innerW));
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -488,9 +522,12 @@
       ctx.drawImage(bmp, 0, 0, W, H);
       // 段落の行間に残る原文黒帯を先に消す (flat 同色の隣接行の隙間だけを連結 fill)。失敗は従来挙動へ。
       try { fillInterlineStrips(ctx, blocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
-      for (const blk of blocks) {
+      let groupFonts = [];
+      try { groupFonts = computeGroupFonts(ctx, blocks, W, H); } catch (_e) { groupFonts = []; } // 段落内フォント統一
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const blk = blocks[bi];
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
-        try { drawInpaintBlock(ctx, blk, W, H); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
+        try { drawInpaintBlock(ctx, blk, W, H, groupFonts[bi]); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
       }
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove()); // 旧オーバーレイ/canvas を除去
@@ -503,7 +540,8 @@
   const INPAINT_NEURAL_MAX_SIDE = 1536; // MI-GAN は重いので neural 経路は小さめにスケール
 
   // neural 消去後の clean 背景に、訳文だけを焼き込む (塗り潰しはしない・背景明暗で文字色を決定)。
-  function drawTextOnly(ctx, blk, W, H) {
+  // forcedFont>0 で段落統一フォントを使う (収まらないなら個別 fit に落とす)。
+  function drawTextOnly(ctx, blk, W, H, forcedFont) {
     const w = Math.max(2, blk.box.w * W);
     const h = Math.max(2, blk.box.h * H);
     const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
@@ -512,7 +550,10 @@
     const st = ringStats(ctx, x, y, w, h, W, H); // 消去後の clean 背景をサンプリングして文字色を決める
     const dark = st ? st.dark : false;
     const padX = w * 0.05, padY = h * 0.08;
-    const { fontSize, lines } = fitCanvasFont(ctx, blk.translation, Math.max(4, w - 2 * padX), Math.max(4, h - 2 * padY), CANVAS_FONT);
+    const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
+    const fit = fitCanvasFont(ctx, blk.translation, innerW, innerH, CANVAS_FONT);
+    const fontSize = (forcedFont && forcedFont > 0 && forcedFont <= fit.fontSize) ? forcedFont : fit.fontSize;
+    const lines = (fontSize === fit.fontSize) ? fit.lines : (ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`, wrapCanvasText(ctx, blk.translation, innerW));
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -546,9 +587,12 @@
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d ctx");
       ctx.drawImage(bmp, 0, 0, W, H);
-      for (const blk of blocks) {
+      let groupFonts = [];
+      try { groupFonts = computeGroupFonts(ctx, blocks, W, H); } catch (_e) { groupFonts = []; } // 段落内フォント統一
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const blk = blocks[bi];
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
-        try { drawTextOnly(ctx, blk, W, H); } catch (_e) { /* 1 ブロック失敗は無視 */ }
+        try { drawTextOnly(ctx, blk, W, H, groupFonts[bi]); } catch (_e) { /* 1 ブロック失敗は無視 */ }
       }
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());

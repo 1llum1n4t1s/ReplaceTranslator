@@ -724,20 +724,45 @@ if (typeof importScripts === "function") {
     const blocks = (ocr && Array.isArray(ocr.blocks) ? ocr.blocks : []).filter((b) => b && b.original && b.original.trim());
     const image = { base64: got.b64, mime: got.mime };
     if (!blocks.length) return { ok: true, blocks: [], image, neuralErase: settings.neuralErase };
-    // 抽出した原文を通常パイプラインで翻訳 (quick=true: stream/学習/進捗を使わない単発)。
+    // 抽出した原文を翻訳。全行失敗(キー無効/quota 等)なら原文を黙って焼かず error で返す。
     const texts = blocks.map((b) => b.original);
-    let tr;
-    try { tr = await translateWith(settings, texts, signal, null, null, null, true); }
+    let translations;
+    try { translations = await translateImageTexts(settings, texts, signal); }
     catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "translate", message: String((e && e.message) || e) };
     }
-    if (tr && tr.ok && Array.isArray(tr.translations)) {
-      blocks.forEach((b, i) => { b.translation = (tr.translations[i] != null ? tr.translations[i] : b.original); });
-    } else {
-      blocks.forEach((b) => { b.translation = b.original; }); // 翻訳失敗時は原文を表示 (OCR 結果は残す)
-    }
+    if (!translations) return { ok: false, error: "translate" }; // 全行翻訳不可 → content は "×" 表示
+    blocks.forEach((b, i) => { b.translation = (translations[i] != null ? translations[i] : b.original); });
     return { ok: true, blocks, image, neuralErase: settings.neuralErase };
+  }
+
+  // 画像 OCR で抽出した行を翻訳する。LLM バッチは「返却数==入力数」を要求し(translateBatch:incomplete)、
+  // OCR の行数と LLM 返却数がズレると 1 件の取りこぼしでバッチ全滅 → 原文(英語)フォールバックになる。
+  // そこで まずバッチ一括(速い)を試し、件数不一致/失敗時は 1 行ずつ訳して取りこぼしを局所化する
+  // (画像は行数が少ないので per-line でも許容)。返り値: texts と同数の訳文配列(失敗行は null)。全滅なら null。
+  async function translateImageTexts(settings, texts, signal) {
+    let res = null;
+    try { res = await translateWith(settings, texts, signal, null, null, null, true); }
+    catch (e) { if (e && e.name === "AbortError") throw e; /* それ以外は per-line へ */ }
+    if (res && res.ok && Array.isArray(res.translations) && res.translations.length === texts.length) {
+      return res.translations;
+    }
+    // バッチ不完全/失敗 → 1 行ずつ。レート制限を避けるため少並列(6)に区切る。失敗行は null。
+    const out = new Array(texts.length).fill(null);
+    const CONC = 6;
+    for (let i = 0; i < texts.length; i += CONC) {
+      const slice = texts.slice(i, i + CONC);
+      const part = await Promise.all(slice.map(async (t) => {
+        try {
+          const r = await translateWith(settings, [t], signal, null, null, null, true);
+          if (r && r.ok && Array.isArray(r.translations) && r.translations.length === 1) return r.translations[0];
+        } catch (e) { if (e && e.name === "AbortError") throw e; }
+        return null;
+      }));
+      part.forEach((v, j) => { out[i + j] = v; });
+    }
+    return out.every((v) => v == null) ? null : out; // 全滅は null(翻訳不可)、一部成功は部分的に返す
   }
 
   // ---- ページ翻訳/復元の指示 ----
