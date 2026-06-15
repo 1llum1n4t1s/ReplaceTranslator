@@ -19,6 +19,9 @@ ort.env.wasm.wasmPaths = {
   mjs: chrome.runtime.getURL("src/libs/onnxruntime/ort-wasm-simd-threaded.jsep.mjs"),
   wasm: chrome.runtime.getURL("src/libs/onnxruntime/ort-wasm-simd-threaded.jsep.wasm"),
 };
+// rec モデルは出力長を 25 と固定宣言するが実際は入力幅で可変(T=W/4)。ORT が毎行 VerifyOutputSizes 警告を
+// 吐きコンソールが埋まる(出力テンソルは実 T で正しく返る=無害)。warning を抑止して error 以上だけ出す。
+ort.env.logLevel = "error";
 
 // ---- モデル取得（実行時 DL + Cache API） ----
 // URL は実機相当の検証済み(HEAD/GET 200 + ONNX I/O 実測)。404 なら fetchModelBytes が "model fetch 404"
@@ -63,7 +66,7 @@ async function createSession(bytes) {
   for (const eps of candidates) {
     try {
       return await Promise.race([
-        ort.InferenceSession.create(bytes, { executionProviders: eps, graphOptimizationLevel: "all" }),
+        ort.InferenceSession.create(bytes, { executionProviders: eps, graphOptimizationLevel: "all", logSeverityLevel: 3 }),
         new Promise((_, rej) => setTimeout(() => rej(new Error("ep-timeout")), 30000)),
       ]);
     } catch (e) { lastErr = e; }
