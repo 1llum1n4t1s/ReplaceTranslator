@@ -396,3 +396,22 @@ test("parseImageBlocks (gemini) drops items without a valid 4-element box_2d", (
   const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[1,2,3],"translation":"x"},{"translation":"y"}]' }] } }] };
   assert.deepEqual(ProviderApi.parseImageBlocks("gemini", g), []);
 });
+
+test("parseImageBlocks keeps kind:logo and defaults missing/unknown kind to text (recall 優先)", () => {
+  // openai 分岐: logo は保持、欠落は text、未知値も text に倒す
+  const oa = { choices: [{ message: { content: '{"blocks":[' +
+    '{"translation":"Claude","kind":"logo","box":{"x":0,"y":0,"w":0.2,"h":0.05}},' +
+    '{"translation":"本文","box":{"x":0,"y":0.5,"w":0.3,"h":0.05}},' +
+    '{"translation":"見出し","kind":"banana","box":{"x":0,"y":0.7,"w":0.3,"h":0.05}}]}' } }] };
+  const r = ProviderApi.parseImageBlocks("openai", oa);
+  assert.equal(r.length, 3);
+  assert.equal(r[0].kind, "logo");
+  assert.equal(r[1].kind, "text"); // 欠落 → text
+  assert.equal(r[2].kind, "text"); // 未知値 → text
+  // gemini 分岐も同様に kind を載せる
+  const g = { candidates: [{ content: { parts: [{ text:
+    '[{"box_2d":[0,0,50,200],"translation":"Claude","kind":"logo"},{"box_2d":[500,0,550,300],"translation":"本文"}]' }] } }] };
+  const rg = ProviderApi.parseImageBlocks("gemini", g);
+  assert.equal(rg[0].kind, "logo");
+  assert.equal(rg[1].kind, "text");
+});

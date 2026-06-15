@@ -21,18 +21,20 @@ ort.env.wasm.wasmPaths = {
 };
 
 // ---- モデル取得（実行時 DL + Cache API） ----
-// ★verify-on-device: 下記 URL は実機で 200 が返るか要確認。404 なら "model fetch 404" を投げて
-//   呼び出し側が cloud にフォールバックする（壊れない）。差し替えは MODEL_URLS だけ直せばよい。
+// URL は実機相当の検証済み(HEAD/GET 200 + ONNX I/O 実測)。404 なら fetchModelBytes が "model fetch 404"
+// を投げ、呼び出し側が cloud にフォールバックする(壊れない)。差し替えは MODEL_URLS だけ直せばよい。
 const MODEL_URLS = {
+  // MI-GAN inpaint。入力 image[N,3,H,W]uint8 / mask[N,1,H,W]uint8(255=keep,0=hole) / 出力 result 同形(実測一致)。
   migan: "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx",
-  // PaddleOCR(ONNX) det/rec + 日本語辞書（RapidOCR 配布物を想定）。
+  // PaddleOCR(ONNX・RapidOCR 配布)。det=PP-OCRv4(in "x"/out "sigmoid_0.tmp_0")、
+  // rec=PP-OCRv1 日本語 CRNN(in "x"[N,3,32,?]/out [N,T,4400])、dict=PaddleOCR 本家 4399 文字(4399+blank=4400)。
   ocrDet: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
-  ocrRec: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/japan_rec_crnn_v2.onnx",
-  ocrDict: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/japan_dict.txt",
+  ocrRec: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/japan_rec_crnn.onnx",
+  ocrDict: "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/dict/japan_dict.txt",
 };
 const CACHE_NAME = "rt-onnx-models-v1";
 
-// PaddleOCR rec の入力高さ。crnn_v2 は v2-era なので 32 を既定（v4/v5 系は 48）。★verify-on-device。
+// PaddleOCR rec(PP-OCRv1 japan_rec_crnn)の入力高さは静的に 32(ONNX 入力 [N,3,32,?] で実測確認済)。
 const REC_HEIGHT = 32;
 const REC_MAX_WIDTH = 1024; // rec 入力幅の上限（極端に横長な行のメモリ暴走を防ぐ）
 
@@ -190,11 +192,11 @@ async function detect(canvas) {
   const data = rctx.getImageData(0, 0, rw, rh).data;
   const plane = rw * rh;
   const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
-  const inp = new Float32Array(3 * plane); // ★RGB 想定（BGR モデルなら R/B を入れ替える）
+  const inp = new Float32Array(3 * plane); // RapidOCR det は BGR 投入(cvtColor 無し)。RGBA から B/G/R 順に詰める。
   for (let p = 0, i = 0; i < plane; i++, p += 4) {
-    inp[i] = (data[p] / 255 - mean[0]) / std[0];
-    inp[plane + i] = (data[p + 1] / 255 - mean[1]) / std[1];
-    inp[2 * plane + i] = (data[p + 2] / 255 - mean[2]) / std[2];
+    inp[i] = (data[p + 2] / 255 - mean[0]) / std[0];          // ch0 = B
+    inp[plane + i] = (data[p + 1] / 255 - mean[1]) / std[1];  // ch1 = G
+    inp[2 * plane + i] = (data[p] / 255 - mean[2]) / std[2];  // ch2 = R
   }
   const session = await getSession("ocrDet", MODEL_URLS.ocrDet);
   const inName = session.inputNames[0];
@@ -256,11 +258,11 @@ async function recognize(canvas, box, recSession, dict) {
   cc.getContext("2d", { willReadFrequently: true }).drawImage(cropCanvas, 0, 0, cropW, cropH, 0, 0, cw, REC_HEIGHT);
   const d = cc.getContext("2d").getImageData(0, 0, cw, REC_HEIGHT).data;
   const plane = cw * REC_HEIGHT;
-  const inp = new Float32Array(3 * plane); // ★RGB 想定・正規化 x/127.5-1（PaddleOCR rec の (img/255-0.5)/0.5 と等価）
+  const inp = new Float32Array(3 * plane); // RapidOCR rec も BGR 投入。正規化 x/127.5-1((img/255-0.5)/0.5 と等価)。
   for (let p = 0, i = 0; i < plane; i++, p += 4) {
-    inp[i] = d[p] / 127.5 - 1;
-    inp[plane + i] = d[p + 1] / 127.5 - 1;
-    inp[2 * plane + i] = d[p + 2] / 127.5 - 1;
+    inp[i] = d[p + 2] / 127.5 - 1;       // ch0 = B
+    inp[plane + i] = d[p + 1] / 127.5 - 1; // ch1 = G
+    inp[2 * plane + i] = d[p] / 127.5 - 1; // ch2 = R
   }
   const inName = recSession.inputNames[0];
   const out = await recSession.run({ [inName]: new ort.Tensor("float32", inp, [1, 3, REC_HEIGHT, cw]) });

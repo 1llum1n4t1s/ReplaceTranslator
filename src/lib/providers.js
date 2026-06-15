@@ -356,8 +356,9 @@
     return [
       `You are an OCR translator. Detect EVERY text block in the image — do not skip any line, including short lines, headings, single words, and lines near the edges.`,
       srcName ? `The source language is ${srcName}.` : "",
-      `Return ONLY a JSON object {"blocks":[{"original":"...","translation":"...","cy":0,"box":{"x":0,"y":0,"w":0,"h":0}}]}`,
+      `Return ONLY a JSON object {"blocks":[{"original":"...","translation":"...","kind":"text","cy":0,"box":{"x":0,"y":0,"w":0,"h":0}}]}`,
       `All coordinates are normalized 0..1 over the FULL image; the origin (0,0) is the TOP-LEFT pixel and y increases downward.`,
+      `Distinguish real readable text from graphic LOGOS and BRAND WORDMARKS (a company or app name rendered as a stylized graphic mark, typically in a header or footer). Do NOT translate logos, wordmarks, or app names that function as a brand mark; copy such text unchanged and set "kind":"logo". For all normal readable text (paragraphs, headings, sentences, UI labels, captions) set "kind":"text" and translate it. When unsure, prefer "kind":"text" so that real content is never dropped.`,
       // VLM は枠の上端(box.y)より「テキストの縦中央(cy)」を桁違いに安定して当てる。cy を一次量として要求し、
       // クライアントは cy に帯の中心を合わせて配置する。これで box.y の系統的な上ズレに依存せず原文行へ重なる。
       `cy is THE MOST IMPORTANT field: the vertical CENTER (midline) of the text. A horizontal line drawn at y=cy must pass exactly through the middle of the visible glyphs — not the top of the line, not the baseline. Get cy right first; models locate this midline far more reliably than edges.`,
@@ -378,8 +379,9 @@
     return [
       `Detect EVERY text block in the image and translate it — do not skip any line, including short lines, headings, single words, and lines near the edges.`,
       srcName ? `The source language is ${srcName}.` : "",
-      `Return ONLY a JSON array. Each item: {"box_2d":[ymin,xmin,ymax,xmax],"original":"...","translation":"..."}.`,
+      `Return ONLY a JSON array. Each item: {"box_2d":[ymin,xmin,ymax,xmax],"original":"...","translation":"...","kind":"text"}.`,
       `box_2d is the standard 2D bounding box: [ymin, xmin, ymax, xmax] (y first), each an integer normalized 0..1000 over the FULL image with the top-left as origin. Make it tightly enclose ONLY the visible glyphs and let xmin reach the left side of the FIRST glyph — exclude avatars, profile pictures, icons, buttons, logos and surrounding padding.`,
+      `Distinguish real readable text from graphic LOGOS and BRAND WORDMARKS (a company or app name rendered as a stylized graphic mark, usually in the header or footer). For a logo or brand wordmark, copy its text into "original" unchanged and set "kind":"logo"; do not translate it. For all normal readable text set "kind":"text" and translate it. When unsure, choose "kind":"text".`,
       `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
       `If the image has no text, return [].`,
     ].filter(Boolean).join("\n");
@@ -443,6 +445,7 @@
             box_2d: { type: "ARRAY", items: { type: "INTEGER" } },
             original: { type: "STRING" },
             translation: { type: "STRING" },
+            kind: { type: "STRING" }, // "text" | "logo" (Gemini は schema に無い field を出さないため明示)
           },
           required: ["translation"],
         },
@@ -480,6 +483,7 @@
             translation: b.translation,
             box: { x, y, w, h },
             cy: clamp01(y + h / 2), // box_2d は枠なので縦中央を算出 (配置の主アンカー)
+            kind: b.kind === "logo" ? "logo" : "text", // ロゴ重畳除外信号。未知/欠落は text に倒し本文 recall を守る
           };
         });
     }
@@ -491,7 +495,8 @@
         const box = { x: clamp01(b.box.x), y: clamp01(b.box.y), w: clamp01(b.box.w), h: clamp01(b.box.h) };
         // cy(縦中央)を優先採用。VLM は枠上端(box.y)より縦中央を安定して当てるため配置の主アンカーにする。無ければ box 縦中央。
         const cy = Number.isFinite(Number(b.cy)) ? clamp01(Number(b.cy)) : clamp01(box.y + box.h / 2);
-        return { original: typeof b.original === "string" ? b.original : "", translation: b.translation, box, cy };
+        const kind = b.kind === "logo" ? "logo" : "text"; // ロゴ重畳除外信号。未知/欠落は text(本文 recall 優先)
+        return { original: typeof b.original === "string" ? b.original : "", translation: b.translation, box, cy, kind };
       });
   }
 

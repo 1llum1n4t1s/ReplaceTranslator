@@ -382,6 +382,57 @@
     return { x: ux, y: uy, w: Math.max(2, uex - ux), h: Math.max(2, uey - uy) };
   }
 
+  // ===== 行間ストリップ埋め (症状: 段落の行間に原文の黒帯が残る) =====
+  // vision は段落を「行ごとの別 block」で返しがち。各行を独立 fill すると隣接行の間に未塗りの隙間が残り、
+  // 原文の上下端ストロークが帯状に居残る。dy を増やすと隣行訳文背景を侵食するため、同一段落と判定できた
+  // 隣接行の「行間 (x 重なり区間 × 隙間)」だけを背景色で連結 fill する前段パスを drawInpaintBlock の前に挟む。
+  function colorDist(a, b) {
+    const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  // drawInpaintBlock と同一式で block の cy ベース pixel box を求め、flat 背景色も返す (textured/極小は null)。
+  function flatBoxOf(ctx, blk, W, H) {
+    if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
+    const w = Math.max(2, blk.box.w * W), h = Math.max(2, blk.box.h * H);
+    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
+    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
+    const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
+    const st = ringStats(ctx, x, y, w, h, W, H);
+    if (!st || st.std >= 24) return null; // flat 背景のみ対象 (textured は半透明帯方式を尊重)
+    return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, color: st.color };
+  }
+
+  // 隣接 2 box が「同一段落の連続行」か (全 AND)。段組/別色/別段落/ロゴ↔本文の誤連結を弾く。
+  function shouldLinkRows(prev, cur) {
+    const overlapX = Math.min(prev.x1, cur.x1) - Math.max(prev.x0, cur.x0);
+    const lineRef = Math.max(prev.h, cur.h);
+    const gap = cur.y0 - prev.y1;
+    const hRatio = cur.h / prev.h;
+    return colorDist(prev.color, cur.color) < 40 &&    // 同色背景のみ (別パネル/別背景境界を塗らない)
+      overlapX > 0.5 * Math.min(prev.w, cur.w) &&      // x が半分以上重なる=同一カラム (段組を弾く)
+      hRatio > 0.5 && hRatio < 2.0 &&                  // 高さ近似 (見出し↔本文・ロゴ↔本文を弾く)
+      gap > 0 && gap < 0.7 * lineRef;                  // 行間相当の隙間のみ (段落境界の広い余白を塗らない)
+  }
+
+  // flat 同色の隣接行ペアの行間だけを背景色で 1 回 fill。renderInpaint の per-block ループ直前に呼ぶ。
+  function fillInterlineStrips(ctx, blocks, W, H) {
+    const boxes = [];
+    for (const blk of blocks) { const fb = flatBoxOf(ctx, blk, W, H); if (fb && fb.h >= 6) boxes.push(fb); }
+    boxes.sort((a, b) => a.y0 - b.y0);
+    for (let i = 1; i < boxes.length; i++) {
+      const prev = boxes[i - 1], cur = boxes[i];
+      if (!shouldLinkRows(prev, cur)) continue;
+      const ox = Math.max(prev.x0, cur.x0), ow = Math.min(prev.x1, cur.x1) - ox; // x 重なり区間のみ
+      const gap = cur.y0 - prev.y1, pad = Math.min(2, gap * 0.25);
+      const sy = prev.y1 - pad, sh = (cur.y0 + pad) - sy;
+      if (ow <= 1 || sh <= 0) continue;
+      const c = [(prev.color[0] + cur.color[0]) >> 1, (prev.color[1] + cur.color[1]) >> 1, (prev.color[2] + cur.color[2]) >> 1];
+      ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx.fillRect(Math.round(ox), Math.round(sy), Math.round(ow), Math.round(sh));
+    }
+  }
+
   // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
   function drawInpaintBlock(ctx, blk, W, H) {
     let w = Math.max(2, blk.box.w * W);
@@ -435,6 +486,8 @@
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d ctx");
       ctx.drawImage(bmp, 0, 0, W, H);
+      // 段落の行間に残る原文黒帯を先に消す (flat 同色の隣接行の隙間だけを連結 fill)。失敗は従来挙動へ。
+      try { fillInterlineStrips(ctx, blocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
       for (const blk of blocks) {
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
         try { drawInpaintBlock(ctx, blk, W, H); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
@@ -516,6 +569,30 @@
     renderBlocks(img, blocks);
   }
 
+  // ロゴ/ブランドワードマークを翻訳 overlay から除外する (症状: ヘッダ/フッタの "Claude" 等に訳文が重畳)。
+  // 主役は vision の kind フラグ。kind 非対応モデル向けの保険として、端帯(最上部/最下部)+短語+固定辞書の
+  // AND でのみ弾く (本文巻き込みを避ける)。完全には弾けない前提で、確実に消したいなら local OCR へ寄せる。
+  const BRAND_WORDS = new Set(["claude", "anthropic", "chatgpt", "openai", "gemini", "gpt", "copilot", "github", "google", "grok"]);
+  function looksLikeBrandWordmark(blk) {
+    const t = (blk.original || "").trim();
+    if (!t) return false;
+    const words = t.split(/\s+/);
+    if (words.length > 2) return false;                            // 短語のみ (本文は通常 3 語以上)
+    if (!/^[A-Za-z][A-Za-z0-9.-]*$/.test(words[0])) return false; // 英数ワードマーク形のみ
+    const cy = typeof blk.cy === "number" ? blk.cy : (blk.box.y + blk.box.h / 2);
+    return (cy < 0.12 || cy > 0.88) && BRAND_WORDS.has(words[0].toLowerCase()); // 最上部/最下部の帯のみ
+  }
+  function filterBlocks(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [];
+    const hasKind = list.some((b) => b && b.kind);  // kind 対応モデルか
+    return list.filter((b) => {
+      if (!b) return false;
+      if (b.kind === "logo") return false;          // 主役: モデルが logo と分類 → 捨てる
+      if (!hasKind && looksLikeBrandWordmark(b)) return false; // 保険: kind 非対応のときだけ端帯辞書で弾く
+      return true;
+    });
+  }
+
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
@@ -528,10 +605,11 @@
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
         if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
-        if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
+        const blocks = (res && res.ok) ? filterBlocks(res.blocks) : []; // ロゴ/ブランド語の重畳を除外
+        if (blocks.length) {
           // canvas inpaint (原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
           // neuralErase は SW がレスポンスに乗せる (Chrome のみ。Firefox/失敗時は背景色 fill にフォールバック)。
-          renderTranslated(img, res.blocks, res.image, { neuralErase: res.neuralErase })
+          renderTranslated(img, blocks, res.image, { neuralErase: res.neuralErase })
             .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
             .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
