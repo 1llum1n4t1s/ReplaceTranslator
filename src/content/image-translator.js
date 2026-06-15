@@ -98,16 +98,41 @@
     setBtnMode(img);
   }
 
+  // カーソル直下から翻訳対象の img を解決する。多くのサイトは画像の上にリンク (<a>) やホバー用の
+  // オーバーレイ要素を重ねるため、mouseover の e.target が img にならず、被さった要素だけが見える。
+  // その場合は elementsFromPoint でカーソル位置の要素スタック (最前面→奥) を辿り、最初の eligible な
+  // img を拾う (被った要素の下の img も pointer-events:auto ならスタックに含まれる)。
+  function imgAtPoint(e) {
+    if (eligible(e.target)) return e.target;            // 速い経路: img が最前面
+    if (typeof e.clientX !== "number") return null;
+    let stack;
+    try { stack = document.elementsFromPoint(e.clientX, e.clientY); } catch (_e) { return null; }
+    for (const el of stack) {
+      if (el === btn) continue;                         // 自前のボタン/オーバーレイは飛ばす
+      if (eligible(el)) return el;                      // 被さった要素 (アンカー等) の下の img を採用
+    }
+    return null;
+  }
+
+  function pointInRect(x, y, el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
   function onMouseOver(e) {
     if (dead) return;
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
-    if (eligible(e.target)) { target = e.target; placeBtn(e.target); }
+    if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
+    const img = imgAtPoint(e);
+    if (img) { target = img; placeBtn(img); }
   }
 
+  // オーバーレイ付き画像ではカード内の子要素を跨ぐたび mouseout が連発し relatedTarget 依存だとちらつく。
+  // 「カーソルの新位置が対象画像の矩形 or ボタンの矩形の中か」で判定し、両方から外れたときだけ隠す。
   function onMouseOut(e) {
-    if (dead || !btn) return;
-    const to = e.relatedTarget;
-    if (to === btn || to === target || eligible(to)) return;
+    if (dead || !btn || btn.style.display === "none") return;
+    if (pointInRect(e.clientX, e.clientY, target) || pointInRect(e.clientX, e.clientY, btn)) return;
     btn.style.display = "none";
   }
 
