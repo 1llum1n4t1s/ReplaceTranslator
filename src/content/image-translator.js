@@ -342,13 +342,15 @@
 
   const CANVAS_FONT = 'system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif';
 
-  // Phase 2: 平坦背景のとき box(+余白)内で背景色と差のある画素=文字インクの外接矩形へ box を引き締める。
-  // LLM の緩い/わずかにズレた box を実 glyph 位置にスナップし、消去のはみ出しと配置ズレを減らす。
-  // 文字が見つからない/探索域がほぼ全面インク(背景判定ミス)なら null を返してスナップしない。
+  // Phase 2: 平坦背景のとき box(+余白)内で背景色と差のある画素=文字インクの外接矩形を求め、
+  // 「ink 外接 ∪ 元 box」(縮めず広げるのみ)へ消去域を補正する。LLM/OCR の右ズレ box が行頭グリフを
+  // 取りこぼすのを防ぐため左を字高基準で厚く探索する。左右の拡張は maxExtend で頭打ちし、離れた
+  // グラフィック(ロゴ等)へ到達させない。文字が無い/探索域がほぼ全面インク(背景判定ミス)なら null。
   function snapToInk(ctx, x, y, w, h, bg, W, H) {
-    const mx = w * 0.18, my = h * 0.28; // 少しはみ出た glyph も拾うため探索域を広げる
-    const sx = Math.max(0, Math.floor(x - mx)), sy = Math.max(0, Math.floor(y - my));
-    const ex = Math.min(W, Math.ceil(x + w + mx)), ey = Math.min(H, Math.ceil(y + h + my));
+    // 左を厚く(行頭の取りこぼし対策・字高 1 文字ぶんは必ず左を見る)、右と上下は控えめ。
+    const mxL = Math.max(w * 0.30, h * 0.7), mxR = w * 0.14, my = h * 0.28;
+    const sx = Math.max(0, Math.floor(x - mxL)), sy = Math.max(0, Math.floor(y - my));
+    const ex = Math.min(W, Math.ceil(x + w + mxR)), ey = Math.min(H, Math.ceil(y + h + my));
     const rw = ex - sx, rh = ey - sy;
     if (rw < 3 || rh < 3) return null;
     let d;
@@ -360,7 +362,7 @@
         sampled++;
         const o = (py * rw + px) * 4;
         const dr = d[o] - bg[0], dg = d[o + 1] - bg[1], db = d[o + 2] - bg[2];
-        if (dr * dr + dg * dg + db * db > 3600) { // RGB ユークリッド距離 ~60 超 = 文字インク
+        if (dr * dr + dg * dg + db * db > 2304) { // RGB ユークリッド距離 ~48 超 = 文字インク(細い縦画/薄字/AA 縁も拾う)
           if (px < minx) minx = px; if (px > maxx) maxx = px;
           if (py < miny) miny = py; if (py > maxy) maxy = py; count++;
         }
@@ -368,9 +370,16 @@
     }
     if (count < 4 || maxx < minx || maxy < miny) return null;     // 文字らしき画素が無い
     if (count / sampled > 0.9) return null;                       // 探索域のほぼ全面=背景判定ミス/textured
-    const nx = sx + Math.max(0, minx - 1), ny = sy + Math.max(0, miny - 1);
-    const nex = sx + Math.min(rw, maxx + step + 1), ney = sy + Math.min(rh, maxy + step + 1);
-    return { x: nx, y: ny, w: Math.max(2, nex - nx), h: Math.max(2, ney - ny) };
+    // ink 外接矩形と元 box の union(縮めない=行頭グリフを絶対に削らない)。左右拡張は maxExtend で
+    // 頭打ちし、離れたグラフィック(ロゴ等)へ到達させない。縦は ink 側へ素直に広げる(隣行は my 制限で抑制)。
+    const ix = sx + Math.max(0, minx - 1), iy = sy + Math.max(0, miny - 1);
+    const iex = sx + Math.min(rw, maxx + step + 1), iey = sy + Math.min(rh, maxy + step + 1);
+    const maxExtend = Math.min(W * 0.04, h * 1.5);
+    const ux = Math.max(x - maxExtend, Math.min(x, ix));
+    const uy = Math.min(y, iy);
+    const uex = Math.min(x + w + maxExtend, Math.max(x + w, iex));
+    const uey = Math.max(y + h, iey);
+    return { x: ux, y: uy, w: Math.max(2, uex - ux), h: Math.max(2, uey - uy) };
   }
 
   // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
@@ -383,11 +392,14 @@
     const st = ringStats(ctx, x, y, w, h, W, H);
     const flat = st && st.std < 24; // 外周の色ブレが小さい=平坦背景 → 背景色 fill で原文を消せる
     if (flat) {
-      const snap = snapToInk(ctx, x, y, w, h, st.color, W, H); // Phase 2: 実 glyph へ box を引き締める
+      const snap = snapToInk(ctx, x, y, w, h, st.color, W, H); // Phase 2: 実 glyph 位置へ消去域を補正(union・広げるのみ)
       if (snap) { x = snap.x; y = snap.y; w = snap.w; h = snap.h; }
-      const dx = Math.max(1, w * 0.06), dy = Math.max(1, h * 0.14); // glyph の食み出しも消すため box を少し膨らます
+      // 消去マージンを字高(h)基準の非対称に。横6%固定では行頭グリフ縁と行間/周囲の薄残りを覆えない。
+      const dl = Math.max(3, h * 0.34); // 左: 行頭余白を厚く(行頭ゴースト対策)
+      const dr = Math.max(2, h * 0.16); // 右: 訳文はみ出し抑制で控えめ
+      const dy = Math.max(2, h * 0.30); // 上下: アセンダ/ディセンダ+行間の薄残り回収
       ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
-      ctx.fillRect(x - dx, y - dy, w + 2 * dx, h + 2 * dy);
+      ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
     } else {
       ctx.fillStyle = "rgba(20,28,38,0.84)"; // textured: 半透明の暗い帯で隠す (従来オーバーレイ相当を canvas に焼く)
       roundRectPath(ctx, x, y, w, h, Math.min(6, h * 0.2));
