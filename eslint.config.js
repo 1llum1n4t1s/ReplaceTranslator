@@ -43,6 +43,7 @@ module.exports = [
       "web-ext-artifacts/**",
       "temp-build*/**",
       "**/*.min.js",
+      "src/libs/onnxruntime/**", // vendored onnxruntime-web 成果物 (lint 対象外)
     ],
   },
   {
@@ -61,6 +62,19 @@ module.exports = [
         LanguageDetector: "readonly",
         LanguageModel: "readonly",
         ...ACTIONS_GLOBALS,
+      },
+    },
+    rules: COMMON_RULES,
+  },
+  {
+    // offscreen 推論ホスト (src/offscreen/): ort を ESM import するため module として解析する。
+    files: ["src/offscreen/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: {
+        ...globals.browser,
+        chrome: "readonly",
       },
     },
     rules: COMMON_RULES,

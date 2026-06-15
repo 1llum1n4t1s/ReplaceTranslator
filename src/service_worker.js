@@ -697,7 +697,8 @@ if (typeof importScripts === "function") {
     // image: content 側の canvas inpaint 用に取得済みバイトを返す。ページ側で cross-origin <img> を
     // 直接 draw すると canvas が taint され getImageData/toDataURL が封じられるため、SW が host_permissions で
     // 取得済みの base64 を渡し content は createImageBitmap(blob) で CORS-safe に再構築する。
-    return { ok: true, blocks, image: { base64: b64, mime } };
+    // neuralErase: content が MI-GAN(offscreen)で原文を消すかの判断に使う (Chrome のみ。設定で OFF が既定)。
+    return { ok: true, blocks, image: { base64: b64, mime }, neuralErase: settings.neuralErase };
   }
 
   // ---- ページ翻訳/復元の指示 ----
@@ -871,8 +872,33 @@ if (typeof importScripts === "function") {
     return res;
   }
 
+  // ---- ローカル ONNX 推論の中継 (Chrome: offscreen document / Firefox: 非対応→呼び出し側が cloud にフォールバック) ----
+  // SW は DOM/navigator.gpu/Worker を持たないため ort-web を直接動かせない。offscreen document に中継する。
+  async function ensureOffscreen() {
+    if (!chrome.offscreen) throw new Error("offscreen_unavailable"); // Firefox 等 (event page で動かす設計だが未配線→cloud へ)
+    if (chrome.offscreen.hasDocument && (await chrome.offscreen.hasDocument())) return;
+    try {
+      await chrome.offscreen.createDocument({
+        url: chrome.runtime.getURL("src/offscreen/offscreen.html"),
+        reasons: [chrome.offscreen.Reason.WORKERS], // ort が内部 worker を使う
+        justification: "On-device ONNX inference for image inpainting and OCR",
+      });
+    } catch (e) {
+      if (!String((e && e.message) || e).includes("single offscreen")) throw e; // 競合生成 (既に存在) は無視
+    }
+  }
+  // op を offscreen の handleOp に渡して結果を受け取る (RUN_INFERENCE エンベロープ)。offscreen のみが応答する。
+  async function runInference(op, payload) {
+    await ensureOffscreen();
+    const res = await chrome.runtime.sendMessage({ action: Actions.RUN_INFERENCE, op, payload });
+    if (!res) throw new Error("offscreen_no_response");
+    if (!res.ok) throw new Error(res.error || "inference_failed");
+    return res.result;
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.action !== "string") return undefined;
+    if (msg.action === Actions.RUN_INFERENCE) return undefined; // offscreen 宛のエンベロープは SW では処理しない
     // 自拡張由来のみ受理 (content / popup / options はいずれも sender.id が拡張 ID)
     if (sender && sender.id && chrome.runtime.id && sender.id !== chrome.runtime.id) return undefined;
 
@@ -925,6 +951,14 @@ if (typeof importScripts === "function") {
             const untrack = trackController(sender.tab && sender.tab.id, controller);
             try { sendResponse(await translateImage(settings, msg.imageUrl, controller.signal)); }
             finally { untrack(); }
+            break;
+          }
+          case Actions.INPAINT_IMAGE:
+          case Actions.OCR_DETECT:
+          case Actions.OCR_RECOGNIZE: {
+            // ローカル ONNX 推論を offscreen に中継 (Chrome のみ)。Firefox/失敗時は content が cloud/canvas にフォールバック。
+            try { sendResponse({ ok: true, result: await runInference(msg.action, msg.payload || {}) }); }
+            catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
             break;
           }
           case Actions.TRANSLATE_PAGE: {

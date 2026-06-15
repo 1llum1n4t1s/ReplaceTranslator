@@ -24,6 +24,11 @@
     // content → background
     TRANSLATE_BATCH: "TRANSLATE_BATCH",     // テキスト配列の翻訳を代理依頼
     TRANSLATE_IMAGE: "TRANSLATE_IMAGE",     // 画像内テキストの翻訳 (vision・オプション)
+    // content → background → offscreen (Chrome) / inline (Firefox): ローカル ONNX 推論 (Phase 3/4・オプション)
+    INPAINT_IMAGE: "INPAINT_IMAGE",         // MI-GAN で原文領域を消去 (ニューラル inpaint)
+    OCR_DETECT: "OCR_DETECT",               // PaddleOCR det でテキスト box 検出 (ローカル OCR)
+    OCR_RECOGNIZE: "OCR_RECOGNIZE",         // PaddleOCR rec で box の文字認識 (ローカル OCR)
+    RUN_INFERENCE: "RUN_INFERENCE",         // background → offscreen の内部エンベロープ (上記 op を包む)
     // background → content
     APPLY_TRANSLATE_CS: "APPLY_TRANSLATE_CS", // content に翻訳開始を指示
     APPLY_RESTORE_CS: "APPLY_RESTORE_CS",     // content に復元を指示
@@ -162,6 +167,10 @@
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     showFab: true,               // ページ右下のフローティング翻訳ボタンを表示する (OFF でも popup/右クリックから翻訳可)
+    // 画像翻訳エンジン: "cloud"=クラウド vision で OCR+box+訳 (既定) / "local"=PaddleOCR でローカル OCR+box→TRANSLATE_BATCH で訳
+    // (Chrome offscreen 限定。Firefox は cloud にフォールバック)。
+    imageEngine: "cloud",
+    neuralErase: false,          // 原文消去に MI-GAN(ニューラル inpaint)を使う (OFF=背景色 fill。textured 背景で綺麗。Chrome 限定)
   });
 
   // 各社が廃止したモデル ID。保存設定 (settings.models[*]) に残っていると翻訳時に 404 で詰むため、
@@ -205,6 +214,8 @@
       models,
       autoTranslate: Boolean(r.autoTranslate),
       showFab: r.showFab !== false, // 既定 ON。既存ユーザーの保存済み設定 (キー欠損) でも FAB が消えないよう !== false で判定
+      imageEngine: r.imageEngine === "local" ? "local" : "cloud", // 未知値/欠損は cloud
+      neuralErase: Boolean(r.neuralErase),
     };
   }
 

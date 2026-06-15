@@ -435,10 +435,71 @@
     }
   }
 
-  // canvas inpaint を試し、画像バイトが無い/失敗時は従来の HTML オーバーレイにフォールバックする。
-  async function renderTranslated(img, blocks, image) {
+  const INPAINT_NEURAL_MAX_SIDE = 1536; // MI-GAN は重いので neural 経路は小さめにスケール
+
+  // neural 消去後の clean 背景に、訳文だけを焼き込む (塗り潰しはしない・背景明暗で文字色を決定)。
+  function drawTextOnly(ctx, blk, W, H) {
+    const w = Math.max(2, blk.box.w * W);
+    const h = Math.max(2, blk.box.h * H);
+    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
+    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
+    const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
+    const st = ringStats(ctx, x, y, w, h, W, H); // 消去後の clean 背景をサンプリングして文字色を決める
+    const dark = st ? st.dark : false;
+    const padX = w * 0.05, padY = h * 0.08;
+    const { fontSize, lines } = fitCanvasFont(ctx, blk.translation, Math.max(4, w - 2 * padX), Math.max(4, h - 2 * padY), CANVAS_FONT);
+    ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = dark ? "#f5f5f5" : "#1a1a1a";
+    ctx.shadowColor = dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.6)"; // 背景と同系の縁取りで可読性確保
+    ctx.shadowBlur = 2;
+    const lineH = fontSize * 1.18;
+    const startY = y + h / 2 - (lines.length - 1) * lineH / 2;
+    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
+  }
+
+  // MI-GAN(offscreen)で原文領域を inpaint 消去 → 返ってきた消去済み画像に訳文を焼き込む (Phase 3・Chrome 限定)。
+  async function renderInpaintNeural(img, blocks, image) {
+    const resp = await chrome.runtime.sendMessage({
+      action: A.INPAINT_IMAGE,
+      payload: {
+        base64: image.base64, mime: image.mime, maxSide: INPAINT_NEURAL_MAX_SIDE,
+        blocks: blocks.map((b) => ({ box: b.box })),
+      },
+    });
+    if (!resp || !resp.ok || !resp.result || !resp.result.base64) throw new Error("inpaint failed");
+    const r = resp.result;
+    const bmp = await bitmapFromBase64(r.base64, "image/png");
+    try {
+      const W = r.width || bmp.width, H = r.height || bmp.height;
+      const canvas = document.createElement("canvas");
+      canvas.className = "__rt-img-layer __rt-img-canvas";
+      canvas.width = W; canvas.height = H;
+      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("no 2d ctx");
+      ctx.drawImage(bmp, 0, 0, W, H);
+      for (const blk of blocks) {
+        if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
+        try { drawTextOnly(ctx, blk, W, H); } catch (_e) { /* 1 ブロック失敗は無視 */ }
+      }
+      const wrap = ensureWrap(img);
+      wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
+      wrap.appendChild(canvas);
+    } finally {
+      if (bmp && bmp.close) bmp.close();
+    }
+  }
+
+  // 描画方式の選択: neuralErase なら MI-GAN 消去 → 失敗で背景色 fill canvas → さらに失敗で HTML オーバーレイ。
+  async function renderTranslated(img, blocks, image, opts) {
     if (image && image.base64) {
-      try { await renderInpaint(img, blocks, image); return; } catch (_e) { /* fall back to overlay */ }
+      if (opts && opts.neuralErase) {
+        try { await renderInpaintNeural(img, blocks, image); return; } catch (_e) { /* canvas fill へ */ }
+      }
+      try { await renderInpaint(img, blocks, image); return; } catch (_e) { /* HTML オーバーレイへ */ }
     }
     renderBlocks(img, blocks);
   }
@@ -457,7 +518,8 @@
         if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
         if (res && res.ok && Array.isArray(res.blocks) && res.blocks.length) {
           // canvas inpaint (原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
-          renderTranslated(img, res.blocks, res.image)
+          // neuralErase は SW がレスポンスに乗せる (Chrome のみ。Firefox/失敗時は背景色 fill にフォールバック)。
+          renderTranslated(img, res.blocks, res.image, { neuralErase: res.neuralErase })
             .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
             .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
