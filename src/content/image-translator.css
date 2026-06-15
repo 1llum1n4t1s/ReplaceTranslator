@@ -30,6 +30,10 @@
   overflow: hidden;
 }
 
+/* 焼き込み canvas は表示ボックス px×dpr で生成し CSS で width/height:100% 表示する。等倍〜拡大のみなので
+   smooth(auto) のままにし、最近傍化によるドット感を避ける (解像度合わせが主・CSS は保険)。 */
+.__rt-img-canvas { image-rendering: auto; }
+
 .__rt-img-block {
   position: absolute;
   box-sizing: border-box;

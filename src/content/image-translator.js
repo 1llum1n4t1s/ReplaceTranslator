@@ -433,39 +433,138 @@
     }
   }
 
-  // 段落 (shouldLinkRows で連結する flat 同色行) ごとにフォントを統一する。各 block index に対し
-  // 「そのグループ全行が収まる最小フォント」を返す (0 = グループ無し=個別 fit)。OCR は行ごとに別 box を返し
-  // 行ごとに fitCanvasFont すると見出し/本文でサイズがバラつくため、段落内で揃えて見栄えを整える。
-  function computeGroupFonts(ctx, blocks, W, H) {
+  // ===== 焼き込みフォントを「行送りピッチ」で決める (症状: 訳文が小さく・細く・薄い) =====
+  // det 締め (dilation 0.08/0.12) で OCR box.h が cap-height 寄りに痩せ、box.h に枠フィットすると font が
+  // 元の見た目より小さくなる。元テキストの見た目サイズは行送り (cy 間隔=pitch) が最も素直な信号なので、
+  // pitch から font を決める。単独行は pitch が無いので box.h から外挿する。
+  const PITCH_TO_FONT = 0.78;     // font = pitch * 0.78 (行送り 1.28 倍 ≒ leading の逆数)
+  const PITCH_FROM_H = 1.30;      // 単独行の pitch ≒ box.h * 1.30 (det 締め分の外挿)
+  const MIN_READABLE_PHYS = 12;   // 表示換算の可読下限 px (scale で物理 px へ換算)
+  const ABS_MAX = 40;             // 焼き込みフォントの絶対上限 px (短語/極短 box の暴発防止)
+
+  function median(arr) {
+    if (!arr.length) return 0;
+    const s = arr.slice().sort((a, b) => a - b);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+
+  // flatBoxOf の flat 限定を外した版 (pitch 計測は textured 段落も対象)。flat/textured は flat フラグで返し、
+  // 連結判定 (shouldLinkRowsPitch) の色条件は両方 flat のときだけ要求する。cyPx=描画と同じ縦中央。
+  function pixelBoxOf(ctx, blk, W, H) {
+    if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
+    const w = Math.max(2, blk.box.w * W), h = Math.max(2, blk.box.h * H);
+    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
+    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
+    const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
+    const st = ringStats(ctx, x, y, w, h, W, H);
+    // cyPx は描画と同じ「クランプ後の縦中央」(y+h/2)。pitch 計測も availPitch も実際の描画位置と一致させる
+    // (端でクランプされた行を cyN*H にすると gap を過小評価し font が不要に縮む)。
+    return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, cyPx: y + h / 2, color: st ? st.color : [128, 128, 128], flat: !!(st && st.std < 24) };
+  }
+
+  // shouldLinkRows と同条件だが、色一致は「両方 flat」のときだけ要求 (textured 段落も同段落として連結し pitch を測る)。
+  function shouldLinkRowsPitch(prev, cur) {
+    const overlapX = Math.min(prev.x1, cur.x1) - Math.max(prev.x0, cur.x0);
+    const lineRef = Math.max(prev.h, cur.h);
+    const gap = cur.y0 - prev.y1;
+    const hRatio = cur.h / prev.h;
+    const colorOk = (prev.flat && cur.flat) ? colorDist(prev.color, cur.color) < 40 : true;
+    return colorOk &&
+      overlapX > 0.5 * Math.min(prev.w, cur.w) &&
+      hRatio > 0.5 && hRatio < 2.0 &&
+      gap > 0 && gap < 0.7 * lineRef;
+  }
+
+  // ある item の真下 (同カラム=x 重なり) で最も近い行との cy 実測間隔。隣が無ければ Infinity。
+  // font をこの値で頭打ちにして「拡大した訳文が隣行へ食い込む」のを構造的に防ぐ (G1)。
+  function availPitchFor(items, i) {
+    const cur = items[i].pb;
+    let best = Infinity;
+    for (let j = 0; j < items.length; j++) {
+      if (j === i) continue;
+      const o = items[j].pb;
+      if (o.cyPx <= cur.cyPx) continue; // 下方向のみ
+      const overlapX = Math.min(cur.x1, o.x1) - Math.max(cur.x0, o.x0);
+      if (overlapX <= 0) continue;
+      const d = o.cyPx - cur.cyPx;
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  // 段落 (shouldLinkRowsPitch で連結する隣接行) ごとに pitch を測り、font = pitch*PITCH_TO_FONT で per-block 確定。
+  // box.h は det 締めで信用できないため pitch (cy 間隔) を主信号にする。各 index に確定 font(px) を返す
+  // (0 = 縦書き/極小/textured で無効化 → 呼び出し側の個別 fit に委譲)。neural は消去域=素 box のため上限を厳しめに。
+  function computeGroupFonts(ctx, blocks, W, H, neural) {
     const fonts = new Array(blocks.length).fill(0);
     const items = [];
-    blocks.forEach((blk, idx) => { const fb = flatBoxOf(ctx, blk, W, H); if (fb && fb.h >= 6) items.push({ idx, fb, blk }); });
-    items.sort((a, b) => a.fb.y0 - b.fb.y0);
-    let group = [];
-    const flush = () => {
-      if (group.length >= 2) { // 単独行はグループ統一不要 (個別 fit のまま)
-        let minFs = Infinity;
-        for (const it of group) {
-          const w = it.fb.w, h = it.fb.h;
-          const innerW = Math.max(4, w - 2 * (w * 0.05)), innerH = Math.max(4, h - 2 * (h * 0.08));
-          const fs = fitCanvasFont(ctx, it.blk.translation, innerW, innerH, CANVAS_FONT).fontSize;
-          if (fs < minFs) minFs = fs;
-        }
-        for (const it of group) fonts[it.idx] = minFs;
-      }
-      group = [];
-    };
+    blocks.forEach((blk, idx) => { const pb = pixelBoxOf(ctx, blk, W, H); if (pb && pb.h >= 4) items.push({ idx, pb, blk }); });
+    if (!items.length) return fonts;
+    items.sort((a, b) => a.pb.cyPx - b.pb.cyPx);
+    items.forEach((it, i) => { it.avail = availPitchFor(items, i); });
+    const pitchClamp = neural ? 0.90 : 0.92; // pitch に対する font 上限係数
+    const availClamp = neural ? 0.90 : 0.96; // 実測 availPitch に対する頭打ち係数
+    // 連続行をグループ化
+    const groups = [];
+    let cur = [];
     for (const it of items) {
-      if (group.length && !shouldLinkRows(group[group.length - 1].fb, it.fb)) flush();
-      group.push(it);
+      if (cur.length && !shouldLinkRowsPitch(cur[cur.length - 1].pb, it.pb)) { groups.push(cur); cur = []; }
+      cur.push(it);
     }
-    flush();
+    if (cur.length) groups.push(cur);
+    for (const group of groups) {
+      // --- pitch (行送り) を決める ---
+      let pitch;
+      if (group.length >= 2) {
+        const diffs = [];
+        for (let i = 1; i < group.length; i++) {
+          const a = group[i - 1].pb, b = group[i].pb;
+          const hRatio = b.h / a.h;
+          if (hRatio > 0.5 && hRatio < 2.0) diffs.push(b.cyPx - a.cyPx); // 見出し (高さ比外) は pitch ソースから除外 (E2)
+        }
+        const base = diffs.length ? diffs : group.slice(1).map((g, i) => g.pb.cyPx - group[i].pb.cyPx);
+        const m0 = median(base);
+        const inliers = base.filter((d) => d >= m0 * 0.6 && d <= m0 * 1.8); // 外れ値除去して再 median
+        pitch = median(inliers.length ? inliers : base) || m0;
+      } else {
+        pitch = group[0].pb.h * PITCH_FROM_H; // 単独行は box.h から外挿 (白背景メールの最頻ケース)
+      }
+      if (!(pitch > 0)) continue; // 異常値はグループ全体を個別 fit へ委譲 (fonts は 0 のまま)
+      let targetFont = Math.min(Math.round(pitch * PITCH_TO_FONT), Math.round(pitch * pitchClamp));
+      // --- 各 block にガード + 幅あふれ縮小を適用 ---
+      for (const it of group) {
+        const pb = it.pb, trans = it.blk.translation;
+        const w = pb.w, h = pb.h;
+        if (!neural && !pb.flat) { fonts[it.idx] = 0; continue; }              // textured は pitch 拡大せず従来 fit (flat のみ拡大)
+        const aspect = h / w;
+        if ((aspect > 2.2 && w < targetFont * 1.2) || trans.trim().length <= 1) { fonts[it.idx] = 0; continue; } // G2 縦書き/1 文字
+        if (h < 10) { fonts[it.idx] = 0; continue; }                          // G6 極小 box
+        const innerW = Math.max(4, w - 2 * (w * 0.05));
+        // G5 面積上限 (短語/極短 box の巨大化抑制・HTML 経路 renderBlocks と同係数 0.6/1.15)
+        const origLen = (it.blk.original || "").trim().length;
+        const effLen = origLen > 1 ? origLen : Math.max(2, trans.trim().length) * 2;
+        const lineHpx = Math.sqrt((innerW * h) / (effLen * 0.6));
+        let font = Math.min(targetFont, Math.round(lineHpx / 1.15), ABS_MAX);
+        if (it.avail !== Infinity) font = Math.min(font, Math.round(it.avail * availClamp)); // G1 隣行重なりクランプ
+        if (font < 1) { fonts[it.idx] = 0; continue; }
+        // 幅あふれ: その block だけ個別縮小 (group の min に揃えない=長行に引っ張られない)
+        ctx.font = `600 ${font}px ${CANVAS_FONT}`;
+        if (wrapCanvasText(ctx, trans, innerW).some((l) => ctx.measureText(l).width > innerW)) {
+          const rowsAllow = Math.max(1, Math.round(h / pitch) + 1); // 元 1 行 box は最大 2 行まで
+          const fit = fitCanvasFont(ctx, trans, innerW, pitch * rowsAllow * 0.82, CANVAS_FONT);
+          font = Math.min(font, fit.fontSize);
+        }
+        fonts[it.idx] = font;
+      }
+    }
     return fonts;
   }
 
   // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
-  // forcedFont>0 のとき段落統一フォント (computeGroupFonts) を使い、行ごとのサイズばらつきを抑える。
-  function drawInpaintBlock(ctx, blk, W, H, forcedFont) {
+  // forcedFont>0 のとき pitch ベースの確定フォント (computeGroupFonts) を無条件採用し、元の見た目サイズへ拡大する。
+  // scale=W/表示ボックス幅 で物理可読下限を換算する。
+  function drawInpaintBlock(ctx, blk, W, H, forcedFont, scale) {
     let w = Math.max(2, blk.box.w * W);
     let h = Math.max(2, blk.box.h * H);
     let x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
@@ -490,18 +589,29 @@
     const padX = w * 0.05, padY = h * 0.08;
     const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
     const fit = fitCanvasFont(ctx, blk.translation, innerW, innerH, CANVAS_FONT);
-    // 段落統一フォントは「収まる範囲で」採用 (この box の最大に収まらないなら個別 fit に落とす=はみ出し防止)。
-    const fontSize = (forcedFont && forcedFont > 0 && forcedFont <= fit.fontSize) ? forcedFont : fit.fontSize;
-    const lines = (fontSize === fit.fontSize) ? fit.lines : (ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`, wrapCanvasText(ctx, blk.translation, innerW));
+    // forcedFont>0 は pitch + 幅 + 各ガードを織り込んだ確定値 → 無条件採用 (上方向拡大を通す)。0 のときだけ枠フィット。
+    let fontSize = (forcedFont && forcedFont > 0) ? forcedFont : fit.fontSize;
+    // 物理可読下限: 等倍化 (scale≈dpr) 後も表示 ~12px 相当を保証しつつ、枠 (innerH) を割らない範囲で底上げ。
+    const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
+    fontSize = Math.max(fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
+    let lines = wrapCanvasText(ctx, blk.translation, innerW);
+    // 幅はみ出しの最終ゲート: 1 行でも innerW を超えるならこの block だけ枠フィットへ落とす。
+    if (lines.some((l) => ctx.measureText(l).width > innerW)) {
+      fontSize = fit.fontSize; ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`; lines = fit.lines;
+    }
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle = flat ? (st.dark ? "#f5f5f5" : "#1a1a1a") : "#ffffff";
-    if (!flat) { ctx.shadowColor = "rgba(0,0,0,0.55)"; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1; }
+    // 同色細縁: 縮小/低面積でのコントラスト低下を補強 (太字化せず stroke を fill と同色で薄く重ねる)。
+    ctx.lineJoin = "round"; ctx.lineWidth = Math.min(1.5, fontSize * 0.06); ctx.strokeStyle = ctx.fillStyle;
     const lineH = fontSize * 1.18;
     const startY = y + h / 2 - (lines.length - 1) * lineH / 2;
-    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));
+    if (!flat) { ctx.shadowColor = "rgba(0,0,0,0.55)"; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1; }
+    lines.forEach((ln, i) => ctx.strokeText(ln, x + w / 2, startY + i * lineH)); // textured は halo、flat は同色細縁
     ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));   // 本体 (halo 二重を避け shadow off)
+    ctx.lineWidth = 0;
   }
 
   const INPAINT_MAX_SIDE = 4096; // 巨大画像で canvas メモリが膨らむのを抑える長辺上限
@@ -511,23 +621,38 @@
   async function renderInpaint(img, blocks, image) {
     const bmp = await bitmapFromBase64(image.base64, image.mime);
     try {
-      const scale = Math.min(1, INPAINT_MAX_SIDE / Math.max(bmp.width, bmp.height));
-      const W = Math.max(1, Math.round(bmp.width * scale)), H = Math.max(1, Math.round(bmp.height * scale));
+      // canvas 論理解像度 = 表示ボックス px × dpr (等倍〜拡大のみ)。ナチュラル解像度で焼いて CSS で縮小表示すると
+      // 細い CJK 縦画が bilinear で灰色に溶ける (= 訳文が薄く細く見える主因) ため、表示サイズに解像度を合わせて
+      // 縮小経路を消す。表示サイズ不明 (未レイアウト) のときだけ従来のナチュラル解像度へフォールバック。
+      const rect = img.getBoundingClientRect();
+      let W, H, scale;
+      if (rect.width >= 1 && rect.height >= 1) {
+        const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+        const dispW = rect.width, dispH = rect.height;
+        const want = Math.min(dpr, Math.max(bmp.width / dispW, bmp.height / dispH)); // >=等倍 (縮小経路を消す)
+        W = Math.max(1, Math.min(INPAINT_MAX_SIDE, Math.round(dispW * want)));
+        H = Math.max(1, Math.min(INPAINT_MAX_SIDE, Math.round(dispH * want)));
+        scale = W / dispW; // 物理 px ↔ 論理 px 換算 (可読下限に使う)
+      } else {
+        const s = Math.min(1, INPAINT_MAX_SIDE / Math.max(bmp.width, bmp.height));
+        W = Math.max(1, Math.round(bmp.width * s)); H = Math.max(1, Math.round(bmp.height * s)); scale = 1;
+      }
       const canvas = document.createElement("canvas");
       canvas.className = "__rt-img-layer __rt-img-canvas";
       canvas.width = W; canvas.height = H;
       canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d ctx");
+      ctx.imageSmoothingQuality = "high";
       ctx.drawImage(bmp, 0, 0, W, H);
       // 段落の行間に残る原文黒帯を先に消す (flat 同色の隣接行の隙間だけを連結 fill)。失敗は従来挙動へ。
       try { fillInterlineStrips(ctx, blocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
       let groupFonts = [];
-      try { groupFonts = computeGroupFonts(ctx, blocks, W, H); } catch (_e) { groupFonts = []; } // 段落内フォント統一
+      try { groupFonts = computeGroupFonts(ctx, blocks, W, H, false); } catch (_e) { groupFonts = []; } // pitch ベース統一フォント
       for (let bi = 0; bi < blocks.length; bi++) {
         const blk = blocks[bi];
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
-        try { drawInpaintBlock(ctx, blk, W, H, groupFonts[bi]); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
+        try { drawInpaintBlock(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
       }
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove()); // 旧オーバーレイ/canvas を除去
@@ -540,8 +665,8 @@
   const INPAINT_NEURAL_MAX_SIDE = 1536; // MI-GAN は重いので neural 経路は小さめにスケール
 
   // neural 消去後の clean 背景に、訳文だけを焼き込む (塗り潰しはしない・背景明暗で文字色を決定)。
-  // forcedFont>0 で段落統一フォントを使う (収まらないなら個別 fit に落とす)。
-  function drawTextOnly(ctx, blk, W, H, forcedFont) {
+  // forcedFont>0 で pitch ベースの確定フォントを無条件採用 (上方向拡大を通す)。scale で物理可読下限を換算。
+  function drawTextOnly(ctx, blk, W, H, forcedFont, scale) {
     const w = Math.max(2, blk.box.w * W);
     const h = Math.max(2, blk.box.h * H);
     const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
@@ -552,18 +677,26 @@
     const padX = w * 0.05, padY = h * 0.08;
     const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
     const fit = fitCanvasFont(ctx, blk.translation, innerW, innerH, CANVAS_FONT);
-    const fontSize = (forcedFont && forcedFont > 0 && forcedFont <= fit.fontSize) ? forcedFont : fit.fontSize;
-    const lines = (fontSize === fit.fontSize) ? fit.lines : (ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`, wrapCanvasText(ctx, blk.translation, innerW));
+    let fontSize = (forcedFont && forcedFont > 0) ? forcedFont : fit.fontSize;
+    const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
+    fontSize = Math.max(fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
+    let lines = wrapCanvasText(ctx, blk.translation, innerW);
+    if (lines.some((l) => ctx.measureText(l).width > innerW)) { // 幅はみ出しの最終ゲート
+      fontSize = fit.fontSize; ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`; lines = fit.lines;
+    }
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle = dark ? "#f5f5f5" : "#1a1a1a";
-    ctx.shadowColor = dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.6)"; // 背景と同系の縁取りで可読性確保
-    ctx.shadowBlur = 2;
+    // halo は stroke パスにだけ載せ (二重縁を避ける)、fill 本体は shadow off で描く。stroke は同色細縁も兼ねる。
+    ctx.lineJoin = "round"; ctx.lineWidth = Math.min(1.5, fontSize * 0.06); ctx.strokeStyle = ctx.fillStyle;
+    ctx.shadowColor = dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.6)"; ctx.shadowBlur = 1;
     const lineH = fontSize * 1.18;
     const startY = y + h / 2 - (lines.length - 1) * lineH / 2;
-    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));
+    lines.forEach((ln, i) => ctx.strokeText(ln, x + w / 2, startY + i * lineH)); // halo + 同色細縁
     ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
+    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));   // 本体
+    ctx.lineWidth = 0;
   }
 
   // MI-GAN(offscreen)で原文領域を inpaint 消去 → 返ってきた消去済み画像に訳文を焼き込む (Phase 3・Chrome 限定)。
@@ -580,19 +713,22 @@
     const bmp = await bitmapFromBase64(r.base64, "image/png");
     try {
       const W = r.width || bmp.width, H = r.height || bmp.height;
+      const rect = img.getBoundingClientRect();
+      const scale = rect.width >= 1 ? (W / rect.width) : 1; // neural canvas は r.width 解像度。物理可読下限に使う
       const canvas = document.createElement("canvas");
       canvas.className = "__rt-img-layer __rt-img-canvas";
       canvas.width = W; canvas.height = H;
       canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d ctx");
+      ctx.imageSmoothingQuality = "high";
       ctx.drawImage(bmp, 0, 0, W, H);
       let groupFonts = [];
-      try { groupFonts = computeGroupFonts(ctx, blocks, W, H); } catch (_e) { groupFonts = []; } // 段落内フォント統一
+      try { groupFonts = computeGroupFonts(ctx, blocks, W, H, true); } catch (_e) { groupFonts = []; } // pitch ベース統一フォント (neural)
       for (let bi = 0; bi < blocks.length; bi++) {
         const blk = blocks[bi];
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
-        try { drawTextOnly(ctx, blk, W, H, groupFonts[bi]); } catch (_e) { /* 1 ブロック失敗は無視 */ }
+        try { drawTextOnly(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視 */ }
       }
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
