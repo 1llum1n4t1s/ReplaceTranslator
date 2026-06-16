@@ -438,7 +438,8 @@
   // 元の見た目より小さくなる。元テキストの見た目サイズは行送り (cy 間隔=pitch) が最も素直な信号なので、
   // pitch から font を決める。単独行は pitch が無いので box.h から外挿する。
   const PITCH_TO_FONT = 0.78;     // font = pitch * 0.78 (行送り 1.28 倍 ≒ leading の逆数)
-  const PITCH_FROM_H = 1.30;      // 単独行の pitch ≒ box.h * 1.30 (det 締め分の外挿)
+  const PITCH_FROM_H = 1.30;      // 単独行の pitch ≒ box.h * 1.30 (異常値ガード用の pitch 外挿)
+  const H_TO_FONT = 1.34;         // 単独行 font = box.h * 1.34 (≒1/0.75)。tight det/glyph box(font の~0.75 倍)から原文サイズ復元
   const MIN_READABLE_PHYS = 12;   // 表示換算の可読下限 px (scale で物理 px へ換算)
   const ABS_MAX = 40;             // 焼き込みフォントの絶対上限 px (短語/極短 box の暴発防止)
 
@@ -531,8 +532,13 @@
         pitch = group[0].pb.h * PITCH_FROM_H; // 単独行は box.h から外挿 (白背景メールの最頻ケース)
       }
       if (!(pitch > 0)) continue; // 異常値はグループ全体を個別 fit へ委譲 (fonts は 0 のまま)
-      let targetFont = Math.min(Math.round(pitch * PITCH_TO_FONT), Math.round(pitch * pitchClamp));
-      // --- 各 block にガード + 幅あふれ縮小を適用 ---
+      // 単独行は box.h から直接 font を復元 (tight な det/visible-glyph box は font の ~0.75 倍に痩せるため
+      // H_TO_FONT で戻す)。複数行は cy 間隔 (pitch=行送り) が原文サイズの直接信号なので pitch*PITCH_TO_FONT を保つ。
+      const isSingle = group.length < 2;
+      const targetFont = isSingle
+        ? Math.round(group[0].pb.h * H_TO_FONT)
+        : Math.min(Math.round(pitch * PITCH_TO_FONT), Math.round(pitch * pitchClamp));
+      // --- 各 block にガード + 上限 + 折返し縮小を適用 ---
       for (const it of group) {
         const pb = it.pb, trans = it.blk.translation;
         const w = pb.w, h = pb.h;
@@ -541,18 +547,24 @@
         if ((aspect > 2.2 && w < targetFont * 1.2) || trans.trim().length <= 1) { fonts[it.idx] = 0; continue; } // G2 縦書き/1 文字
         if (h < 10) { fonts[it.idx] = 0; continue; }                          // G6 極小 box
         const innerW = Math.max(4, w - 2 * (w * 0.05));
-        // G5 面積上限 (短語/極短 box の巨大化抑制・HTML 経路 renderBlocks と同係数 0.6/1.15)
-        const origLen = (it.blk.original || "").trim().length;
-        const effLen = origLen > 1 ? origLen : Math.max(2, trans.trim().length) * 2;
-        const lineHpx = Math.sqrt((innerW * h) / (effLen * 0.6));
-        let font = Math.min(targetFont, Math.round(lineHpx / 1.15), ABS_MAX);
-        if (it.avail !== Infinity) font = Math.min(font, Math.round(it.avail * availClamp)); // G1 隣行重なりクランプ
+        let font = Math.min(targetFont, ABS_MAX);
+        // G5 面積上限は「短語が大箱で巨大化するのだけ」抑える上限ガードに限定する。上限は出力訳文長 (transLen) と
+        // box 幾何だけで出し (原文=英字幅狭の長さで長文ほど縮む誤作動を断つ)、面積由来の縮小は targetFont の
+        // 85% を下限にクランプする (忠実長の訳文が box.h の半分以下まで潰れるのを構造的に禁止)。
+        const transLen = Math.max(1, trans.trim().length);
+        const areaCap = Math.round(Math.sqrt((innerW * h) / (transLen * 0.55)) / 1.10);
+        if (areaCap < font) font = Math.max(areaCap, Math.round(targetFont * 0.85));
+        if (it.avail !== Infinity) font = Math.min(font, Math.round(it.avail * availClamp)); // G1 隣行重なりクランプ (1 行想定)
         if (font < 1) { fonts[it.idx] = 0; continue; }
-        // 幅あふれ: その block だけ個別縮小 (group の min に揃えない=長行に引っ張られない)
+        // 折返し縮小: 縦に使える高さ (隣行までの実測 availPitch・無ければ box.h*2.4) を予算に、幅 or 高さが
+        // あふれるときだけ fitCanvasFont で詰める。長訳を 1 行に潰さず原文サイズ近傍を保ちつつ隣行へ被らない。
         ctx.font = `600 ${font}px ${CANVAS_FONT}`;
-        if (wrapCanvasText(ctx, trans, innerW).some((l) => ctx.measureText(l).width > innerW)) {
-          const rowsAllow = Math.max(1, Math.round(h / pitch) + 1); // 元 1 行 box は最大 2 行まで
-          const fit = fitCanvasFont(ctx, trans, innerW, pitch * rowsAllow * 0.82, CANVAS_FONT);
+        const wrapped = wrapCanvasText(ctx, trans, innerW);
+        const vBudget = (it.avail !== Infinity) ? it.avail * availClamp : h * 2.4;
+        const tooWide = wrapped.some((l) => ctx.measureText(l).width > innerW);
+        const tooTall = wrapped.length * font * 1.18 > vBudget;
+        if (tooWide || tooTall) {
+          const fit = fitCanvasFont(ctx, trans, innerW, vBudget, CANVAS_FONT);
           font = Math.min(font, fit.fontSize);
         }
         fonts[it.idx] = font;
