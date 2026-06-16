@@ -208,7 +208,7 @@ if (typeof importScripts === "function") {
       const detail = await readDetail(res);
       if (res.status === 429 && tune) updateBatchTuning(providerId, texts.length, durationMs, true);
       return {
-        ok: false, error: "http", status: res.status, message: detail,
+        ok: false, error: "http", status: res.status, message: detail, provider: providerId,
         nextBatchSize: currentBatchSizeFor(providerId),
       };
     }
@@ -268,7 +268,7 @@ if (typeof importScripts === "function") {
       // content 側のリトライ/バックオフ/サイズ縮小に委ねる (429 は学習サイズを縮小)。null フォールバックは stream 非対応時のみ。
       const detail = await readDetail(res);
       if (res.status === 429) updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
-      return { ok: false, error: "http", status: res.status, message: detail, nextBatchSize: currentBatchSizeFor(providerId) };
+      return { ok: false, error: "http", status: res.status, message: detail, provider: providerId, nextBatchSize: currentBatchSizeFor(providerId) };
     }
     if (!res.body || typeof res.body.getReader !== "function") return null; // stream 非対応レスポンス → 非stream フォールバック
 
@@ -743,7 +743,9 @@ if (typeof importScripts === "function") {
   // (画像は行数が少ないので per-line でも許容)。返り値: texts と同数の訳文配列(失敗行は null)。全滅なら null。
   async function translateImageTexts(settings, texts, signal) {
     let res = null;
-    try { res = await translateWith(settings, texts, signal, null, null, null, true); }
+    // translateWithHeal でページ翻訳と同じ 404→現行モデル自己修復を通す (ローカル OCR でも廃止モデルが死んだ瞬間に
+    // 自動移行する。一括が 404 で治ればキャッシュ済みになり、後続の per-line もキャッシュ先回りで現行モデルを使う)。
+    try { res = await translateWithHeal(settings, texts, signal, null, null, null, true); }
     catch (e) { if (e && e.name === "AbortError") throw e; /* それ以外は per-line へ */ }
     if (res && res.ok && Array.isArray(res.translations) && res.translations.length === texts.length) {
       return res.translations;
@@ -755,7 +757,7 @@ if (typeof importScripts === "function") {
       const slice = texts.slice(i, i + CONC);
       const part = await Promise.all(slice.map(async (t) => {
         try {
-          const r = await translateWith(settings, [t], signal, null, null, null, true);
+          const r = await translateWithHeal(settings, [t], signal, null, null, null, true);
           if (r && r.ok && Array.isArray(r.translations) && r.translations.length === 1) return r.translations[0];
         } catch (e) { if (e && e.name === "AbortError") throw e; }
         return null;
@@ -881,8 +883,9 @@ if (typeof importScripts === "function") {
   // ---- 廃止モデルの動的フォールバック (404 → 同プロバイダの現行モデルへ自動切替 + 1 回再試行) ----
   // 静的 RETIRED_MODELS(actions.js) は通信ゼロの保険。実行時に実際に 404 を食らったらこちらが自己修復するので、
   // 未知の廃止 (今後どのモデルがいつ死んでも) を手動メンテ無しで吸収できる。
-  const modelFallback = new Map();     // deadModelId -> goodModelId (解決結果のキャッシュ)
-  const resolvingFallback = new Map(); // deadModelId -> Promise (10 並列が同時 404 でも解決を 1 回に集約)
+  const modelFallback = new Map();     // "providerId:deadModelId" -> goodModelId (解決結果のキャッシュ)
+  const resolvingFallback = new Map(); // "providerId:deadModelId" -> Promise (10 並列が同時 404 でも解決を 1 回に集約)
+  // キーは provider でスコープする (同一モデル ID を 2 社が公開していても互いのフォールバックを汚染しない)。
 
   function isModelGone(res) {
     // LLM の chat/completions・:generateContent での 404 はほぼ「モデル ID 無効/廃止」。
@@ -892,8 +895,9 @@ if (typeof importScripts === "function") {
 
   // 廃止モデルの代替を解決: まず provider.defaultModel(現行に保守)、既定自体が廃止なら live /models の先頭。
   async function resolveFallbackModel(providerId, deadModel) {
-    if (modelFallback.has(deadModel)) return modelFallback.get(deadModel);
-    if (resolvingFallback.has(deadModel)) return resolvingFallback.get(deadModel);
+    const key = providerId + ":" + deadModel; // provider スコープのキー (社をまたぐ同名モデルの相互汚染を防ぐ)
+    if (modelFallback.has(key)) return modelFallback.get(key);
+    if (resolvingFallback.has(key)) return resolvingFallback.get(key);
     const job = (async () => {
       const provider = Providers.get(providerId);
       const def = provider && provider.defaultModel;
@@ -906,19 +910,47 @@ if (typeof importScripts === "function") {
       } catch (_e) { /* live 取得失敗 → 復旧不可 */ }
       return null;
     })();
-    resolvingFallback.set(deadModel, job);
+    resolvingFallback.set(key, job);
     let out = null;
-    try { out = await job; } finally { resolvingFallback.delete(deadModel); }
-    if (out) modelFallback.set(deadModel, out);
+    try { out = await job; } finally { resolvingFallback.delete(key); }
+    if (out) modelFallback.set(key, out);
     return out;
   }
 
   // 解決した現行モデルを settings に永続化 (applySettingsPatch で直列化 = 並行バッチの二重保存/lost update 回避)。
-  async function persistModelSwitch(providerId, newModel) {
+  // deadModel ガード: 保存時点で当該 provider のモデルがまだ「死んだモデル」のときだけ書き換える。フォールバック解決中に
+  // ユーザーが別モデルへ手動変更していたら、その新しい選択を上書きしない (遅延フォールバックによる巻き戻し防止)。
+  async function persistModelSwitch(providerId, newModel, deadModel) {
     await applySettingsPatch((base) => {
+      if (typeof deadModel === "string" && base.models[providerId] !== deadModel) return null; // ユーザーが変更済み → 触らない
       if (base.models[providerId] === newModel) return null;
       return { models: Object.assign({}, base.models, { [providerId]: newModel }) };
     });
+  }
+
+  // 廃止モデル(404)を同プロバイダの現行モデルへ自動フォールバックして 1 回だけ再試行する共通ヘルパ。
+  // ① キャッシュ済みの「死亡モデル→現行」があれば最初の呼び出し前に先回りで差し替える(以後のバッチ/行で無駄な 404 を出さない)。
+  // ② 実際に 404 を食らったら resolveFallbackModel→persistModelSwitch(dead ガード付き)→同入力を 1 回再試行する。
+  // TRANSLATE_BATCH(ページ/クイック)と translateImageTexts(ローカル OCR)の両方から呼び、自己修復を共通化する。
+  async function translateWithHeal(settings, texts, signal, batchId, tabId, frameId, quick) {
+    if (settings.provider !== "mymemory") {
+      const cur = (settings.models && settings.models[settings.provider]) || "";
+      const cached = modelFallback.get(settings.provider + ":" + cur);
+      if (cached && cached !== cur) {
+        settings = Object.assign({}, settings, { models: Object.assign({}, settings.models, { [settings.provider]: cached }) });
+      }
+    }
+    let res = await translateWith(settings, texts, signal, batchId, tabId, frameId, quick);
+    if (isModelGone(res) && settings.provider !== "mymemory") {
+      const dead = (settings.models && settings.models[settings.provider]) || "";
+      const good = await resolveFallbackModel(settings.provider, dead);
+      if (good && good !== dead) {
+        await persistModelSwitch(settings.provider, good, dead); // 保存 → 以後のバッチ/popup 表示も現行に揃う
+        settings = Object.assign({}, settings, { models: Object.assign({}, settings.models, { [settings.provider]: good }) });
+        res = await translateWith(settings, texts, signal, batchId, tabId, frameId, quick);
+      }
+    }
+    return res;
   }
 
   // stream(OpenAI 互換のみ) → 非stream の順で 1 バッチ翻訳する (404 フォールバックで 2 回呼べるよう関数化)。
@@ -987,20 +1019,9 @@ if (typeof importScripts === "function") {
             const untrack = trackController(tabId, controller);
             try {
               const texts = msg.texts || [];
-              let res = await translateWith(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
-              // 廃止モデルの 404 は、同プロバイダの現行モデルへ自動フォールバックして 1 回だけ再試行する
-              // (静的 RETIRED に依存せず、未知の廃止も実際に死んだ瞬間に自己修復)。MyMemory はモデル概念なし。
-              if (isModelGone(res) && settings.provider !== "mymemory") {
-                const dead = (settings.models && settings.models[settings.provider]) || "";
-                const good = await resolveFallbackModel(settings.provider, dead);
-                if (good && good !== dead) {
-                  await persistModelSwitch(settings.provider, good); // 保存 → 以後のバッチ/popup 表示も現行に揃う
-                  settings = Object.assign({}, settings, {
-                    models: Object.assign({}, settings.models, { [settings.provider]: good }),
-                  });
-                  res = await translateWith(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
-                }
-              }
+              // 廃止モデルの 404 は translateWithHeal が同プロバイダの現行モデルへ自動フォールバック + 1 回再試行する
+              // (静的 RETIRED に依存せず未知の廃止も自己修復。キャッシュ先回りで 2 バッチ目以降の無駄な 404 も出さない)。
+              const res = await translateWithHeal(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
               sendResponse(res);
             } finally { untrack(); }
             break;

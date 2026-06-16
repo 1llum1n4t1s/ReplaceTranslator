@@ -131,10 +131,14 @@ async function runInpaint(payload) {
   const pad = Math.round(Math.min(W, H) * 0.006) + 2;
   for (const b of (blocks || [])) {
     if (!b || !b.box) continue;
+    // 縦帯は cy(縦中央)アンカーで抜く。content の drawTextOnly も cy 中央に描くので、消去帯と再描画帯を一致させる
+    // (box.y は系統的に上ズレするため、box.y で抜くと原文の下端が消去帯から外れて残る)。cy 欠落時は box 縦中央。
+    const cyN = (typeof b.cy === "number" && b.cy >= 0 && b.cy <= 1) ? b.cy : (b.box.y + b.box.h / 2);
+    const top = cyN - b.box.h / 2;
     const x0 = Math.max(0, Math.floor(b.box.x * W - pad));
-    const y0 = Math.max(0, Math.floor(b.box.y * H - pad));
+    const y0 = Math.max(0, Math.floor(top * H - pad));
     const x1 = Math.min(W, Math.ceil((b.box.x + b.box.w) * W + pad));
-    const y1 = Math.min(H, Math.ceil((b.box.y + b.box.h) * H + pad));
+    const y1 = Math.min(H, Math.ceil((top + b.box.h) * H + pad));
     for (let yy = y0; yy < y1; yy++) {
       const row = yy * W;
       for (let xx = x0; xx < x1; xx++) mask[row + xx] = 0;

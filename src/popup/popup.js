@@ -277,7 +277,10 @@
   function errorText(detail) {
     const generic = msg("statusError", "Error");
     if (!detail || typeof detail !== "object") return generic;
-    const prov = state.settings && Providers.get(state.settings.provider);
+    // 失敗元プロバイダは detail.provider を優先採用する (翻訳中にサービスを切り替えても、実際に失敗したプロバイダ名で表示する)。
+    // detail.provider が無いとき (旧経路) は現在選択中のプロバイダで代替して従来挙動を保つ。
+    const provId = (detail && detail.provider) || (state.settings && state.settings.provider);
+    const prov = provId && Providers.get(provId);
     const pfx = prov ? `${prov.label}: ` : "";
     if (detail.error === "no_api_key") return pfx + msg("statusNoKey", "API key is not set");
     if (detail.error === "network") return pfx + msg("statusNetwork", "Network error");

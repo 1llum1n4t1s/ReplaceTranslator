@@ -84,8 +84,17 @@
       if (/^gpt-5/i.test(m)) body.verbosity = "low";
       return body;
     }
-    if (providerId === "xai" && /reasoning/i.test(m) && !/non-reasoning/i.test(m)) {
+    // xAI: ドット版 grok-4.x (grok-4.3 等) は推論モデルで未指定だと既定 reasoning_effort:"low" を取るため、翻訳では
+    // "none" で推論を切る (grok-4.x は none 対応)。旧来の "reasoning" 名義スラグ (none 非対応) だけ "low" を維持する。
+    // 素の grok-4 / grok-4-1-fast-non-reasoning は非 reasoning 扱いで下の temperature:0 に落ちる。
+    if (providerId === "xai" && (/^grok-4\.\d/i.test(m) || (/reasoning/i.test(m) && !/non-reasoning/i.test(m)))) {
+      body.reasoning_effort = /^grok-4\.\d/i.test(m) ? "none" : "low";
+      return body;
+    }
+    // Groq gpt-oss は未指定だと既定 reasoning_effort:"medium"。翻訳に推論は不要なので最小の "low" へ (Groq は none 非対応＝low/medium/high のみ)。
+    if (providerId === "groq" && /gpt-oss/i.test(m)) {
       body.reasoning_effort = "low";
+      body.temperature = 0;
       return body;
     }
     body.temperature = 0;
@@ -483,7 +492,9 @@
             translation: b.translation,
             box: { x, y, w, h },
             cy: clamp01(y + h / 2), // box_2d は枠なので縦中央を算出 (配置の主アンカー)
-            kind: b.kind === "logo" ? "logo" : "text", // ロゴ重畳除外信号。未知/欠落は text に倒し本文 recall を守る
+            // ロゴ重畳除外信号。logo/text は明示値のみ採用し、欠落は undefined にする (kind 非対応モデルを filterBlocks が判別して
+            // looksLikeBrandWordmark 保険を走らせるため。"text" に倒すと hasKind が常に真になり保険が死ぬ)。
+            kind: b.kind === "logo" ? "logo" : (b.kind === "text" ? "text" : undefined),
           };
         });
     }
@@ -495,7 +506,8 @@
         const box = { x: clamp01(b.box.x), y: clamp01(b.box.y), w: clamp01(b.box.w), h: clamp01(b.box.h) };
         // cy(縦中央)を優先採用。VLM は枠上端(box.y)より縦中央を安定して当てるため配置の主アンカーにする。無ければ box 縦中央。
         const cy = Number.isFinite(Number(b.cy)) ? clamp01(Number(b.cy)) : clamp01(box.y + box.h / 2);
-        const kind = b.kind === "logo" ? "logo" : "text"; // ロゴ重畳除外信号。未知/欠落は text(本文 recall 優先)
+        // ロゴ重畳除外信号。明示値のみ採用し欠落は undefined (kind 非対応モデルを判別して保険 looksLikeBrandWordmark を走らせる)。
+        const kind = b.kind === "logo" ? "logo" : (b.kind === "text" ? "text" : undefined);
         return { original: typeof b.original === "string" ? b.original : "", translation: b.translation, box, cy, kind };
       });
   }

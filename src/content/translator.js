@@ -277,6 +277,17 @@
     return null;
   }
 
+  // 入力サイズ起因の 400 (context-length / request-too-large) はバッチ固有のエラー → BatchTuner がサイズを
+  // 縮めれば通る。設定/リクエスト形状起因の 400 (モデル非対応パラメータ等) は全バッチ同型に必ず失敗するので
+  // fatal のまま扱う。本文を見て両者を切り分け、サイズ 400 は per-batch の一時エラー (skip→partial) に倒す。
+  function isOversize400(res) {
+    if (!res || res.error !== "http" || res.status !== 400) return false;
+    const m = String(res.message || "").toLowerCase();
+    return m.includes("context_length") || m.includes("context length") || m.includes("maximum context") ||
+      m.includes("too large") || m.includes("too long") || m.includes("request entity too large") ||
+      m.includes("reduce the length") || m.includes("string too long");
+  }
+
   // 一時エラー (429 / 通信 / 5xx) は指数バックオフでリトライ。致命的/恒久エラーはそのまま返す。
   async function sendBatchWithRetry(batch, myRun) {
     for (let attempt = 0; ; attempt++) {
@@ -372,11 +383,13 @@
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
-        } else if (res && res.error === "http" && (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404) && !isNmtProvider()) {
+        } else if (res && res.error === "http" && ((res.status === 400 && !isOversize400(res)) || res.status === 401 || res.status === 403 || res.status === 404) && !isNmtProvider()) {
           // LLM の恒久エラーは全体中断して popup/FAB に理由を通知する (NMT は per-text 制限なので除外):
           //  401/403 = キー無効/失効、400 = リクエスト不正 (モデル非対応パラメータ等)、404 = モデルが見つからない。
           // いずれもリクエスト形状/設定が原因で全バッチ同型 → 1 バッチ失敗なら残りも必ず失敗する。
           // skip して done にすると「未翻訳なのにエラーも出ない (理由不明で詰む)」ため、無言 skip せず原因を見せる。
+          // ただし入力サイズ起因の 400 (isOversize400) はバッチ固有 → 下の isTransientDrop へ流し、skip→partial で
+          // 残りのバッチは訳し続ける (BatchTuner が縮めれば後続は通る。全体中断しない)。
           fatal = res;
           return;
         } else if (res && res.error === "http" && res.status === 429 && quotaScope(res) === "day" && !isNmtProvider()) {
@@ -411,7 +424,7 @@
           // 429/503/通信などレート制限・混雑由来の諦めは未訳ノード数を数え、done 時に「一部未翻訳」を正直に通知する
           // (無言 skip で「完了なのに訳されてない」を防ぐ)。
           const isTransientDrop = res && (res.error === "network" || res.error === "runtime" ||
-            (res.error === "http" && (res.status === 429 || res.status >= 500)));
+            (res.error === "http" && (res.status === 429 || res.status >= 500)) || isOversize400(res));
           for (const b of batch) {
             translatedNodes.add(b.node);
             if (isTransientDrop) droppedTransient++;

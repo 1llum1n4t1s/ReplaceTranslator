@@ -297,20 +297,20 @@
     try { data = ctx.getImageData(x0, y0, rw, rh).data; } catch (_e) { return null; }
     const ix0 = x - x0, iy0 = y - y0, ix1 = x + w - x0, iy1 = y + h - y0;
     const step = Math.max(1, Math.round(Math.min(rw, rh) / 40));
-    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0;
+    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0, sa = 0;
     for (let py = 0; py < rh; py += step) {
       for (let px = 0; px < rw; px += step) {
         if (px >= ix0 && px < ix1 && py >= iy0 && py < iy1) continue; // box 内側 (文字) は除外
         const o = (py * rw + px) * 4;
         const r = data[o], g = data[o + 1], b = data[o + 2];
-        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; n++;
+        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; sa += data[o + 3]; n++;
       }
     }
     if (!n) return null;
     const mr = sr / n, mg = sg / n, mb = sb / n;
     const variance = Math.max(0, s2 / n - (mr * mr + mg * mg + mb * mb)) / 3; // チャンネル平均分散
     const lum = (0.299 * mr + 0.587 * mg + 0.114 * mb) / 255;
-    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5 };
+    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5, alpha: sa / n / 255 };
   }
 
   // 訳文を maxWidth に折り返す。空白で割れない CJK は 1 文字ずつ詰め、長い英単語も文字単位で割る。
@@ -626,8 +626,12 @@
       const dl = Math.max(3, h * 0.34); // 左: 行頭余白を厚く(行頭ゴースト対策)
       const dr = Math.max(2, h * 0.16); // 右: 訳文はみ出し抑制で控えめ
       const dy = Math.max(2, h * 0.30); // 上下: アセンダ/ディセンダ+行間の薄残り回収
-      ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
-      ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
+      // 背景が概ね透明 (透過 PNG/SVG) のときは不透明 fill で原文を消すと透明部が単色の箱になる。透明時は消去を省き
+      // (原文は薄く残るが透過は保つ)、不透明背景のときだけ従来どおり背景色で原文を消す。
+      if (st.alpha == null || st.alpha >= 0.5) {
+        ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
+        ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
+      }
     } else {
       ctx.fillStyle = "rgba(20,28,38,0.84)"; // textured: 半透明の暗い帯で隠す (従来オーバーレイ相当を canvas に焼く)
       roundRectPath(ctx, x, y, w, h, Math.min(6, h * 0.2));
@@ -670,9 +674,19 @@
 
   const INPAINT_MAX_SIDE = 4096; // 巨大画像で canvas メモリが膨らむのを抑える長辺上限
 
+  // 非同期描画(decode / MI-GAN)中に復元(imgRunId++)や別画像への差替が起きたかを判定する。stale なら append を中止し、
+  // 取り残しオーバーレイの発生を防ぐ (translateImg の初期チェックは await の前なので、await 後にもう一度確認する)。
+  function isStaleImg(guard, img) {
+    if (!guard) return false;
+    if (typeof guard.myRun === "number" && guard.myRun !== imgRunId) return true;
+    if (!img || !img.isConnected) return true;
+    if (guard.url && (img.currentSrc || img.src) !== guard.url) return true;
+    return false;
+  }
+
   // 元画像を canvas に描き各ブロックを inpaint して、wrap の最前面レイヤーとして被せる (img 自体は触らない)。
   // canvas は __rt-img-layer クラスを持つので isTranslated/unwrapImage/revertImg がそのまま機能する。
-  async function renderInpaint(img, blocks, image) {
+  async function renderInpaint(img, blocks, image, guard) {
     const bmp = await bitmapFromBase64(image.base64, image.mime);
     try {
       // canvas 論理解像度 = 表示ボックス px × dpr (等倍〜拡大のみ)。ナチュラル解像度で焼いて CSS で縮小表示すると
@@ -709,6 +723,7 @@
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
         try { drawInpaintBlock(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
       }
+      if (isStaleImg(guard, img)) return; // 復元/差替が decode 中に起きた → wrap を作らず中止 (取り残し防止)
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove()); // 旧オーバーレイ/canvas を除去
       wrap.appendChild(canvas);
@@ -762,12 +777,14 @@
   }
 
   // MI-GAN(offscreen)で原文領域を inpaint 消去 → 返ってきた消去済み画像に訳文を焼き込む (Phase 3・Chrome 限定)。
-  async function renderInpaintNeural(img, blocks, image) {
+  async function renderInpaintNeural(img, blocks, image, guard) {
     const resp = await chrome.runtime.sendMessage({
       action: A.INPAINT_IMAGE,
       payload: {
         base64: image.base64, mime: image.mime, maxSide: INPAINT_NEURAL_MAX_SIDE,
-        blocks: blocks.map((b) => ({ box: b.box })),
+        // cy(縦中央)も渡す。MI-GAN の消去マスクを drawTextOnly と同じ cy 中央で抜き、box.y の系統的上ズレで
+        // 消去帯と再描画帯がズレて原文が残る問題を防ぐ。
+        blocks: blocks.map((b) => ({ box: b.box, cy: b.cy })),
       },
     });
     if (!resp || !resp.ok || !resp.result || !resp.result.base64) throw new Error("inpaint failed");
@@ -793,6 +810,7 @@
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
         try { drawTextOnly(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視 */ }
       }
+      if (isStaleImg(guard, img)) return; // 復元/差替が MI-GAN 処理中に起きた → wrap を作らず中止 (取り残し防止)
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
       wrap.appendChild(canvas);
@@ -805,11 +823,25 @@
   // 描画後は startFollow で「外部リサイズ/移動/差替 (ライトボックス等)」を監視し、取り残しオーバーレイを掃除する。
   async function renderTranslated(img, blocks, image, opts) {
     dbg("render", opts && opts.neuralErase ? "neural" : (image && image.base64 ? "inpaint" : "html"), "blocks=" + (blocks ? blocks.length : 0));
-    if (image && image.base64) {
-      if (opts && opts.neuralErase) {
-        try { await renderInpaintNeural(img, blocks, image); startFollow(img); return; } catch (_e) { /* canvas fill へ */ }
+    const guard = opts && { myRun: opts.myRun, url: opts.url };
+    // object-fit:cover/contain で表示ボックスとビットマップのアスペクトが有意に食い違う画像は、canvas を全面に
+    // 伸ばすと画像が歪む/クロップが外れる。その場合だけ canvas inpaint を避け、画像を壊さない HTML オーバーレイへ
+    // 回す (アスペクト一致なら歪まないので従来どおり canvas で焼く)。
+    let fitMismatch = false;
+    try {
+      const fit = getComputedStyle(img).objectFit;
+      if (fit === "cover" || fit === "contain") {
+        const r = img.getBoundingClientRect();
+        const da = r.height > 0 ? r.width / r.height : 0;
+        const ba = (img.naturalWidth && img.naturalHeight) ? img.naturalWidth / img.naturalHeight : da;
+        fitMismatch = ba > 0 && Math.abs(da - ba) / ba > 0.08;
       }
-      try { await renderInpaint(img, blocks, image); startFollow(img); return; } catch (_e) { /* HTML オーバーレイへ */ }
+    } catch (_e) { /* getComputedStyle 不可時は従来経路 */ }
+    if (image && image.base64 && !fitMismatch) {
+      if (opts && opts.neuralErase) {
+        try { await renderInpaintNeural(img, blocks, image, guard); startFollow(img); return; } catch (_e) { /* canvas fill へ */ }
+      }
+      try { await renderInpaint(img, blocks, image, guard); startFollow(img); return; } catch (_e) { /* HTML オーバーレイへ */ }
     }
     renderBlocks(img, blocks);
     startFollow(img);
@@ -880,7 +912,7 @@
         if (blocks.length) {
           // canvas inpaint (原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
           // neuralErase は SW がレスポンスに乗せる (Chrome のみ。Firefox/失敗時は背景色 fill にフォールバック)。
-          renderTranslated(img, blocks, res.image, { neuralErase: res.neuralErase })
+          renderTranslated(img, blocks, res.image, { neuralErase: res.neuralErase, myRun, url })
             .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
             .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
