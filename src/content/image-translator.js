@@ -445,7 +445,10 @@
   // pitch から font を決める。単独行は pitch が無いので box.h から外挿する。
   const PITCH_TO_FONT = 0.78;     // font = pitch * 0.78 (行送り 1.28 倍 ≒ leading の逆数)
   const PITCH_FROM_H = 1.30;      // 単独行の pitch ≒ box.h * 1.30 (異常値ガード用の pitch 外挿)
-  const H_TO_FONT = 1.34;         // 単独行 font = box.h * 1.34 (≒1/0.75)。tight det/glyph box(font の~0.75 倍)から原文サイズ復元
+  const H_TO_FONT = 1.85;         // 単独行 font = box.h * 1.85。原文の見た目(box.h≒cap-height で font の ~0.7 倍)より一回り
+                                  // 大きく焼き、同 px だと窮屈な CJK の可読性を確保する。行重なりは avail*availClamp(<1.0)
+                                  // クランプ + wrap/fitCanvasFont の縦予算で構造的に防ぐ(各行高さ ≤ 隣行ピッチの 90%)ので、
+                                  // 隣に余白がある行(見出し/孤立行)だけが ABS_MAX まで実際に伸び、密な行は avail で頭打ちになる
   const MIN_READABLE_PHYS = 12;   // 表示換算の可読下限 px (scale で物理 px へ換算)
   const ABS_MAX = 40;             // 焼き込みフォントの絶対上限 px (短語/極短 box の暴発防止)
 
@@ -483,19 +486,19 @@
       gap > 0 && gap < 0.7 * lineRef;
   }
 
-  // ある item の真下 (同カラム=x 重なり) で最も近い行との cy 実測間隔。隣が無ければ Infinity。
-  // font をこの値で頭打ちにして「拡大した訳文が隣行へ食い込む」のを構造的に防ぐ (G1)。
+  // 同カラム(x 重なり)で最も近い行との cy 実測間隔を「真上・真下の両方向」で測り、近い側を返す。隣が無ければ Infinity。
+  // 訳文は cy 中央寄せで上下対称に伸びるため、下方向だけ見ると段落「最終行」が avail=Infinity になり上の行へ食い込む
+  // (H_TO_FONT を上げると顕在化)。両方向の最小間隔で頭打ちすれば、各行の高さ ≤ 0.9×間隔 となり上下どちらも重ならない (G1)。
   function availPitchFor(items, i) {
     const cur = items[i].pb;
     let best = Infinity;
     for (let j = 0; j < items.length; j++) {
       if (j === i) continue;
       const o = items[j].pb;
-      if (o.cyPx <= cur.cyPx) continue; // 下方向のみ
       const overlapX = Math.min(cur.x1, o.x1) - Math.max(cur.x0, o.x0);
-      if (overlapX <= 0) continue;
-      const d = o.cyPx - cur.cyPx;
-      if (d < best) best = d;
+      if (overlapX <= 0) continue; // 同カラム (x 重なり) のみ隣行として扱う
+      const d = Math.abs(o.cyPx - cur.cyPx); // 上下どちらの隣行も対象 (中央寄せ描画は両方向に伸びる)
+      if (d > 0 && d < best) best = d;
     }
     return best;
   }
@@ -569,21 +572,21 @@
         if ((aspect > 2.2 && w < targetFont * 1.2) || trans.trim().length <= 1) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "vert/1char-skip"); continue; } // G2
         if (h < 10) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "tiny-skip h=" + Math.round(h)); continue; } // G6 極小 box
         const innerW = Math.max(4, w - 2 * (w * 0.05));
-        // flat 単独行は均一余白へ横展開する (英→全角で訳文が英文 box.w を超え、折返し/縮小で原文より小さくなるのを防ぐ)。
-        // 左右の安全余白の小さい側ぶんだけ対称に広げる (中央寄せ描画と整合・はみ出さない)。textured/多行は box.w のまま。
+        // 単独行は均一余白へ横展開する (英→全角で訳文が英文 box.w を超え、折返し/縮小で原文より小さくなるのを防ぐ)。
+        // 左右の安全余白の小さい側ぶんだけ対称に広げる (中央寄せ描画と整合・はみ出さない)。
+        // flat は背景色 fill で消すため flat 時のみ・neural は MI-GAN が全 box を消去済みなので textured でも安全に展開する。多行は box.w のまま。
         let effInnerW = innerW;
-        if (isSingle && pb.flat) {
+        if (isSingle && (pb.flat || neural)) {
           const hw = availHWForFlat(items, it, W);
           effInnerW = Math.min(innerW + 2 * Math.min(hw.l, hw.r), W * 0.96);
         }
         it.blk.__rtEffInnerW = (effInnerW > innerW + 1) ? effInnerW : 0; // 展開幅を drawInpaintBlock へ伝達 (未展開は 0)
         let font = Math.min(targetFont, ABS_MAX);
-        // G5 面積上限は「短語が大箱で巨大化するのだけ」抑える上限ガードに限定する。上限は出力訳文長 (transLen) と
-        // box 幾何 (横展開後 effInnerW) で出し (原文=英字幅狭の長さで長文ほど縮む誤作動を断つ)、面積由来の縮小は
-        // targetFont の 85% を下限にクランプする (忠実長の訳文が box.h の半分以下まで潰れるのを構造的に禁止)。
+        // 面積上限 areaCap は診断ログ用に残すが font の縮小には使わない。実際のあふれは下の avail クランプ(縦)と
+        // wrap/fitCanvasFont(横+縦)が捉えるので、areaCap の「1 行ぶんの面積モデル」で『2 行に折れば大きく入る訳文』
+        // まで潰すのを避ける (textured 行が target を割って小さく焼かれていた主因＝logs の flat=false areaCap<target)。
         const transLen = Math.max(1, trans.trim().length);
         const areaCap = Math.round(Math.sqrt((effInnerW * h) / (transLen * 0.55)) / 1.10);
-        if (areaCap < font) font = Math.max(areaCap, Math.round(targetFont * 0.85));
         if (it.avail !== Infinity) font = Math.min(font, Math.round(it.avail * availClamp)); // G1 隣行重なりクランプ (1 行想定)
         if (font < 1) { fonts[it.idx] = 0; continue; }
         // 折返し縮小: 縦に使える高さ (隣行までの実測 availPitch・無ければ box.h*2.4) を予算に、幅 or 高さが
@@ -635,11 +638,16 @@
     // computeGroupFonts が flat 単独行に決めた横展開幅 (均一余白へ広げて全角訳文を原文サイズ 1 行に保つ)。未展開は box 幅。
     const effW = (blk.__rtEffInnerW > 0) ? Math.max(innerW, blk.__rtEffInnerW) : innerW;
     const fit = fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
-    // forcedFont>0 は pitch + 幅 + 各ガードを織り込んだ確定値 → 無条件採用 (上方向拡大を通す)。0 のときだけ枠フィット。
-    let fontSize = (forcedFont && forcedFont > 0) ? forcedFont : fit.fontSize;
-    // 物理可読下限: 等倍化 (scale≈dpr) 後も表示 ~12px 相当を保証しつつ、枠 (innerH) を割らない範囲で底上げ。
-    const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
-    fontSize = Math.max(fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
+    // forcedFont>0 は pitch + 幅 + avail(隣行間隔)の各ガードを織り込んだ重なり安全な確定値 → 無条件採用 (上方向拡大を通す)。
+    // これを minReadable で超えて底上げすると隣行/幅へ食い込むため、forcedFont があるときは底上げしない。
+    // fallback(0)のときだけ枠フィット + 物理可読下限へ底上げ (枠 innerH を割らない範囲で表示 ~12px 相当を確保)。
+    let fontSize;
+    if (forcedFont && forcedFont > 0) {
+      fontSize = forcedFont;
+    } else {
+      const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
+      fontSize = Math.max(fit.fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
+    }
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
     let lines = wrapCanvasText(ctx, blk.translation, effW);
     // 幅はみ出しの最終ゲート: 1 行でも effW を超えるならこの block だけ枠フィットへ落とす。
@@ -725,9 +733,15 @@
     const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
     const effW = (blk.__rtEffInnerW > 0) ? Math.max(innerW, blk.__rtEffInnerW) : innerW; // 横展開幅 (neural は消去無しなので幅予算のみ)
     const fit = fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
-    let fontSize = (forcedFont && forcedFont > 0) ? forcedFont : fit.fontSize;
-    const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
-    fontSize = Math.max(fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
+    // forcedFont は computeGroupFonts が avail(隣行間隔)+幅で重なり/あふれ安全に確定した上限。これを超えて底上げすると
+    // 隣行や幅へ食い込むため、forcedFont があるときはそのまま使う。fallback(0)のときだけ可読下限へ底上げ(箱内に収める)。
+    let fontSize;
+    if (forcedFont && forcedFont > 0) {
+      fontSize = forcedFont;
+    } else {
+      const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
+      fontSize = Math.max(fit.fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
+    }
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
     let lines = wrapCanvasText(ctx, blk.translation, effW);
     if (lines.some((l) => ctx.measureText(l).width > effW)) { // 幅はみ出しの最終ゲート
