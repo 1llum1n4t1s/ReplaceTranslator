@@ -40,6 +40,8 @@
   let settings = null;
   let io = null;                        // IntersectionObserver (ビューポート優先)
   let mo = null;                        // MutationObserver (動的追加)
+  let ro = null;                        // ResizeObserver (初回 0×0 で observe した block の高さ確定を能動検知)
+  let zeroSizedBlocks = new WeakSet();  // 初回 ingest 時 0×0(near=false)で io.observe した block。高さ確定後に near 再評価する対象 (ResizeObserver + reingest で promote)
   let flushTimer = null;
   let pendingAttrRoots = new Set();     // 可視性に効く属性変化があった要素 (デバウンスして再 ingest する対象)
   let attrTimer = null;                 // 属性駆動の再 ingest デバウンスタイマー
@@ -199,8 +201,10 @@
       const vw = window.innerWidth || document.documentElement.clientWidth || 0;
       const visible = !(r.width <= 0 && r.height <= 0); // 非表示/0サイズは IO に委ねる
       const near = visible && r.top <= vh + PREFETCH_PX && r.bottom >= -PREFETCH_PX && r.left < vw && r.right > 0;
-      return { near, y: r.top + sy };
-    } catch (_e) { return { near: false, y: 0 }; }
+      // zeroSized = 幅も高さも 0(チャート未描画でパネルが潰れた等)。後から高さが付くと near 化しうるので
+      // ResizeObserver + reingest で再評価する対象に印を付ける(0-height だが幅のある block は visible=true で near 判定に乗る)。
+      return { near, y: r.top + sy, zeroSized: !visible };
+    } catch (_e) { return { near: false, y: 0, zeroSized: false }; }
   }
 
   // root 配下を翻訳対象に取り込む:
@@ -220,7 +224,13 @@
     for (const node of collectNodes(root)) {
       const block = blockAncestor(node);
       if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; continue; }
-      if (observedBlocks.has(block)) continue; // 監視中(画面外)ブロックは IO 発火を待つ (rect を読まない)
+      if (observedBlocks.has(block)) {
+        // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外: 初回 0×0 で observe した block だけは
+        // 高さが付いて near 化したか再評価し、near なら IO 発火を待たず即翻訳へ promote する(0×0→サイズ付与の
+        // in-viewport 遷移は IO が発火しないことがあるため)。promoteSizedBlock がその block の全ノードを enqueue する。
+        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block)) immediate = true;
+        continue;
+      }
       const meta = metaOf(block);
       if (meta.near) {
         // 既に可視(+先読み)圏内 → IO の初期通知に頼らず即翻訳に回す(スクロールしないと訳されない問題の解消)
@@ -232,7 +242,16 @@
         toObserve.add(block);
       }
     }
-    for (const block of toObserve) { observedBlocks.add(block); io.observe(block); }
+    for (const block of toObserve) {
+      observedBlocks.add(block);
+      io.observe(block);
+      // 初回 0×0 の block は遅延描画で後から高さが付く可能性 → ResizeObserver で能動監視し、
+      // サイズ確定した瞬間に onResize→promoteSizedBlock で即取り込む(IO 再発火に依存しない)。
+      if (metaOf(block).zeroSized && !zeroSizedBlocks.has(block)) {
+        zeroSizedBlocks.add(block);
+        if (ro) { try { ro.observe(block); } catch (_e) { /* noop */ } }
+      }
+    }
     if (immediate) scheduleFlush();
   }
 
@@ -503,6 +522,40 @@
     if (added) scheduleFlush();
   }
 
+  // 0×0 で observe した block の再評価/RO 監視を打ち切る。
+  function detachZeroSized(block) {
+    zeroSizedBlocks.delete(block);
+    if (ro) { try { ro.unobserve(block); } catch (_e) { /* noop */ } }
+  }
+
+  // 初回 0×0 で io.observe した block が、後から高さを得て near 化したら即翻訳へ promote する単一ソース。
+  // ingest(reingest/MO 由来) と onResize(ResizeObserver 由来) の双方から呼ぶ。promote した block の全ノードを enqueue する。
+  // 戻り値: enqueue したか(呼び出し側が scheduleFlush するため)。
+  function promoteSizedBlock(block) {
+    if (!translating || !block) return false;
+    if (flushedBlocks.has(block)) { detachZeroSized(block); return false; } // 既に取り込み済み
+    if (!block.isConnected) { detachZeroSized(block); return false; }        // DOM から外れた
+    const m = blockMeta(block);
+    if (m.zeroSized) return false;        // まだ 0×0 → 監視継続(次の resize/tick で再評価)
+    detachZeroSized(block);                // サイズ確定 → 再評価/RO 監視を終了
+    if (!m.near) return false;             // サイズは付いたが画面外 → IO(スクロール発火)に委ねる(io.observe 済み)
+    if (io) { try { io.unobserve(block); } catch (_e) { /* noop */ } } // IO 後発火による二重取り込みを止める
+    flushedBlocks.add(block);              // 以後この block 内の動的追加も即取り込み(冪等)
+    let added = false;
+    for (const node of collectNodes(block)) { enqueue(node, m.y); added = true; } // collectNodes は既訳ノードを accept で弾く
+    return added;
+  }
+
+  // ---- ResizeObserver: 初回 0×0 だった block の高さ確定を能動検知 ----
+  // チャート(canvas/svg)のピクセル描画は DOM mutation を伴わずレイアウトサイズだけ変える=MO/IO では拾えないため、
+  // サイズ変化そのものを購読する ResizeObserver で「描画完了でパネルに高さが付いた瞬間」を捉えて即翻訳する。
+  function onResize(entries) {
+    if (!translating) return;
+    let added = false;
+    for (const entry of entries) { if (promoteSizedBlock(entry.target)) added = true; }
+    if (added) scheduleFlush();
+  }
+
   // ---- MutationObserver: 動的追加 (無限スクロール / SPA) を取り込む ----
   function onMutate(mutations) {
     if (!translating) return;
@@ -579,6 +632,9 @@
       mo = new MutationObserver(onMutate);
       mo.observe(document.body || document.documentElement, MO_OPTS);
     }
+    // ResizeObserver は遅延描画(0×0→高さ付与)の能動検知に使う。未対応環境では ro=null のまま
+    // zeroSizedBlocks の reingest 再評価がフォールバックする(機能低下のみ・例外なし)。
+    if (!ro && typeof ResizeObserver === "function") ro = new ResizeObserver(onResize);
     lastHref = location.href;
     window.removeEventListener("popstate", onPopState);
     window.addEventListener("popstate", onPopState); // 戻る/進む等の SPA 遷移も検知
@@ -588,6 +644,8 @@
     window.removeEventListener("popstate", onPopState);
     if (io) { io.disconnect(); io = null; }
     if (mo) { mo.disconnect(); mo = null; }
+    if (ro) { ro.disconnect(); ro = null; }
+    zeroSizedBlocks = new WeakSet();
     if (flushTimer) { window.clearTimeout(flushTimer); flushTimer = null; }
     if (attrTimer) { window.clearTimeout(attrTimer); attrTimer = null; }
     pendingAttrRoots = new Set();
@@ -723,6 +781,7 @@
     observedBlocks = new WeakSet(); // 再翻訳 (復元→再 ON) で取りこぼさないよう作り直す
     flushedBlocks = new WeakSet();
     observedShadowRoots = new WeakSet();
+    zeroSizedBlocks = new WeakSet();
     startObservers();
     notifyProgress("progress");
     ingest(document.body || document.documentElement);
