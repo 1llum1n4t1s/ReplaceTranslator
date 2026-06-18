@@ -39,7 +39,8 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - **Shadow DOM**: `collectNodes` は TreeWalker でなく**開いた shadowRoot を辿る DFS**。辿った shadow root は MutationObserver にも登録し内部の動的更新も拾う（closed shadow は仕様上不可）
 - **iframe**: `allFrames:true` 注入で各フレームが独立翻訳。広告枠対策に `frameHasEnoughText()`（サブフレームは翻訳対象 50 字未満なら訳さない＝Immersive の mainFrameMinTextCount 相当。メインフレームは常時）
 - **SPA 追従**: `onMutate` で `location.href` 変化を検知 + `popstate` リスナー → `scheduleReingest()`（350/1200ms の 2 回 ingest）で遷移後ページを訳し直す
-- **動的追加**: MutationObserver（`childList`+`subtree`+`characterData`）。`characterData` mutation は `translatedNodes.has(m.target)` でガードし、自分の nodeValue 書き換えでの再発火を防ぎつつ SPA/チャットの既存テキスト差し替えを取り込む
+- **動的追加**: MutationObserver（`childList`+`subtree`+`characterData`+`attributes`＝`MO_OPTS` に集約・本体/shadow root 共通）。`characterData` mutation は `translatedNodes.has(m.target)` でガードし、自分の nodeValue 書き換えでの再発火を防ぎつつ SPA/チャットの既存テキスト差し替えを取り込む
+- **属性トグルで表示される要素を取りこぼさない**: `attributes` 監視（`ATTR_FILTER`=class/style/hidden/open/aria-hidden/aria-expanded/`data-state`＝Radix/shadcn）で `display:none`→表示のドロップダウン/モーダル/タブ/アコーディオンを拾う。IO は display 切替を取りこぼすことがある（`display:contents`/ポータル等）ため属性駆動で補う。属性は高頻度変化なので `scheduleAttrReingest` が **250ms デバウンス集約**して再 ingest（`collectNodes` が既訳/監視中ブロックを skip するので冪等）、class 多発ページは **対象 >30 で body 1回再走査へ畳む**。我々（translator）は属性を書き換えないので自己再発火なし（fab/画像オーバーレイは `SKIP_CLOSEST` で除外済み）
 - **原文復元**: 翻訳ノードは WeakMap(`originalMap`) に原文保持、復元で nodeValue を戻す。`runId` インクリメントで進行中ループを中断
 - **拡張 context 失効ハードニング**: リロード/更新で置き去りになった旧 content script が `chrome.runtime.sendMessage` で例外を投げる問題に対し、静かに停止する。`translator`/`image-translator` は `contextAlive()`/`shutdown()` + try/catch、`fab` は送信ラッパ（`send()` の try/catch + `p.catch`）で同等にハードニングする（手段は違うが効果は同じ）
 - **再注入の冪等性**: `window.__rtTranslatorLoaded` ガード。lib 各ファイルは `__rt*Loaded` ガード
