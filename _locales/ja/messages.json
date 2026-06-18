@@ -60,6 +60,7 @@
   "imgBtn": { "message": "画像内のテキストを翻訳" },
   "imgRevert": { "message": "画像の翻訳を消して元に戻す" },
   "imgNoText": { "message": "翻訳できる文字が見つかりませんでした" },
+  "imgErrAnimated": { "message": "アニメーション画像は翻訳できません" },
   "imgErrNoVision": { "message": "この翻訳サービスは画像翻訳に対応していません（API設定で対応サービスとキーを設定してください）" },
   "imgErrNoKey": { "message": "API キーが未設定です（API設定で入力してください）" },
   "imgErrForbidden": { "message": "この画像は取得できませんでした" },

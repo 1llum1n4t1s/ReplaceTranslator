@@ -60,6 +60,7 @@
   "imgBtn": { "message": "Translate text in image" },
   "imgRevert": { "message": "Remove image translation" },
   "imgNoText": { "message": "No translatable text found" },
+  "imgErrAnimated": { "message": "Animated images can't be translated" },
   "imgErrNoVision": { "message": "This service does not support image translation (choose a supported service and set its key in API settings)" },
   "imgErrNoKey": { "message": "API key is not set (enter it in API settings)" },
   "imgErrForbidden": { "message": "This image could not be fetched" },

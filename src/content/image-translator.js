@@ -24,6 +24,10 @@
   let dead = false; // shutdown 済みフラグ (リスナー解除後の再入を弾く)
   let imageCapable = false; // 選択中プロバイダが画像翻訳(vision)対応か。CONTENT_FLAGS から読む。確定まで false=安全側
   // (既定 provider は mymemory=非対応。楽観的に true 初期化すると get 解決前の数ms に非対応でもボタンが一瞬出るため false 始動)
+  // アニメーション画像 (アニメ GIF/WebP・APNG) は canvas inpaint で焼くと静止画に固まるため翻訳対象外。SW が翻訳時に
+  // バイトから判定し error:"animated" を返す → その画像をここに登録し、以後ホバーしても「訳」ボタンを出さない。
+  // (cross-origin 画像のバイトは content から読めずホバー時点では判定不能なので、初回クリックで確定して登録する方式)
+  const animatedImgs = new WeakSet();
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
@@ -135,6 +139,8 @@
     // (クリックしても no_vision になるだけなので無意味な操作を見せない)。ただし既に翻訳済みの画像は「原(戻す)」を
     // 出して元に戻せるようにする (翻訳した後にプロバイダを非対応へ切り替えたケースで取り残さない)。
     if (!imageCapable && !isTranslated(img)) return;
+    // 翻訳済みでないアニメーション画像 (SW が判定済み) はボタンを出さない。アニメは焼き込みで固まるので翻訳対象外。
+    if (animatedImgs.has(img) && !isTranslated(img)) return;
     target = img; placeBtn(img);
   }
 
@@ -885,6 +891,7 @@
   function imgErrorText(res) {
     const e = res && res.error;
     switch (e) {
+      case "animated": return tr("imgErrAnimated", "アニメーション画像は翻訳できません");
       case "no_vision": return tr("imgErrNoVision", "この翻訳サービスは画像翻訳に対応していません（API設定で対応サービスとキーを設定してください）");
       case "no_api_key": return tr("imgErrNoKey", "API キーが未設定です（API設定で入力してください）");
       case "forbidden_target": return tr("imgErrForbidden", "この画像は取得できませんでした");
@@ -916,6 +923,16 @@
             "orig=" + JSON.stringify((b && b.original) || ""), "trans=" + JSON.stringify((b && b.translation) || "")));
         } else {
           dbg("img-result", "ok=" + !!(res && res.ok), "error=" + (res && res.error));
+        }
+        // アニメーション画像 (SW がバイトから判定) はこの画像を以後ボタン非表示にする。初回だけ理由を出して隠す。
+        if (res && res.error === "animated") {
+          animatedImgs.add(img);
+          if (btn) {
+            btn.title = imgErrorText(res);
+            btn.textContent = "×";
+            window.setTimeout(() => { if (btn) { btn.style.display = "none"; btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); } }, 2000);
+          }
+          return;
         }
         const blocks = (res && res.ok) ? filterBlocks(res.blocks) : []; // ロゴ/ブランド語の重畳を除外
         if (blocks.length) {

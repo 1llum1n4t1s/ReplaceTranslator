@@ -636,6 +636,33 @@ if (typeof importScripts === "function") {
     return null;
   }
 
+  // バイト列の先頭プレフィックスから ASCII マーカー (構造チャンクの FourCC/識別子) を探す。
+  function hasMarker(bytes, marker, limit) {
+    const lim = Math.min(bytes.length, limit), mlen = marker.length;
+    for (let i = 0; i <= lim - mlen; i++) {
+      let ok = true;
+      for (let j = 0; j < mlen; j++) { if (bytes[i + j] !== marker.charCodeAt(j)) { ok = false; break; } }
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  // アニメーション画像 (アニメ GIF / アニメ WebP / APNG) 判定。createImageBitmap は先頭フレームしかデコードしない
+  // ため canvas inpaint で焼くと元 <img> のアニメが静止画に隠れて固まる → これらは翻訳対象外にする (content が
+  // ボタンを出さない)。構造マーカーを先頭プレフィックスから検出する (静止 GIF/WebP/PNG は素通り＝誤検出ほぼ無し)。
+  function isAnimatedImage(bytes, mime) {
+    if (!bytes || bytes.length < 16) return false;
+    const SCAN = 65536; // マーカーは先頭付近 (WebP ANIM / APNG acTL / GIF NETSCAPE2.0・先頭フレーム群の GCE) で十分
+    if (mime === "image/webp") return hasMarker(bytes, "ANIM", SCAN); // VP8X + ANIM チャンク = アニメ WebP
+    if (mime === "image/png") return hasMarker(bytes, "acTL", SCAN);  // acTL = APNG の animation control
+    if (mime === "image/gif") {
+      if (hasMarker(bytes, "NETSCAPE2.0", SCAN)) return true; // ループ拡張 = アニメ GIF
+      let gce = 0; const lim = Math.min(bytes.length, SCAN) - 2; // GCE (0x21 0xF9 0x04) が 2 個以上 = 複数フレーム
+      for (let i = 0; i <= lim; i++) { if (bytes[i] === 0x21 && bytes[i + 1] === 0xF9 && bytes[i + 2] === 0x04 && ++gce >= 2) return true; }
+    }
+    return false;
+  }
+
   // レスポンス body をストリームで読み、累積バイトが cap を超えたら読み取りを打ち切って null を返す。
   // Content-Length が無い/詐称のレスポンスで r.blob()(=全body をバッファ) がメモリを食うのを防ぐ。
   async function readCappedBytes(res, cap) {
@@ -692,7 +719,7 @@ if (typeof importScripts === "function") {
       } else {
         return { ok: false, error: "not_image", mime: ctype };
       }
-      return { ok: true, b64: base64FromBytes(bytes), mime };
+      return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "image_fetch", message: String((e && e.message) || e) };
@@ -711,6 +738,9 @@ if (typeof importScripts === "function") {
     // 画像を取得して base64 化 (host_permissions により CORS を回避)
     const got = await fetchImageBytes(imageUrl, signal);
     if (!got.ok) return got;
+    // アニメーション画像 (アニメ GIF/WebP・APNG) は canvas inpaint で焼くと元 <img> のアニメが静止画に固まるため
+    // 翻訳しない。content はこの error を受けて以後その画像の「訳」ボタンを出さない。vision を呼ぶ前に弾いて API 消費も避ける。
+    if (got.animated) return { ok: false, error: "animated" };
     const b64 = got.b64, mime = got.mime;
 
     // 画像翻訳は速い vision モデルを優先 (無ければテキストと同じ選択モデルにフォールバック)。
