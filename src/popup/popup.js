@@ -1,10 +1,10 @@
 "use strict";
 
 /**
- * popup.js — ポップアップ UI (2タブ: 翻訳 / キー)
+ * popup.js — ポップアップ UI (2タブ: 翻訳 / API設定)
  *
- * - API設定タブ: サービス切替(状態) + キー入力 / 動的モデル一覧(新しい順10件 + コスト相対バー)
- * - キータブ: API キー入力 + 内蔵検出 (バッチサイズは自動学習に委ねるため UI なし)
+ * - 翻訳タブ: 自動翻訳トグル / 言語(元・先) / オプション / 翻訳・復元 / status / クイック翻訳
+ * - API設定タブ: サービス切替(状態) + キー入力 + 動的モデル一覧(新しい順10件 + コスト相対バー)
  * モデルは GET_MODELS で動的取得し、選択中が消えていれば background がマイグレーションする。
  */
 
@@ -79,6 +79,17 @@
         else { badge.className = "pi-badge warn"; badge.textContent = msg("badgeKeyRequired", "Key"); }
       }
     });
+    placeModelRow();
+  }
+
+  // モデル一覧 (#model-row) を選択中プロバイダのカード内 (アコーディオンの中) に移動する。
+  // 「そのサービスのキー + モデル」を 1 枚のカードにまとめて見やすくするため。
+  // 単一要素を appendChild で移すだけ (id 重複を避け、loadModels の参照 #model-list/#refresh-models も追従する)。
+  function placeModelRow() {
+    const card = document.querySelector(`.provider-card[data-provider="${state.settings.provider}"]`);
+    const body = card && card.querySelector(".pc-body");
+    const row = $("model-row");
+    if (body && row && row.parentElement !== body) body.appendChild(row);
   }
 
   // ---- API設定タブ: 動的モデル一覧 (新しい順10件 + コスト相対バー) ----
@@ -124,9 +135,20 @@
   function loadModels(force) {
     const requested = state.settings.provider; // 応答到着までにプロバイダが変わる可能性があるため捕捉
     const p = Providers.get(requested);
+    const row = $("model-row");
     if (!p || p.batch === false) { // MyMemory 等はモデル概念なし
-      $("model-row").classList.add("hidden");
+      $("model-list").replaceChildren();
+      row.dataset.provider = requested;
+      row.classList.add("hidden");
       return;
+    }
+    // 別プロバイダへ切り替えた直後は、旧プロバイダのモデル一覧を表示したままの #model-row が
+    // placeModelRow で新カードへ移り、fadeDown で「旧モデル + 旧ハイライト」が一瞬見える (stale flash)。
+    // 表示中の provider が変わったら同期で消して隠す (応答到着時に callback が正しい一覧で開き直す)。
+    // 同一 provider の再取得 (キー保存 / 更新ボタン) では消さない (正しい一覧がチラつくのを防ぐ)。
+    if (row.dataset.provider !== requested) {
+      $("model-list").replaceChildren();
+      row.classList.add("hidden");
     }
     // 取得 (API 通信) は force のときだけ走る = 「キー入力後」と「更新ボタン押下時」。
     const btn = $("refresh-models");
@@ -137,7 +159,8 @@
         if (force && btn) { btn.disabled = false; btn.classList.remove("is-spinning"); }
         if (requested !== state.settings.provider) return; // 別プロバイダに切替済み → 古い応答は捨てる(誤モデル保存を防ぐ)
         const models = (res && res.ok && res.models) ? res.models : [];
-        $("model-row").classList.toggle("hidden", models.length === 0);
+        row.dataset.provider = requested; // 表示中の provider を記録 (次回切替時の stale 判定に使う)
+        row.classList.toggle("hidden", models.length === 0);
         if (models.length) renderModelList(models, state.settings.models[requested]);
       }
     );
@@ -161,30 +184,29 @@
   }
 
   // ---- キータブ ----
+  // キー入力欄 (#key-<id>) と取得リンク (#link-<id>) は Providers.ids を走査して一括配線する。
+  // provider 追加時に個別の id 列挙を増やさず済む。要素が無い provider (例: mymemory はリンク無し) はガードでスキップ。
   function setLinks() {
-    $("link-openai").href = Providers.openai.keyUrl;
-    $("link-anthropic").href = Providers.anthropic.keyUrl;
-    $("link-gemini").href = Providers.gemini.keyUrl;
-    $("link-xai").href = Providers.xai.keyUrl;
+    Providers.ids.forEach((id) => {
+      const a = $(`link-${id}`);
+      const p = Providers.get(id);
+      if (a && p && p.keyUrl) a.href = p.keyUrl;
+    });
   }
   function reflectKeys() {
-    const s = state.settings;
-    $("key-openai").value = s.apiKeys.openai || "";
-    $("key-anthropic").value = s.apiKeys.anthropic || "";
-    $("key-gemini").value = s.apiKeys.gemini || "";
-    $("key-xai").value = s.apiKeys.xai || "";
-    $("key-mymemory").value = s.apiKeys.mymemory || "";
+    const keys = (state.settings && state.settings.apiKeys) || {};
+    Providers.ids.forEach((id) => {
+      const inp = $(`key-${id}`);
+      if (inp) inp.value = keys[id] || "";
+    });
   }
   function collectKeys() {
-    return {
-      apiKeys: {
-        openai: $("key-openai").value.trim(),
-        anthropic: $("key-anthropic").value.trim(),
-        gemini: $("key-gemini").value.trim(),
-        xai: $("key-xai").value.trim(),
-        mymemory: $("key-mymemory").value.trim(),
-      },
-    };
+    const apiKeys = {};
+    Providers.ids.forEach((id) => {
+      const inp = $(`key-${id}`);
+      if (inp) apiKeys[id] = inp.value.trim();
+    });
+    return { apiKeys };
   }
   // API キー欄はフォーカスが外れたら(blur)自動保存する。保存できたらその欄に緑チェックを一瞬出す。
   function flashSaved(id) {
@@ -196,17 +218,16 @@
     mark._t = window.setTimeout(() => mark.classList.remove("is-saved"), 1300); // 一瞬出して自動で消す
   }
   function bindKeyAutosave() {
-    const fields = [
-      ["key-openai", "openai"], ["key-anthropic", "anthropic"], ["key-gemini", "gemini"],
-      ["key-xai", "xai"], ["key-mymemory", "mymemory"],
-    ];
-    fields.forEach(([id, provider]) => {
-      $(id).addEventListener("blur", () => {
-        const val = $(id).value.trim();
+    Providers.ids.forEach((provider) => {
+      const elId = `key-${provider}`;
+      const inp = $(elId);
+      if (!inp) return;
+      inp.addEventListener("blur", () => {
+        const val = inp.value.trim();
         const cur = (state.settings.apiKeys && state.settings.apiKeys[provider]) || "";
         if (val === cur) return; // 変化なしは保存もチェック表示もしない
         save(collectKeys(), () => {
-          flashSaved(id);
+          flashSaved(elId);
           renderProviderList();
           updateKeyWarning();
           if (provider === state.settings.provider) loadModels(true); // 選択中サービスのキー変更時は最新モデルを取得
@@ -218,7 +239,6 @@
   // ---- 共通 ----
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
-    $("image-translate").checked = Boolean(state.settings.imageTranslate);
     $("show-fab").checked = state.settings.showFab !== false;
     renderProviderList();
     $("source").value = state.settings.sourceLang;
@@ -248,6 +268,39 @@
     return tab;
   }
   const setStatus = (t) => { $("status").textContent = t || ""; };
+
+  // 翻訳エラーの「理由」を可読な文言にする。translator から届く fatal detail
+  // ({error, status, message}) を見て、キー未設定 / キー無効(401/403) / HTTP+本文 / 通信失敗 を出し分ける。
+  // 原因 (どのサービスの何が起きたか) を一目で分かるようにし、ただの「エラー」表示で詰まないようにする。
+  function errorText(detail) {
+    const generic = msg("statusError", "Error");
+    if (!detail || typeof detail !== "object") return generic;
+    // 失敗元プロバイダは detail.provider を優先採用する (翻訳中にサービスを切り替えても、実際に失敗したプロバイダ名で表示する)。
+    // detail.provider が無いとき (旧経路) は現在選択中のプロバイダで代替して従来挙動を保つ。
+    const provId = (detail && detail.provider) || (state.settings && state.settings.provider);
+    const prov = provId && Providers.get(provId);
+    const pfx = prov ? `${prov.label}: ` : "";
+    if (detail.error === "no_api_key") return pfx + msg("statusNoKey", "API key is not set");
+    if (detail.error === "network") return pfx + msg("statusNetwork", "Network error");
+    if (detail.error === "http") {
+      if (detail.status === 401 || detail.status === 403) return pfx + msg("statusBadKey", "API key is invalid or unauthorized");
+      if (detail.status === 429) {
+        // 無料枠の 1 日上限 (RPD) / 残高切れは「待っても並列を下げても解けない」ので専用表示にする。
+        const lm = String(detail.message || "").toLowerCase();
+        const capped = lm.includes("perday") || lm.includes("per day") || lm.includes("per-day") ||
+          lm.includes("daily") || lm.includes("insufficient_quota");
+        if (capped) return pfx + msg("statusQuotaDaily", "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider.");
+      }
+      let reason = "";
+      if (detail.message) {
+        // Gemini/各社のエラー本文は {"error":{"message":"..."}} 形式が多い。message だけ抜く (無ければ生文字列)。
+        try { reason = (JSON.parse(detail.message).error || {}).message || ""; } catch (_e) { reason = String(detail.message); }
+      }
+      reason = reason ? ` — ${reason.slice(0, 160)}` : "";
+      return pfx + (detail.status ? `HTTP ${detail.status}` : generic) + reason;
+    }
+    return pfx + generic;
+  }
 
   // ---- クイック翻訳 (ちょっとだけ訳す。上部の翻訳元⇄翻訳先を流用し TRANSLATE_BATCH に 1 件投げる) ----
   function langShort(coderef) {
@@ -330,11 +383,16 @@
     fillLangSelect($("source"), true);
     fillLangSelect($("target"), false);
 
-    chrome.runtime.sendMessage({ action: Actions.GET_STATE }, (res) => {
-      if (res && res.ok) {
-        state.settings = res.settings;
-        reflect();
-      }
+    // 自タブの直近翻訳エラーも受け取りたいので tabId を添えて状態を取得する。
+    // (自動翻訳/FAB でエラーが出た後にこの popup を開くと、揮発した error イベントは逃すが last-error で再表示できる。)
+    getActiveTab().then((tab) => {
+      chrome.runtime.sendMessage({ action: Actions.GET_STATE, tabId: tab && tab.id }, (res) => {
+        if (res && res.ok) {
+          state.settings = res.settings;
+          reflect();
+          if (res.lastError) setStatus(errorText(res.lastError)); // 直近の失敗理由 (キー無効/quota 等) を出す
+        }
+      });
     });
 
     document.querySelectorAll(".tab").forEach((t) => {
@@ -378,7 +436,6 @@
     });
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
-    $("image-translate").addEventListener("change", (e) => save({ imageTranslate: e.target.checked }));
     $("show-fab").addEventListener("change", (e) => save({ showFab: e.target.checked }));
 
     // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
@@ -400,8 +457,8 @@
       if (sender && sender.tab) return; // content フレーム直送(生)は無視。background が集約した進捗のみ受ける
       // auto-translate トグルは永続 autoTranslate 設定を表す。ワンショット翻訳の進捗で勝手に切り替えない。
       if (m.state === "progress") setStatus("");          // 進捗は FAB のシマーで示すので popup は無表示
-      else if (m.state === "done") setStatus(msg("statusDone", "Done"));
-      else if (m.state === "error") setStatus(msg("statusError", "Error"));
+      else if (m.state === "done") setStatus(m.partial ? msg("statusPartial", "Partly untranslated (rate limit / overload). Wait and retry.") : msg("statusDone", "Done"));
+      else if (m.state === "error") setStatus(errorText(m.detail));
       else if (m.state === "restored") setStatus("");
       else if (m.state === "skipped") setStatus(msg("statusSameLang", "Page is already in the target language"));
     });

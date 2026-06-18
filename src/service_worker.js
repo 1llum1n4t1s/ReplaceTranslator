@@ -37,6 +37,18 @@ if (typeof importScripts === "function") {
     });
   } catch (_e) { /* noop */ }
 
+  // ---- fetch タイムアウト ----
+  // 全 LLM/画像 fetch にリクエスト上限を課す。これが無いと half-open 接続や無応答ストリームで fetch/reader が
+  // 永久にハングし、ワーカーが stuck → flush の flushing ガードが張り付き → ページ翻訳が無言で永久停止する。
+  // タブ単位 abort signal と timeout を AbortSignal.any で合成し、どちらの中断でも fetch が確実に reject する。
+  // timeout 中断は TimeoutError(name) で reject するため各 catch の AbortError(=ユーザー中断) 判定に当たらず、
+  // network 系エラー(=translator の transient リトライ対象)へ落ちる(D-003 の error 種別を増やさない最小設計)。
+  const FETCH_TIMEOUT_MS = 60000; // 1 リクエスト上限。バッチ(≤100短文)/vision は通常数秒で完了するので 60s は十分な天井
+  function withTimeout(signal) {
+    const to = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    return signal ? AbortSignal.any([signal, to]) : to;
+  }
+
   // content script に渡す設定から秘密情報 (apiKeys) を除く。
   // content は翻訳対象テキストを TRANSLATE_BATCH で送るだけで、API キーは bg 側でのみ保持・使用する。
   function publicSettings(s) {
@@ -47,7 +59,9 @@ if (typeof importScripts === "function") {
   // content script (fab/image-translator) が読む非機密フラグだけを抽出する。saveSettings と
   // ensureContentFlags の両所で使い、フラグ追加時の片側更新漏れ (= content 側だけ欠落) を防ぐ。
   function contentFlagsOf(s) {
-    return { autoTranslate: s.autoTranslate, imageTranslate: s.imageTranslate, showFab: s.showFab };
+    // imageCapable: 選択中プロバイダが画像翻訳(vision)対応か。content(image-translator) がこれを見て、
+    // 非対応プロバイダ選択中はホバーの「訳」ボタンを出さない (クリックしても no_vision になるだけのため)。
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider) };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。
@@ -58,12 +72,22 @@ if (typeof importScripts === "function") {
   // content が送ってきた設定の apiKeys は信用せず、必ず bg 保管値で上書きする (キー漏洩防止)。
   // この不変条件を 1 箇所に集約し、TRANSLATE_BATCH / TRANSLATE_IMAGE での書き忘れ事故を防ぐ。
   function resolveSettings(incoming, stored) {
-    return incoming ? Object.assign({}, incoming, { apiKeys: stored.apiKeys }) : stored;
+    if (!incoming) return stored;
+    // provider/models/apiKeys は SW 保管値を真実とする (content/page 由来の値で課金プロバイダ/モデルを
+    // 勝手に選ばせない内部不変条件)。sourceLang/targetLang だけは translator が auto 解決したページ言語を
+    // 運ぶので incoming を残す (ページ言語ベースの翻訳元解決を壊さない)。
+    return Object.assign({}, incoming, {
+      provider: stored.provider,
+      models: stored.models,
+      apiKeys: stored.apiKeys,
+    });
   }
 
   // HTTP エラー応答の本文を安全に読む (失敗吸収 + 300 字に切り詰め)。各 fetch のエラー message 生成で共用。
   async function readDetail(res) {
-    try { return (await res.text()).slice(0, 300); } catch (_e) { return ""; }
+    // 600 字確保: Gemini 等の 429 本文は quota_id ("...PerDayPerProjectPerModel-FreeTier" 等) が
+    // 後方にあることがあり、content 側の quotaScope 判定 (日次 vs 分次) に必要なため広めに取る。
+    try { return (await res.text()).slice(0, 600); } catch (_e) { return ""; }
   }
 
   async function saveSettings(raw) {
@@ -97,7 +121,8 @@ if (typeof importScripts === "function") {
   // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
   async function ensureContentFlags() {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
-    if (cur) return;
+    if (cur && typeof cur.imageCapable === "boolean") return; // 新フィールドまで揃っていれば何もしない
+    // 未作成 / 旧フォーマット (imageCapable 欠落 = 更新前のインストール) は SETTINGS から導出して補完する。
     const s = await getSettings();
     await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(s) });
   }
@@ -114,16 +139,25 @@ if (typeof importScripts === "function") {
     if (!tuningMem) tuningMem = data[StorageKeys.BATCH_TUNING] || {};
     if (!usageMem) usageMem = data[StorageKeys.TOKEN_USAGE] || {};
   }
+  // 保留中の tuning/usage をまとめて storage へ書き出す (デバウンス満了時・SW suspend 直前に呼ぶ)。
+  function flushPersist() {
+    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
+    const patch = {};
+    if (tuningMem) patch[StorageKeys.BATCH_TUNING] = tuningMem;
+    if (usageMem) patch[StorageKeys.TOKEN_USAGE] = usageMem;
+    try { chrome.storage.local.set(patch); } catch (_e) { /* noop */ }
+  }
   function schedulePersist() {
     if (persistTimer) return;
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      const patch = {};
-      if (tuningMem) patch[StorageKeys.BATCH_TUNING] = tuningMem;
-      if (usageMem) patch[StorageKeys.TOKEN_USAGE] = usageMem;
-      try { chrome.storage.local.set(patch); } catch (_e) { /* noop */ }
-    }, 2000);
+    persistTimer = setTimeout(flushPersist, 2000);
   }
+  // MV3 SW は無活動で suspend される。デバウンス保留中の最新増分 (直近 1 ページ分の usage 集計/バッチ学習) が
+  // 取りこぼされないよう、suspend 直前に flush する。onSuspend 非対応環境 (Firefox 等) は無視。
+  try {
+    if (chrome.runtime && chrome.runtime.onSuspend) {
+      chrome.runtime.onSuspend.addListener(() => { if (persistTimer) flushPersist(); });
+    }
+  } catch (_e) { /* noop */ }
 
   // ---- トークン使用量の記録 (SW 専有の usageMem にインプレース加算・デバウンス永続化) ----
   // usageMem は SW 専有の可変 state。毎成功バッチで呼ばれるため、store 全体の deep-copy/再構築を避け
@@ -194,7 +228,7 @@ if (typeof importScripts === "function") {
         method: req.method,
         headers: req.headers,
         body: JSON.stringify(req.body),
-        signal,
+        signal: withTimeout(signal),
       });
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
@@ -206,7 +240,7 @@ if (typeof importScripts === "function") {
       const detail = await readDetail(res);
       if (res.status === 429 && tune) updateBatchTuning(providerId, texts.length, durationMs, true);
       return {
-        ok: false, error: "http", status: res.status, message: detail,
+        ok: false, error: "http", status: res.status, message: detail, provider: providerId,
         nextBatchSize: currentBatchSizeFor(providerId),
       };
     }
@@ -237,12 +271,12 @@ if (typeof importScripts === "function") {
     return { ok: true, translations, usage, nextBatchSize };
   }
 
-  // OpenAI/xAI を SSE ストリーミングで翻訳し、確定要素ごとに onPartial(index, text) を呼ぶ (早出し)。
+  // OpenAI 互換社を SSE ストリーミングで翻訳し、確定要素ごとに onPartial(index, text) を呼ぶ (早出し)。
   // 戻り値: 非stream と同形の結果、stream 不可/通信失敗時は null (呼び出し側が非stream にフォールバック)。
   // 翻訳の真実は蓄積した完全 JSON の extractTranslations。partial がズレても最終結果が確定し直す。
   async function translateBatchStream(settings, texts, signal, onPartial) {
     const providerId = settings.provider;
-    if (providerId !== "openai" && providerId !== "xai") return null; // stream 対応は OpenAI/xAI のみ
+    if (!ProviderApi.supportsStream(providerId)) return null; // stream 対応は OpenAI 互換社のみ
     const apiKey = keyFor(settings, providerId);
     if (!apiKey) return { ok: false, error: "no_api_key", provider: providerId };
     const model = (settings.models && settings.models[providerId]) || undefined;
@@ -256,17 +290,17 @@ if (typeof importScripts === "function") {
     const t0 = Date.now();
     let res;
     try {
-      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal });
+      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal: withTimeout(signal) });
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      return null; // 通信失敗 → 非stream で再試行させる
+      return null; // 通信失敗/タイムアウト → 非stream で再試行させる
     }
     if (!res.ok) {
       // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
       // content 側のリトライ/バックオフ/サイズ縮小に委ねる (429 は学習サイズを縮小)。null フォールバックは stream 非対応時のみ。
       const detail = await readDetail(res);
       if (res.status === 429) updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
-      return { ok: false, error: "http", status: res.status, message: detail, nextBatchSize: currentBatchSizeFor(providerId) };
+      return { ok: false, error: "http", status: res.status, message: detail, provider: providerId, nextBatchSize: currentBatchSizeFor(providerId) };
     }
     if (!res.body || typeof res.body.getReader !== "function") return null; // stream 非対応レスポンス → 非stream フォールバック
 
@@ -326,11 +360,15 @@ if (typeof importScripts === "function") {
     let firstError = null;     // 表示用 (最初に起きた種別)
     let providerError = null;  // provider 全体の失敗 (build/http/quota/network)。too_long(局所スキップ)とは区別し fatal 判定に使う
     let okCount = 0;           // API が応答した件数。訳文==原文(固有名詞/既に target 言語)でも成功なので translation!==input では数えない
+    let giveUp = false;        // provider 全体のレート制限/拒否(429/403)を検知したら残りの無駄 GET を止める(quota 枯渇後の大量 GET 回避)
 
     async function worker() {
       while (cursor < texts.length) {
         const i = cursor++;
         const text = texts[i];
+        // 既に provider 全体失敗(429/403)を検知済み → 送らず原文で埋める。同じキー/IP が rate-limit/拒否されている以上
+        // 残りノードに GET を撃っても全て失敗するだけで、無駄リクエストが制限を悪化させ復帰を遅らせる(C2-N3)。
+        if (giveUp) { translations[i] = text; continue; }
         // 長すぎるテキストは送れない。原文を返すと「翻訳成功」に見えてしまうため too_long エラーを立てる
         // (Quick Translate は原文を成功表示せずエラー文言を出す。ページ翻訳は部分適用で原文のまま残る)。
         if (encoder.encode(text).length > maxBytes) {
@@ -350,8 +388,8 @@ if (typeof importScripts === "function") {
           continue;
         }
         try {
-          const res = await fetch(req.url, { method: req.method, headers: req.headers, signal });
-          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; translations[i] = text; continue; }
+          const res = await fetch(req.url, { method: req.method, headers: req.headers, signal: withTimeout(signal) });
+          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; translations[i] = text; if (res.status === 429 || res.status === 403) giveUp = true; continue; }
           const json = await res.json();
           // MyMemory は本文 200 でも responseStatus に実ステータス (403/429 等) を入れる
           const rs = Number(json && json.responseStatus);
@@ -359,6 +397,7 @@ if (typeof importScripts === "function") {
             const err = { error: "quota", status: rs, message: String((json && json.responseDetails) || "") };
             providerError = providerError || err; firstError = firstError || err;
             translations[i] = text;
+            if (rs === 429 || rs === 403 || rs >= 500) giveUp = true; // 共有キー/IP の rate-limit/拒否は残り全件で再発 → 打ち切り
             continue;
           }
           const parsed = ProviderApi.parseResponse(providerId, json);
@@ -412,7 +451,11 @@ if (typeof importScripts === "function") {
       gemini: /gemini-/i,
       xai: /^grok-/i,
     }[providerId];
-    const exclude = /embed|whisper|tts|dall-e|image|audio|realtime|moderation|search|guard/i;
+    // 翻訳に使えない非テキスト系を除外する: 埋め込み(embed)/音声(whisper/tts/transcribe/audio/realtime)/
+    // 画像生成(dall-e/image/imagine)/動画生成(video/veo/sora)/モデレーション(moderation/guard)/検索(search)。
+    // ※ "imagine"(xAI grok-imagine 等の生成) は "image" の部分文字列でないため別途列挙が必要。
+    // ※ vision(画像入力チャット) は画像翻訳で使うので除外しない ("vision" は "image" にマッチしない)。
+    const exclude = /embed|whisper|tts|transcribe|dall-e|image|imagine|audio|realtime|moderation|search|guard|video|veo|sora/i;
     // 日付/版数が入った ID (例 -2024-08-06 / -20241022 / -0709) は除外し、エイリアス (latest 等) を優先。
     // ただし Anthropic は日付入り ID しか配信しないため除外せず、後段の normalizeModelList でエイリアス化+重複排除する。
     const dated = /\d{4}-\d{2}-\d{2}|\d{6,}|[-_]\d{4}$/;
@@ -421,6 +464,14 @@ if (typeof importScripts === "function") {
       (!include || include.test(m.id)) &&
       !exclude.test(m.id) &&
       (providerId === "anthropic" || !dated.test(m.id)));
+  }
+  // 価格ゲージを出せる (model-pricing に載っている) モデルだけを {id, price} 配列にして残す。
+  // ユーザーはコスト比較できない "—" モデルを選びようがないので一覧から除く。
+  // ただし 1 件も価格が付かないときは全件 (price:null 込み) を返す = 空一覧で詰むのを防ぐ保険。
+  function pickPriced(ids) {
+    const all = ids.map((id) => ({ id, price: ModelPricing.lookup(id) }));
+    const priced = all.filter((m) => m.price);
+    return priced.length ? priced : all;
   }
   // Anthropic は日付入り ID をエイリアス化し、同一エイリアスは新しい順で先頭(最新)だけ残す。
   function normalizeModelList(providerId, models) {
@@ -452,14 +503,17 @@ if (typeof importScripts === "function") {
     const req = ProviderApi.buildModelsRequest(providerId, apiKey);
     if (!req) return { ok: false, error: "unsupported" };
     let res;
-    try { res = await fetch(req.url, { headers: req.headers }); }
+    // 他の全 fetch と同様に withTimeout を課す。これが無いと /models が half-open になったとき
+    // resolveFallbackModel(404 自己修復) がここで永久ハングし、翻訳ホットパスが無言停止する。
+    try { res = await fetch(req.url, { headers: req.headers, signal: withTimeout() }); }
     catch (e) { return { ok: false, error: "network", message: String((e && e.message) || e) }; }
     if (!res.ok) return { ok: false, error: "http", status: res.status };
     let json;
     try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
     const sorted = sortNewest(providerId, filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
     const normalized = normalizeModelList(providerId, sorted);
-    const top = normalized.slice(0, 10).map((m) => ({ id: m.id, price: ModelPricing.lookup(m.id) }));
+    // 価格が引けるモデルだけに絞ってから上位 10 件 (圏外でも価格付きを優先して拾える)。
+    const top = pickPriced(normalized.map((m) => m.id)).slice(0, 10);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     cacheAll[providerId] = { models: top, fetchedAt: Date.now() };
     await chrome.storage.local.set({ [StorageKeys.MODELS_CACHE]: cacheAll });
@@ -486,10 +540,10 @@ if (typeof importScripts === "function") {
     const apiKey = keyFor(settings, providerId);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     const cached = cacheAll[providerId];
-    // 静的な既定モデルを価格付きで返すフォールバック
+    // 静的な既定モデルを価格付きで返すフォールバック (価格ゲージを出せるものだけ)
     const fallback = () => ({
       ok: true, fallback: true,
-      models: (provider.models || []).map((id) => ({ id, price: ModelPricing.lookup(id) })),
+      models: pickPriced(provider.models || []),
     });
     // API 通信 (取得) は force のときだけ = 「API キー入力後」と「モデル更新ボタン押下時」のみ。
     // それ以外 (provider 切替 / popup 起動) は通信せず、キャッシュ or 同梱フォールバックを表示する。
@@ -506,7 +560,7 @@ if (typeof importScripts === "function") {
     return result;
   }
 
-  // ---- 画像内テキストの翻訳 (vision・オプション) ----
+  // ---- 画像内テキストの翻訳 (vision・ホバー手動) ----
   const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB: 巨大画像でメモリspike/過大リクエストを防ぐ上限
   function base64FromBytes(bytes) {
     let bin = "";
@@ -582,6 +636,33 @@ if (typeof importScripts === "function") {
     return null;
   }
 
+  // バイト列の先頭プレフィックスから ASCII マーカー (構造チャンクの FourCC/識別子) を探す。
+  function hasMarker(bytes, marker, limit) {
+    const lim = Math.min(bytes.length, limit), mlen = marker.length;
+    for (let i = 0; i <= lim - mlen; i++) {
+      let ok = true;
+      for (let j = 0; j < mlen; j++) { if (bytes[i + j] !== marker.charCodeAt(j)) { ok = false; break; } }
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  // アニメーション画像 (アニメ GIF / アニメ WebP / APNG) 判定。createImageBitmap は先頭フレームしかデコードしない
+  // ため canvas inpaint で焼くと元 <img> のアニメが静止画に隠れて固まる → これらは翻訳対象外にする (content が
+  // ボタンを出さない)。構造マーカーを先頭プレフィックスから検出する (静止 GIF/WebP/PNG は素通り＝誤検出ほぼ無し)。
+  function isAnimatedImage(bytes, mime) {
+    if (!bytes || bytes.length < 16) return false;
+    const SCAN = 65536; // マーカーは先頭付近 (WebP ANIM / APNG acTL / GIF NETSCAPE2.0・先頭フレーム群の GCE) で十分
+    if (mime === "image/webp") return hasMarker(bytes, "ANIM", SCAN); // VP8X + ANIM チャンク = アニメ WebP
+    if (mime === "image/png") return hasMarker(bytes, "acTL", SCAN);  // acTL = APNG の animation control
+    if (mime === "image/gif") {
+      if (hasMarker(bytes, "NETSCAPE2.0", SCAN)) return true; // ループ拡張 = アニメ GIF
+      let gce = 0; const lim = Math.min(bytes.length, SCAN) - 2; // GCE (0x21 0xF9 0x04) が 2 個以上 = 複数フレーム
+      for (let i = 0; i <= lim; i++) { if (bytes[i] === 0x21 && bytes[i + 1] === 0xF9 && bytes[i + 2] === 0x04 && ++gce >= 2) return true; }
+    }
+    return false;
+  }
+
   // レスポンス body をストリームで読み、累積バイトが cap を超えたら読み取りを打ち切って null を返す。
   // Content-Length が無い/詐称のレスポンスで r.blob()(=全body をバッファ) がメモリを食うのを防ぐ。
   async function readCappedBytes(res, cap) {
@@ -605,22 +686,16 @@ if (typeof importScripts === "function") {
     return out;
   }
 
-  async function translateImage(settings, imageUrl, signal) {
-    const providerId = settings.provider;
-    const provider = Providers.get(providerId);
-    if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
-    const apiKey = keyFor(settings, providerId);
-    if (!apiKey) return { ok: false, error: "no_api_key" };
-    // 危険な fetch 先 (内部/ローカル/特殊スキーム) は取得も中継もしない
+  // 画像 URL を host_permissions 経由で取得し base64 化する (cloud vision 用)。
+  // SSRF 防御 (forbidden 判定 / manual redirect / 最終 URL 再検証)・サイズ上限・MIME 確定を一括で行う。
+  // 返り値: { ok:true, b64, mime } または { ok:false, error, ... }。
+  async function fetchImageBytes(imageUrl, signal) {
     if (isForbiddenImageUrl(imageUrl)) return { ok: false, error: "forbidden_target" };
-
-    // 画像を取得して base64 化 (host_permissions により CORS を回避)
-    let b64, mime;
     try {
       // redirect:"manual" で 30x をフォローしない。公開 URL → 30x で内部ホスト (nas / 127.0.0.1 等) へ飛ばす
       // SSRF を、フォロー前=内部ホストへリクエストが飛ぶ前に遮断する。opaqueredirect は Location を読めないので
       // 検証不能 → 拒否 (img の src は通常リダイレクト解決済みの最終 URL なので実害は小さい)。
-      const r = await fetch(imageUrl, { signal, redirect: "manual" });
+      const r = await fetch(imageUrl, { signal: withTimeout(signal), redirect: "manual" });
       if (r.type === "opaqueredirect" || r.status === 0 || (r.status >= 300 && r.status < 400)) {
         return { ok: false, error: "forbidden_target" };
       }
@@ -635,6 +710,7 @@ if (typeof importScripts === "function") {
       // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
       // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
       const ctype = (r.headers.get("content-type") || "").toLowerCase().split(";")[0].trim();
+      let mime;
       if (ctype.startsWith("image/")) {
         mime = ctype;
       } else if (!ctype) {
@@ -643,43 +719,82 @@ if (typeof importScripts === "function") {
       } else {
         return { ok: false, error: "not_image", mime: ctype };
       }
-      b64 = base64FromBytes(bytes);
+      return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "image_fetch", message: String((e && e.message) || e) };
     }
+  }
 
-    let req;
-    try {
-      req = ProviderApi.buildImageRequest(providerId, {
-        imageBase64: b64, mimeType: mime,
-        sourceLang: settings.sourceLang, targetLang: settings.targetLang,
-        // 画像翻訳は速い vision モデルを優先 (無ければテキストと同じ選択モデルにフォールバック)
-        model: provider.visionModel || settings.models[providerId], apiKey,
-      });
-    } catch (e) {
-      return { ok: false, error: "build", message: String((e && e.message) || e) };
-    }
-    if (!req) return { ok: false, error: "unsupported" };
+  async function translateImage(settings, imageUrl, signal) {
+    const providerId = settings.provider;
+    const provider = Providers.get(providerId);
+    // vision 非対応プロバイダ (MyMemory/xai/deepseek 等 = visionModel 無し) は画像翻訳不可。
+    // text モデルで vision を試して HTTP エラーになるより、明示的に no_vision を返して理由を出す。
+    if (!Providers.supportsImage(providerId)) return { ok: false, error: "no_vision" };
+    const apiKey = keyFor(settings, providerId);
+    if (!apiKey) return { ok: false, error: "no_api_key" };
 
-    let res;
-    try {
-      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal });
-    } catch (e) {
-      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      return { ok: false, error: "network", message: String((e && e.message) || e) };
+    // 画像を取得して base64 化 (host_permissions により CORS を回避)
+    const got = await fetchImageBytes(imageUrl, signal);
+    if (!got.ok) return got;
+    // アニメーション画像 (アニメ GIF/WebP・APNG) は canvas inpaint で焼くと元 <img> のアニメが静止画に固まるため
+    // 翻訳しない。content はこの error を受けて以後その画像の「訳」ボタンを出さない。vision を呼ぶ前に弾いて API 消費も避ける。
+    if (got.animated) return { ok: false, error: "animated" };
+    const b64 = got.b64, mime = got.mime;
+
+    // 画像翻訳は速い vision モデルを優先 (無ければテキストと同じ選択モデルにフォールバック)。
+    // visionModel はコード固定値なので廃止されると 404 で全滅する → ページ翻訳と同じ 404 自己修復を vision にも適用。
+    // 先回り: 過去に 404 解決済みの vision モデルがあれば最初から現行へ差し替える (modelFallback はメモリキャッシュ)。
+    // text モデル選択を上書きする persistModelSwitch は vision には使わない (vision はコード固定値で別 state のため)。
+    const baseModel = provider.visionModel || settings.models[providerId];
+    let model = baseModel;
+    const cachedGood = modelFallback.get(providerId + ":" + baseModel);
+    if (cachedGood && cachedGood !== baseModel) model = cachedGood;
+
+    // 1 回ぶんの vision リクエスト。404 自己修復で 2 回呼べるよう関数化する。
+    async function runVision(useModel) {
+      let req;
+      try {
+        req = ProviderApi.buildImageRequest(providerId, {
+          imageBase64: b64, mimeType: mime,
+          sourceLang: settings.sourceLang, targetLang: settings.targetLang,
+          model: useModel, apiKey,
+        });
+      } catch (e) {
+        return { ok: false, error: "build", message: String((e && e.message) || e) };
+      }
+      if (!req) return { ok: false, error: "unsupported" };
+      let res;
+      try {
+        res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal: withTimeout(signal) });
+      } catch (e) {
+        if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
+        return { ok: false, error: "network", message: String((e && e.message) || e) };
+      }
+      if (!res.ok) {
+        const detail = await readDetail(res);
+        return { ok: false, error: "http", status: res.status, message: detail };
+      }
+      try { return { ok: true, json: await res.json() }; } catch (_e) { return { ok: false, error: "parse" }; }
     }
-    if (!res.ok) {
-      const detail = await readDetail(res);
-      return { ok: false, error: "http", status: res.status, message: detail };
+
+    let r = await runVision(model);
+    // 廃止 vision モデル(404)を同プロバイダの現行モデルへ解決して 1 回だけ再試行する。
+    if (isModelGone(r)) {
+      const good = await resolveFallbackModel(providerId, model);
+      if (good && good !== model) { model = good; r = await runVision(model); }
     }
-    let json;
-    try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
-    const blocks = ProviderApi.parseImageBlocks(providerId, json);
-    const usage = ProviderApi.parseUsage(providerId, json);
+    if (!r.ok) return r;
+
+    const blocks = ProviderApi.parseImageBlocks(providerId, r.json);
+    const usage = ProviderApi.parseUsage(providerId, r.json);
     await ensureMem(); // 既存の月次 usage を読み込んでから加算 (cold start の初回が画像翻訳でも上書きしない)
     recordUsage(providerId, usage);
-    return { ok: true, blocks };
+    // image: content 側の canvas inpaint 用に取得済みバイトを返す。ページ側で cross-origin <img> を
+    // 直接 draw すると canvas が taint され getImageData/toDataURL が封じられるため、SW が host_permissions で
+    // 取得済みの base64 を渡し content は createImageBitmap(blob) で CORS-safe に再構築する。
+    return { ok: true, blocks, image: { base64: b64, mime } };
   }
 
   // ---- ページ翻訳/復元の指示 ----
@@ -719,6 +834,13 @@ if (typeof importScripts === "function") {
 
   async function restorePage(tabId) {
     abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
+    // 集約状態を直接リセットする (translatePage と対称化)。通常は translator の "restored" 通知が reset を促すが、
+    // フレームが context 失効/離脱して "restored" を返せないと st.errored/loading が残置する。ここで直接リセットすれば
+    // 「翻訳が loading に張り付いた → FAB クリックで復元」が確実に状態を解除できる手動脱出になる。
+    resetFrameProgress(tabId);
+    // translator 未注入のタブ (画像翻訳のみ等) では translator の "restored" 通知が来ず、FAB/popup が
+    // loading/on/error に張り付く。SW から能動的に restored を中継して確実に未翻訳状態へ戻す。
+    relayProgress(tabId, { action: Actions.TRANSLATION_PROGRESS, state: "restored" });
     try {
       await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_RESTORE_CS });
     } catch (_e) {
@@ -731,21 +853,37 @@ if (typeof importScripts === "function") {
   // グローバル done を発行する。小さい iframe / 子フレームが先に done で UI が早期確定するのを防ぐ。
   const frameProgress = new Map(); // tabId -> { active:Set<frameId>, done:Set<frameId>, timer:id|null }
   const FRAME_DONE_GRACE_MS = 8000; // 一部フレーム done 後、残りがこの時間応答しなければ離脱とみなし done を発行
+  // 直近の翻訳エラーをタブ単位で状態化する。error は揮発イベントで、自動翻訳/FAB はエラー後に popup を
+  // 開かないと理由が分からない。GET_STATE で直近エラーを返し、後から popup を開いても原因 (キー無効/quota 等)
+  // を出せるようにする (新セッション開始/復元で resetFrameProgress がクリア)。
+  const lastErrorByTab = new Map(); // tabId -> { detail, ts }
+  const LAST_ERROR_TTL_MS = 90000;  // この時間内に開いた popup にだけ直近エラーを見せる (古いエラーの誤表示を防ぐ)
   function relayProgress(tabId, msg) {
     chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ }); // FAB (content top frame)
-    try { chrome.runtime.sendMessage(msg); } catch (_e) { /* popup が無ければ無視 */ }   // popup (集約済みのみ受理)
+    // popup が閉じていると runtime.sendMessage は「Receiving end does not exist」で非同期に reject する。
+    // relayProgress は fire-and-forget で呼ばれ、同期 try/catch では捕まらないので Promise.catch で握りつぶす
+    // (content の send() ラッパと同パターン。popup/options 不在でも無害)。
+    try {
+      const p = chrome.runtime.sendMessage(msg); // popup (集約済みのみ受理)
+      if (p && typeof p.catch === "function") p.catch(() => { /* 受信端が無ければ無視 */ });
+    } catch (_e) { /* context 失効など同期例外も無視 */ }
   }
   function clearFrameTimer(st) { if (st && st.timer) { clearTimeout(st.timer); st.timer = null; } }
   function resetFrameProgress(tabId) {
     clearFrameTimer(frameProgress.get(tabId));
     frameProgress.delete(tabId);
+    lastErrorByTab.delete(tabId); // 新セッション開始/復元で直近エラーをクリア (古い理由が残らないように)
   }
   function handleFrameProgress(tabId, frameId, msg) {
     let st = frameProgress.get(tabId);
     if (!st) { st = { active: new Set(), done: new Set(), errored: false, timer: null }; frameProgress.set(tabId, st); }
     // error は終端。どれかのフレームが error を出したら、その後の done/progress で上書きしない
     // (別フレームの done が error 表示を消して「成功したように見える」のを防ぐ)。restore/新セッションでリセット。
-    if (msg.state === "error") { st.errored = true; clearFrameTimer(st); relayProgress(tabId, msg); return; }
+    if (msg.state === "error") {
+      st.errored = true; clearFrameTimer(st);
+      lastErrorByTab.set(tabId, { detail: msg.detail, ts: Date.now() }); // 後から popup を開いても理由を出せるよう状態化
+      relayProgress(tabId, msg); return;
+    }
     if (st.errored && msg.state !== "restored") return; // 終端後は restore 以外を中継しない
     switch (msg.state) {
       case "progress":
@@ -757,15 +895,16 @@ if (typeof importScripts === "function") {
       case "done":
         st.active.add(frameId);
         st.done.add(frameId);
+        if (msg.partial) st.partial = true; // どれかのフレームがレート制限等で一部未訳なら集約して done に乗せる
         clearFrameTimer(st);
         if ([...st.active].every((f) => st.done.has(f))) {
-          relayProgress(tabId, msg); // 全参加フレーム完了
+          relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(st.partial) })); // 全参加フレーム完了
         } else {
           // 未完フレームが残る。iframe の離脱/ナビゲーションで永久に done が来ず FAB/popup が loading に
           // 張り付くのを防ぐため watchdog を張る (猶予後に done を発行)。
           st.timer = setTimeout(() => {
             const cur = frameProgress.get(tabId);
-            if (cur) { cur.timer = null; relayProgress(tabId, msg); }
+            if (cur) { cur.timer = null; relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(cur.partial) })); }
           }, FRAME_DONE_GRACE_MS);
         }
         break;
@@ -788,6 +927,97 @@ if (typeof importScripts === "function") {
   } catch (_e) { /* noop */ }
 
   // ---- メッセージディスパッチ ----
+  // ---- 廃止モデルの動的フォールバック (404 → 同プロバイダの現行モデルへ自動切替 + 1 回再試行) ----
+  // 静的 RETIRED_MODELS(actions.js) は通信ゼロの保険。実行時に実際に 404 を食らったらこちらが自己修復するので、
+  // 未知の廃止 (今後どのモデルがいつ死んでも) を手動メンテ無しで吸収できる。
+  const modelFallback = new Map();     // "providerId:deadModelId" -> goodModelId (解決結果のキャッシュ)
+  const resolvingFallback = new Map(); // "providerId:deadModelId" -> Promise (10 並列が同時 404 でも解決を 1 回に集約)
+  // キーは provider でスコープする (同一モデル ID を 2 社が公開していても互いのフォールバックを汚染しない)。
+
+  function isModelGone(res) {
+    // LLM の chat/completions・:generateContent での 404 はほぼ「モデル ID 無効/廃止」。
+    // フォールバックの代償は最大 1 回の再試行のみなので 404 は一律モデル起因として扱う。
+    return Boolean(res && !res.ok && res.error === "http" && res.status === 404);
+  }
+
+  // 廃止モデルの代替を解決: まず provider.defaultModel(現行に保守)、既定自体が廃止なら live /models の先頭。
+  async function resolveFallbackModel(providerId, deadModel) {
+    const key = providerId + ":" + deadModel; // provider スコープのキー (社をまたぐ同名モデルの相互汚染を防ぐ)
+    if (modelFallback.has(key)) return modelFallback.get(key);
+    if (resolvingFallback.has(key)) return resolvingFallback.get(key);
+    const job = (async () => {
+      const provider = Providers.get(providerId);
+      const def = provider && provider.defaultModel;
+      if (def && def !== deadModel) return def;
+      try {
+        const s = await getSettingsCached();
+        const r = await fetchModels(providerId, keyFor(s, providerId));
+        const first = r && r.ok && r.models && r.models[0] && r.models[0].id;
+        if (first && first !== deadModel) return first;
+      } catch (_e) { /* live 取得失敗 → 復旧不可 */ }
+      return null;
+    })();
+    resolvingFallback.set(key, job);
+    let out = null;
+    try { out = await job; } finally { resolvingFallback.delete(key); }
+    // 解決成功はその現行モデルを、解決不能(null)は deadModel 自身を記録する。後者で「これ以上良いモデルは無い」を
+    // 表し、後続バッチが毎回 fetchModels を再発火するスラッシングを抑える (呼び出し側は cached!==cur / good!==dead で
+    // 再試行しないので deadModel キャッシュは安全)。SW は MV3 で頻繁に再起動 → キャッシュ揮発で再解決され、キー追加後も復旧する。
+    modelFallback.set(key, out || deadModel);
+    return out;
+  }
+
+  // 解決した現行モデルを settings に永続化 (applySettingsPatch で直列化 = 並行バッチの二重保存/lost update 回避)。
+  // deadModel ガード: 保存時点で当該 provider のモデルがまだ「死んだモデル」のときだけ書き換える。フォールバック解決中に
+  // ユーザーが別モデルへ手動変更していたら、その新しい選択を上書きしない (遅延フォールバックによる巻き戻し防止)。
+  async function persistModelSwitch(providerId, newModel, deadModel) {
+    await applySettingsPatch((base) => {
+      if (typeof deadModel === "string" && base.models[providerId] !== deadModel) return null; // ユーザーが変更済み → 触らない
+      if (base.models[providerId] === newModel) return null;
+      return { models: Object.assign({}, base.models, { [providerId]: newModel }) };
+    });
+  }
+
+  // 廃止モデル(404)を同プロバイダの現行モデルへ自動フォールバックして 1 回だけ再試行する共通ヘルパ。
+  // ① キャッシュ済みの「死亡モデル→現行」があれば最初の呼び出し前に先回りで差し替える(以後のバッチ/行で無駄な 404 を出さない)。
+  // ② 実際に 404 を食らったら resolveFallbackModel→persistModelSwitch(dead ガード付き)→同入力を 1 回再試行する。
+  // TRANSLATE_BATCH(ページ/クイック)から呼び、廃止モデルの自己修復を共通化する。
+  async function translateWithHeal(settings, texts, signal, batchId, tabId, frameId, quick) {
+    if (settings.provider !== "mymemory") {
+      const cur = (settings.models && settings.models[settings.provider]) || "";
+      const cached = modelFallback.get(settings.provider + ":" + cur);
+      if (cached && cached !== cur) {
+        settings = Object.assign({}, settings, { models: Object.assign({}, settings.models, { [settings.provider]: cached }) });
+      }
+    }
+    let res = await translateWith(settings, texts, signal, batchId, tabId, frameId, quick);
+    if (isModelGone(res) && settings.provider !== "mymemory") {
+      const dead = (settings.models && settings.models[settings.provider]) || "";
+      const good = await resolveFallbackModel(settings.provider, dead);
+      if (good && good !== dead) {
+        await persistModelSwitch(settings.provider, good, dead); // 保存 → 以後のバッチ/popup 表示も現行に揃う
+        settings = Object.assign({}, settings, { models: Object.assign({}, settings.models, { [settings.provider]: good }) });
+        res = await translateWith(settings, texts, signal, batchId, tabId, frameId, quick);
+      }
+    }
+    return res;
+  }
+
+  // stream(OpenAI 互換のみ) → 非stream の順で 1 バッチ翻訳する (404 フォールバックで 2 回呼べるよう関数化)。
+  async function translateWith(settings, texts, signal, batchId, tabId, frameId, quick) {
+    let res = null;
+    if (batchId != null && ProviderApi.supportsStream(settings.provider)) {
+      res = await translateBatchStream(settings, texts, signal, (index, text) => {
+        if (tabId != null) {
+          chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId, index, text }, { frameId })
+            .catch(() => { /* 受信端が無ければ無視 */ });
+        }
+      });
+    }
+    if (!res) res = await translateBatch(settings, texts, signal, { tune: !quick }); // stream 非対応/失敗は非stream へ。quick は学習しない
+    return res;
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.action !== "string") return undefined;
     // 自拡張由来のみ受理 (content / popup / options はいずれも sender.id が拡張 ID)
@@ -806,38 +1036,32 @@ if (typeof importScripts === "function") {
           }
           case Actions.TRANSLATE_BATCH: {
             const stored = await getSettingsCached();
-            const settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
+            let settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録
             const controller = new AbortController();
             const untrack = trackController(tabId, controller);
             try {
-              let res = null;
-              // OpenAI/xAI かつ content が batchId 付き(=逐次適用に対応)なら SSE ストリームで早出しを試す
-              if (msg.batchId != null && (settings.provider === "openai" || settings.provider === "xai")) {
-                res = await translateBatchStream(settings, msg.texts || [], controller.signal, (index, text) => {
-                  if (tabId != null) {
-                    chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId: msg.batchId, index, text }, { frameId })
-                      .catch(() => { /* 受信端が無ければ無視 */ });
-                  }
-                });
-              }
-              if (!res) res = await translateBatch(settings, msg.texts || [], controller.signal, { tune: !msg.quick }); // stream 非対応/失敗は非stream へ。quick は学習しない
+              const texts = msg.texts || [];
+              // 廃止モデルの 404 は translateWithHeal が同プロバイダの現行モデルへ自動フォールバック + 1 回再試行する
+              // (静的 RETIRED に依存せず未知の廃止も自己修復。キャッシュ先回りで 2 バッチ目以降の無駄な 404 も出さない)。
+              const res = await translateWithHeal(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
               sendResponse(res);
             } finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_IMAGE: {
             // ページから直接来る (popup の pendingSave を待てない) ため、進行中の APPLY_SETTINGS 保存を待ってから
-            // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回 OCR が旧 provider/旧言語で実行されるのを防ぐ。
+            // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回が旧 provider/旧言語で実行されるのを防ぐ。
             await settingsWriteChain;
             const stored = await getSettingsCached();
             const settings = resolveSettings(msg.settings, stored);
             const controller = new AbortController();
             const untrack = trackController(sender.tab && sender.tab.id, controller);
-            try { sendResponse(await translateImage(settings, msg.imageUrl, controller.signal)); }
-            finally { untrack(); }
+            try {
+              sendResponse(await translateImage(settings, msg.imageUrl, controller.signal));
+            } finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_PAGE: {
@@ -864,7 +1088,12 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.GET_STATE: {
-            sendResponse({ ok: true, settings: await getSettings() });
+            // popup が自タブの直近エラーを再表示できるよう、TTL 内の last-error も返す
+            // (自動翻訳/FAB はエラー後に popup を開かず、揮発イベントを逃すため)。
+            const errTab = msg.tabId;
+            const le = (errTab != null) ? lastErrorByTab.get(errTab) : null;
+            const lastError = (le && (Date.now() - le.ts) < LAST_ERROR_TTL_MS) ? le.detail : null;
+            sendResponse({ ok: true, settings: await getSettings(), lastError });
             break;
           }
           case Actions.GET_MODELS: {

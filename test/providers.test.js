@@ -77,6 +77,34 @@ test("buildRequest falls back to provider default model", () => {
   assert.equal(r.body.model, g.Providers.openai.defaultModel);
 });
 
+test("OpenAI 互換プロバイダ(openrouter/deepseek/groq)は chat/completions 形状を共有する", () => {
+  // OpenAI と同形 (Bearer 認証・chat/completions・json_object・max_tokens) を新 3 社で確認。
+  ["openrouter", "deepseek", "groq"].forEach((id) => {
+    const provider = g.Providers.get(id);
+    const r = ProviderApi.buildRequest(id, { texts: ["Hello"], sourceLang: "auto", targetLang: "ja", apiKey: "k-" + id });
+    assert.equal(r.url, provider.endpoint, `${id} endpoint`);
+    assert.equal(r.method, "POST", `${id} method`);
+    assert.equal(r.headers.Authorization, "Bearer k-" + id, `${id} auth`);
+    assert.equal(r.body.model, provider.defaultModel, `${id} default model`);
+    assert.equal(r.body.response_format.type, "json_object", `${id} response_format`);
+    assert.ok(r.body.max_tokens > 0, `${id} uses max_tokens (not max_completion_tokens)`);
+    assert.ok(!("max_completion_tokens" in r.body), `${id} は max_completion_tokens を使わない`);
+    assert.equal(r.body.messages.length, 2, `${id} messages`);
+    assert.match(r.body.messages[1].content, /Hello/, `${id} user content`);
+    // 非 OpenAI なので reasoning_effort は付かず temperature:0
+    assert.equal(r.body.temperature, 0, `${id} temperature`);
+    assert.ok(!("reasoning_effort" in r.body), `${id} no reasoning_effort`);
+  });
+});
+
+test("OpenAI 互換プロバイダは parseResponse / streamDelta も openai と同じ経路に乗る", () => {
+  ["openrouter", "deepseek", "groq"].forEach((id) => {
+    const json = { choices: [{ message: { content: '{"translations":["やあ"]}' } }] };
+    assert.deepEqual(ProviderApi.parseResponse(id, json), ["やあ"], `${id} parseResponse`);
+    assert.equal(ProviderApi.streamDelta(id, { choices: [{ delta: { content: "あ" } }] }), "あ", `${id} streamDelta`);
+  });
+});
+
 test("OpenAI は reasoning_effort をモデル別の最小値に、旧モデルは temperature:0", () => {
   // gpt-5.1 以降: temperature を送らず reasoning_effort:"none" (推論OFF・最速)
   const rNew = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4-nano", apiKey: "k" });
@@ -115,12 +143,20 @@ test("各社とも reasoning/thinking を最小(low)に明示指定する", () =
   assert.equal(gp.body.generationConfig.thinkingConfig.thinkingBudget, 128);
   const g20 = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-2.0-flash", apiKey: "k" });
   assert.ok(!g20.body.generationConfig.thinkingConfig);
-  // xAI: reasoning モデルは effort:low、非 reasoning は temperature:0
+  // xAI: 旧 "reasoning" 名義スラグは effort:low、非 reasoning は temperature:0
   const xr = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model: "grok-4-1-fast-reasoning", apiKey: "k" });
   assert.equal(xr.body.reasoning_effort, "low");
   const xn = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model: "grok-4-1-fast-non-reasoning", apiKey: "k" });
   assert.equal(xn.body.temperature, 0);
   assert.ok(!("reasoning_effort" in xn.body));
+  // xAI: ドット版 grok-4.x は既定 reasoning を "none" で切る (翻訳に推論不要・grok-4.3 等が既定で low を取るのを止める)
+  const x43 = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model: "grok-4.3", apiKey: "k" });
+  assert.equal(x43.body.reasoning_effort, "none");
+  assert.ok(!("temperature" in x43.body));
+  // Groq: gpt-oss は none 非対応 (low/medium/high のみ) なので既定 medium を最小の low に明示する
+  const goss = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "openai/gpt-oss-120b", apiKey: "k" });
+  assert.equal(goss.body.reasoning_effort, "low");
+  assert.equal(goss.body.temperature, 0);
 });
 
 test("buildRequest throws on unknown provider", () => {
@@ -342,4 +378,51 @@ test("parseImageBlocks returns [] when there are no blocks", () => {
 test("parseImageBlocks rejects non-string translation (schema slip → no [object Object])", () => {
   const json = { choices: [{ message: { content: '{"blocks":[{"translation":{"text":"x"},"box":{"x":0,"y":0,"w":0.5,"h":0.1}}]}' } }] };
   assert.deepEqual(ProviderApi.parseImageBlocks("openai", json), []);
+});
+
+test("parseImageBlocks captures cy (midline) and falls back to box center", () => {
+  const withCy = { choices: [{ message: { content: '{"blocks":[{"translation":"訳","cy":0.5,"box":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}]}' } }] };
+  assert.equal(ProviderApi.parseImageBlocks("openai", withCy)[0].cy, 0.5); // 明示 cy を採用
+  const noCy = { choices: [{ message: { content: '{"blocks":[{"translation":"訳","box":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}]}' } }] };
+  assert.ok(Math.abs(ProviderApi.parseImageBlocks("openai", noCy)[0].cy - 0.25) < 1e-9); // 欠落時は y+h/2 = 0.25
+});
+
+test("parseImageBlocks converts Gemini box_2d [ymin,xmin,ymax,xmax]/1000 to box + cy", () => {
+  const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[200,100,400,600],"original":"Hi","translation":"やあ"}]' }] } }] };
+  const r = ProviderApi.parseImageBlocks("gemini", g);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].translation, "やあ");
+  // ymin .2 / xmin .1 / ymax .4 / xmax .6 → x .1, y .2, w .5, h .2, cy .3 (x/y 反転していないことの確認)
+  assert.ok(Math.abs(r[0].box.x - 0.1) < 1e-9);
+  assert.ok(Math.abs(r[0].box.y - 0.2) < 1e-9);
+  assert.ok(Math.abs(r[0].box.w - 0.5) < 1e-9);
+  assert.ok(Math.abs(r[0].box.h - 0.2) < 1e-9);
+  assert.ok(Math.abs(r[0].cy - 0.3) < 1e-9);
+});
+
+test("parseImageBlocks (gemini) drops items without a valid 4-element box_2d", () => {
+  const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[1,2,3],"translation":"x"},{"translation":"y"}]' }] } }] };
+  assert.deepEqual(ProviderApi.parseImageBlocks("gemini", g), []);
+});
+
+test("parseImageBlocks keeps explicit kind and leaves missing/unknown kind undefined (kind 非対応モデル判別用)", () => {
+  // openai 分岐: logo/text は明示値のみ保持、欠落・未知値は undefined (filterBlocks が hasKind=false を判定して
+  // looksLikeBrandWordmark 保険を走らせるため。"text" に倒すと hasKind が常に真になり保険が死ぬ)。
+  const oa = { choices: [{ message: { content: '{"blocks":[' +
+    '{"translation":"Claude","kind":"logo","box":{"x":0,"y":0,"w":0.2,"h":0.05}},' +
+    '{"translation":"本文","box":{"x":0,"y":0.5,"w":0.3,"h":0.05}},' +
+    '{"translation":"見出し","kind":"text","box":{"x":0,"y":0.6,"w":0.3,"h":0.05}},' +
+    '{"translation":"未知","kind":"banana","box":{"x":0,"y":0.7,"w":0.3,"h":0.05}}]}' } }] };
+  const r = ProviderApi.parseImageBlocks("openai", oa);
+  assert.equal(r.length, 4);
+  assert.equal(r[0].kind, "logo");
+  assert.equal(r[1].kind, undefined);  // 欠落 → undefined
+  assert.equal(r[2].kind, "text");     // 明示 text は保持
+  assert.equal(r[3].kind, undefined);  // 未知値 → undefined
+  // gemini 分岐も同様: logo 保持、欠落は undefined
+  const g = { candidates: [{ content: { parts: [{ text:
+    '[{"box_2d":[0,0,50,200],"translation":"Claude","kind":"logo"},{"box_2d":[500,0,550,300],"translation":"本文"}]' }] } }] };
+  const rg = ProviderApi.parseImageBlocks("gemini", g);
+  assert.equal(rg[0].kind, "logo");
+  assert.equal(rg[1].kind, undefined);
 });

@@ -4,8 +4,8 @@
 #   powershell -ExecutionPolicy Bypass -File zip.ps1 -Target chrome     # Chrome のみ
 #   powershell -ExecutionPolicy Bypass -File zip.ps1 -Target firefox    # Firefox のみ
 #
-# Chrome/Firefox は単一 manifest.json を共有する（background に service_worker と scripts を併記）。
-# Chrome 版は .zip、Firefox 版は .xpi 拡張子で出力する（中身は同一）。
+# ソース manifest.json は Chrome 純正（background.service_worker のみ）。Chrome 版はそのまま .zip 出力。
+# Firefox は service_worker 非対応のため build-firefox-manifest.mjs で background.scripts 形式へ変換して .xpi 出力する。
 
 param(
     [ValidateSet("chrome","firefox","both")]
@@ -13,6 +13,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Chrome/Firefox 両 variant に同梱する共有ディレクトリ(単一ソース)。CI(publish.yml の job env PKG_DIRS)と揃える。
+# manifest.json は variant 別(Chrome=純正 / Firefox=生成)なので含めず Build-Package 内で個別に扱う。
+$PkgDirs = @("icons", "src", "_locales")
 
 Write-Host "拡張機能パッケージを生成中... (Target: $Target)" -ForegroundColor Cyan
 Write-Host ""
@@ -37,10 +41,15 @@ function Build-Package {
     New-Item -ItemType Directory -Path $tempDir | Out-Null
 
     Write-Host "ファイルをコピー中..." -ForegroundColor Yellow
-    Copy-Item "manifest.json" -Destination "$tempDir/manifest.json"
-    Copy-Item "icons" -Destination $tempDir -Recurse
-    Copy-Item "src" -Destination $tempDir -Recurse
-    Copy-Item "_locales" -Destination $tempDir -Recurse
+    if ($Variant -eq "firefox") {
+        # Firefox は background.service_worker 非対応 → scripts 形式へ変換 (importScripts を単一ソースに生成)
+        node build-firefox-manifest.mjs "$tempDir/manifest.json"
+        if ($LASTEXITCODE -ne 0) { Write-Host "Firefox manifest 生成に失敗しました" -ForegroundColor Red; exit 1 }
+    } else {
+        Copy-Item "manifest.json" -Destination "$tempDir/manifest.json"  # Chrome はソース manifest をそのまま
+    }
+    # 同梱ディレクトリは単一ソース ($PkgDirs)。CI と同じ列挙を保つ (片側更新漏れ=片 OS 欠損 を防ぐ)。
+    foreach ($d in $PkgDirs) { Copy-Item $d -Destination $tempDir -Recurse }
 
     Get-ChildItem -Path $tempDir -Recurse -Include "*.DS_Store","*.swp","*~" | Remove-Item -Force
 

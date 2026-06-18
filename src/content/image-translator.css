@@ -17,6 +17,8 @@
   display: none;
 }
 .__rt-img-btn:hover { filter: brightness(1.08); }
+/* 翻訳済み画像のボタンは「原」(元に戻す) 表示。墨色にして「訳」ボタンと区別する */
+.__rt-img-btn.__rt-img-btn-on { background: #2b3645; }
 
 /* display / width / height は ensureWrap が元画像の表示ボックスに合わせて inline 指定する (拡大防止) */
 .__rt-img-wrap { position: relative; }
@@ -27,6 +29,10 @@
   pointer-events: none;
   overflow: hidden;
 }
+
+/* 焼き込み canvas は表示ボックス px×dpr で生成し CSS で width/height:100% 表示する。等倍〜拡大のみなので
+   smooth(auto) のままにし、最近傍化によるドット感を避ける (解像度合わせが主・CSS は保険)。 */
+.__rt-img-canvas { image-rendering: auto; }
 
 .__rt-img-block {
   position: absolute;

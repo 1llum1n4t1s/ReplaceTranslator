@@ -23,6 +23,12 @@
   // 文字量の多い画像(漫画・図表)では足りずに切れることがあるので、その場合はここを上げる。
   const IMAGE_MAX_OUTPUT_TOKENS = 2048;
 
+  // OpenAI 互換プロバイダ集合 (chat/completions・Bearer・usage 同形・/models 一覧・OpenAI 画像形式を共有)。
+  // 新しい OpenAI 互換サービスはここに id を足すだけで buildRequest/extractContent/streamDelta/parseUsage/
+  // buildModelsRequest/parseModels/buildImageRequest の全分岐に乗る (各所の条件分岐を二重管理しないため)。
+  const OPENAI_COMPAT = ["openai", "xai", "openrouter", "deepseek", "groq"];
+  function isOpenAICompat(id) { return OPENAI_COMPAT.indexOf(id) !== -1; }
+
   // 出力上限パラメータ。OpenAI の gpt-5/o 系は max_tokens 非対応のため max_completion_tokens、
   // xAI(Grok) は max_tokens。テキスト/画像の両 buildRequest が同じ分岐を持つので 1 箇所に集約する。
   function maxTokensCap(providerId, n) {
@@ -78,8 +84,17 @@
       if (/^gpt-5/i.test(m)) body.verbosity = "low";
       return body;
     }
-    if (providerId === "xai" && /reasoning/i.test(m) && !/non-reasoning/i.test(m)) {
+    // xAI: ドット版 grok-4.x (grok-4.3 等) は推論モデルで未指定だと既定 reasoning_effort:"low" を取るため、翻訳では
+    // "none" で推論を切る (grok-4.x は none 対応)。旧来の "reasoning" 名義スラグ (none 非対応) だけ "low" を維持する。
+    // 素の grok-4 / grok-4-1-fast-non-reasoning は非 reasoning 扱いで下の temperature:0 に落ちる。
+    if (providerId === "xai" && (/^grok-4\.\d/i.test(m) || (/reasoning/i.test(m) && !/non-reasoning/i.test(m)))) {
+      body.reasoning_effort = /^grok-4\.\d/i.test(m) ? "none" : "low";
+      return body;
+    }
+    // Groq gpt-oss は未指定だと既定 reasoning_effort:"medium"。翻訳に推論は不要なので最小の "low" へ (Groq は none 非対応＝low/medium/high のみ)。
+    if (providerId === "groq" && /gpt-oss/i.test(m)) {
       body.reasoning_effort = "low";
+      body.temperature = 0;
       return body;
     }
     body.temperature = 0;
@@ -131,7 +146,7 @@
     const system = buildSystemPrompt(o.sourceLang, o.targetLang);
     const userContent = JSON.stringify(o.texts || []);
 
-    if (providerId === "openai" || providerId === "xai") {
+    if (isOpenAICompat(providerId)) {
       // xAI(Grok) は OpenAI 互換なので chat/completions 形式を共有する。
       // 出力上限を付け、prompt injection / format drift で verbose 化したときの遅延・課金枠浪費を防ぐ。
       const cap = maxTokensCap(providerId, MAX_OUTPUT_TOKENS);
@@ -209,7 +224,7 @@
   // 各社レスポンスから LLM の生成テキスト (本文) を取り出す
   function extractContent(providerId, json) {
     if (!json || typeof json !== "object") return "";
-    if (providerId === "openai" || providerId === "xai") {
+    if (isOpenAICompat(providerId)) {
       const c = json.choices && json.choices[0] && json.choices[0].message;
       return (c && typeof c.content === "string") ? c.content : "";
     }
@@ -262,7 +277,7 @@
   // ストリーミング SSE の 1 data オブジェクトから増分テキストを取り出す (OpenAI/xAI chat-completions の delta.content)。
   // 増分が無い chunk (usage のみ等) は空文字。stream 対応は openai/xai のみ。
   function streamDelta(providerId, obj) {
-    if (providerId === "openai" || providerId === "xai") {
+    if (isOpenAICompat(providerId)) {
       const d = obj && obj.choices && obj.choices[0] && obj.choices[0].delta;
       return (d && typeof d.content === "string") ? d.content : "";
     }
@@ -274,7 +289,7 @@
     let input = 0;
     let output = 0;
     if (json && typeof json === "object") {
-      if (providerId === "openai" || providerId === "xai") {
+      if (isOpenAICompat(providerId)) {
         const u = json.usage || {};
         input = u.prompt_tokens || 0;
         output = u.completion_tokens || 0;
@@ -296,7 +311,7 @@
     const provider = globalThis.Providers && globalThis.Providers.get(providerId);
     if (!provider) return null;
     const key = apiKey || "";
-    if (providerId === "openai" || providerId === "xai") {
+    if (isOpenAICompat(providerId)) {
       const base = provider.endpoint.replace(/\/chat\/completions$/, "");
       return { url: `${base}/models`, headers: { Authorization: `Bearer ${key}` } };
     }
@@ -320,7 +335,7 @@
   // Gemini は created を持たないため 0 + version で、呼び出し側がバージョン降順に並べる。
   function parseModels(providerId, json) {
     if (!json || typeof json !== "object") return [];
-    if (providerId === "openai" || providerId === "xai") {
+    if (isOpenAICompat(providerId)) {
       return (json.data || []).map((m) => ({ id: m.id, created: Number(m.created) || 0 }));
     }
     if (providerId === "anthropic") {
@@ -348,12 +363,36 @@
     const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
     const srcName = Lang ? Lang.promptName(sourceLang) : null;
     return [
-      `You are an OCR translator. Detect every text block in the image.`,
+      `You are an OCR translator. Detect EVERY text block in the image — do not skip any line, including short lines, headings, single words, and lines near the edges.`,
       srcName ? `The source language is ${srcName}.` : "",
-      `Return ONLY a JSON object {"blocks":[{"original":"...","translation":"...","box":{"x":0,"y":0,"w":0,"h":0}}]}`,
-      `where box is normalized to 0..1 relative to the image (x,y = top-left of the block).`,
+      `Return ONLY a JSON object {"blocks":[{"original":"...","translation":"...","kind":"text","cy":0,"box":{"x":0,"y":0,"w":0,"h":0}}]}`,
+      `All coordinates are normalized 0..1 over the FULL image; the origin (0,0) is the TOP-LEFT pixel and y increases downward.`,
+      `Distinguish real readable text from graphic LOGOS and BRAND WORDMARKS (a company or app name rendered as a stylized graphic mark, typically in a header or footer). Do NOT translate logos, wordmarks, or app names that function as a brand mark; copy such text unchanged and set "kind":"logo". For all normal readable text (paragraphs, headings, sentences, UI labels, captions) set "kind":"text" and translate it. When unsure, prefer "kind":"text" so that real content is never dropped.`,
+      // VLM は枠の上端(box.y)より「テキストの縦中央(cy)」を桁違いに安定して当てる。cy を一次量として要求し、
+      // クライアントは cy に帯の中心を合わせて配置する。これで box.y の系統的な上ズレに依存せず原文行へ重なる。
+      `cy is THE MOST IMPORTANT field: the vertical CENTER (midline) of the text. A horizontal line drawn at y=cy must pass exactly through the middle of the visible glyphs — not the top of the line, not the baseline. Get cy right first; models locate this midline far more reliably than edges.`,
+      `box tightly encloses ONLY the visible glyphs: x = left edge, x+w = right edge, y = top edge (= cy - h/2), y+h = bottom edge. The left edge x must reach the left side of the FIRST glyph — never start the box inside the first character. Exclude avatars, profile pictures, icons, buttons, logos and any surrounding padding.`,
+      `Group text into its natural visual blocks (one paragraph or sentence sharing a position); do not merge blocks that are far apart.`,
+      `Before answering, re-check every cy: imagine a horizontal line at y=cy; it must cut through the middle of that text. Fix any cy that sits above or below the glyphs.`,
       `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
       `If the image has no text, return {"blocks":[]}. No explanations.`,
+    ].filter(Boolean).join("\n");
+  }
+
+  // Gemini 専用プロンプト。Gemini 2.5 は object detection を「box_2d = [ymin,xmin,ymax,xmax]・0..1000 正規化」で
+  // 返すよう訓練されており、自由形式 {x,y,w,h} より bbox 精度が高い。parseImageBlocks で {x,y,w,h}0..1 + cy に変換する。
+  function buildImagePromptGemini(sourceLang, targetLang) {
+    const Lang = globalThis.Lang;
+    const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
+    const srcName = Lang ? Lang.promptName(sourceLang) : null;
+    return [
+      `Detect EVERY text block in the image and translate it — do not skip any line, including short lines, headings, single words, and lines near the edges.`,
+      srcName ? `The source language is ${srcName}.` : "",
+      `Return ONLY a JSON array. Each item: {"box_2d":[ymin,xmin,ymax,xmax],"original":"...","translation":"...","kind":"text"}.`,
+      `box_2d is the standard 2D bounding box: [ymin, xmin, ymax, xmax] (y first), each an integer normalized 0..1000 over the FULL image with the top-left as origin. Make it tightly enclose ONLY the visible glyphs and let xmin reach the left side of the FIRST glyph — exclude avatars, profile pictures, icons, buttons, logos and surrounding padding.`,
+      `Distinguish real readable text from graphic LOGOS and BRAND WORDMARKS (a company or app name rendered as a stylized graphic mark, usually in the header or footer). For a logo or brand wordmark, copy its text into "original" unchanged and set "kind":"logo"; do not translate it. For all normal readable text set "kind":"text" and translate it. When unsure, choose "kind":"text".`,
+      `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
+      `If the image has no text, return [].`,
     ].filter(Boolean).join("\n");
   }
 
@@ -368,7 +407,7 @@
     const mime = o.mimeType || "image/png";
     const b64 = o.imageBase64 || "";
 
-    if (providerId === "openai" || providerId === "xai") {
+    if (isOpenAICompat(providerId)) {
       // 出力上限を付け、verbose 化による課金枠の浪費を防ぐ (Anthropic/Gemini と同じ IMAGE_MAX_OUTPUT_TOKENS)。
       const cap = maxTokensCap(providerId, IMAGE_MAX_OUTPUT_TOKENS);
       const body = tuneReasoning(providerId, model, Object.assign({
@@ -405,15 +444,30 @@
     }
     if (providerId === "gemini") {
       const url = provider.endpoint.replace("{model}", encodeURIComponent(model));
+      // Gemini はネイティブ box_2d 形式が高精度。responseSchema で型を固定し JSON 崩れも防ぐ。
+      // required は translation のみ (テキスト無し画像で空配列を返せるよう box_2d は任意に)。
+      const responseSchema = {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            box_2d: { type: "ARRAY", items: { type: "INTEGER" } },
+            original: { type: "STRING" },
+            translation: { type: "STRING" },
+            kind: { type: "STRING" }, // "text" | "logo" (Gemini は schema に無い field を出さないため明示)
+          },
+          required: ["translation"],
+        },
+      };
       return {
         url, method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: {
           contents: [{ role: "user", parts: [
-            { text: prompt },
+            { text: buildImagePromptGemini(o.sourceLang, o.targetLang) },
             { inline_data: { mime_type: mime, data: b64 } },
           ] }],
-          generationConfig: Object.assign({ temperature: 0, responseMimeType: "application/json", maxOutputTokens: IMAGE_MAX_OUTPUT_TOKENS },
+          generationConfig: Object.assign({ temperature: 0, responseMimeType: "application/json", responseSchema, maxOutputTokens: IMAGE_MAX_OUTPUT_TOKENS },
             geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
         },
       };
@@ -423,15 +477,39 @@
 
   function parseImageBlocks(providerId, json) {
     const obj = parseJsonLoose(extractContent(providerId, json));
+    // Gemini はネイティブの box_2d=[ymin,xmin,ymax,xmax] 0..1000 で返す → {x,y,w,h}0..1 + cy(縦中央) へ変換。
+    if (providerId === "gemini") {
+      const arr = Array.isArray(obj) ? obj : ((obj && Array.isArray(obj.blocks)) ? obj.blocks : []);
+      return arr
+        .filter((b) => b && Array.isArray(b.box_2d) && b.box_2d.length === 4 && typeof b.translation === "string" && b.translation)
+        .map((b) => {
+          const ymin = clamp01(Number(b.box_2d[0]) / 1000), xmin = clamp01(Number(b.box_2d[1]) / 1000);
+          const ymax = clamp01(Number(b.box_2d[2]) / 1000), xmax = clamp01(Number(b.box_2d[3]) / 1000);
+          const y = Math.min(ymin, ymax), x = Math.min(xmin, xmax);
+          const h = clamp01(Math.abs(ymax - ymin)), w = clamp01(Math.abs(xmax - xmin));
+          return {
+            original: typeof b.original === "string" ? b.original : "",
+            translation: b.translation,
+            box: { x, y, w, h },
+            cy: clamp01(y + h / 2), // box_2d は枠なので縦中央を算出 (配置の主アンカー)
+            // ロゴ重畳除外信号。logo/text は明示値のみ採用し、欠落は undefined にする (kind 非対応モデルを filterBlocks が判別して
+            // looksLikeBrandWordmark 保険を走らせるため。"text" に倒すと hasKind が常に真になり保険が死ぬ)。
+            kind: b.kind === "logo" ? "logo" : (b.kind === "text" ? "text" : undefined),
+          };
+        });
+    }
     const blocks = (obj && Array.isArray(obj.blocks)) ? obj.blocks : (Array.isArray(obj) ? obj : []);
     return blocks
       // translation は文字列のみ採用 (オブジェクト等を String 化して "[object Object]" を画像に貼らない)。original も文字列のみ。
       .filter((b) => b && b.box && typeof b.translation === "string" && b.translation)
-      .map((b) => ({
-        original: typeof b.original === "string" ? b.original : "",
-        translation: b.translation,
-        box: { x: clamp01(b.box.x), y: clamp01(b.box.y), w: clamp01(b.box.w), h: clamp01(b.box.h) },
-      }));
+      .map((b) => {
+        const box = { x: clamp01(b.box.x), y: clamp01(b.box.y), w: clamp01(b.box.w), h: clamp01(b.box.h) };
+        // cy(縦中央)を優先採用。VLM は枠上端(box.y)より縦中央を安定して当てるため配置の主アンカーにする。無ければ box 縦中央。
+        const cy = Number.isFinite(Number(b.cy)) ? clamp01(Number(b.cy)) : clamp01(box.y + box.h / 2);
+        // ロゴ重畳除外信号。明示値のみ採用し欠落は undefined (kind 非対応モデルを判別して保険 looksLikeBrandWordmark を走らせる)。
+        const kind = b.kind === "logo" ? "logo" : (b.kind === "text" ? "text" : undefined);
+        return { original: typeof b.original === "string" ? b.original : "", translation: b.translation, box, cy, kind };
+      });
   }
 
   const ProviderApi = Object.freeze({
@@ -441,10 +519,12 @@
     extractTranslations,
     parseResponse,
     streamDelta,
+    supportsStream: isOpenAICompat, // SSE 早出しは OpenAI 互換社のみ (stream + stream_options を共有)
     parseUsage,
     buildModelsRequest,
     parseModels,
     buildImagePrompt,
+    buildImagePromptGemini,
     buildImageRequest,
     parseImageBlocks,
   });

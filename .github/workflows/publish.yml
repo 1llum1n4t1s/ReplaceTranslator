@@ -12,6 +12,11 @@ jobs:
   package:
     name: ZIP パッケージ作成
     runs-on: ubuntu-latest
+    env:
+      # Chrome zip と Firefox build に同梱する共有ディレクトリ(単一ソース)。新たに同梱必須の
+      # トップレベルディレクトリが増えたらここだけ直せば両 artifact に反映され、片側更新漏れ(片 OS 欠損)を防ぐ。
+      # manifest.json は target 別(Chrome=純正 / Firefox=生成)なので含めず各 step で個別に扱う。
+      PKG_DIRS: icons src _locales
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -64,8 +69,8 @@ jobs:
       - name: zip パッケージを作成
         run: |
           # _locales/ は manifest.json の default_locale 参照先。含めないと CWS の Submit for review で
-          # PKG_DEFAULT_LOCALE_MISSING エラーになる。
-          zip -r replace-translator.zip manifest.json icons src _locales \
+          # PKG_DEFAULT_LOCALE_MISSING エラーになる。同梱ディレクトリは $PKG_DIRS(job env)を単一ソースに使う。
+          zip -r replace-translator.zip manifest.json $PKG_DIRS \
             -x "*.DS_Store" "*.swp" "*~"
           ls -lh replace-translator.zip
 
@@ -78,12 +83,12 @@ jobs:
 
       - name: Firefox 用ソースディレクトリを構築
         run: |
-          # 単一 manifest.json を共有（Firefox は background.scripts、Chrome は service_worker を使う）
+          # ソース manifest.json は Chrome 純正(service_worker)。Firefox は service_worker 非対応のため
+          # build-firefox-manifest.mjs で background.scripts 形式へ変換する(importScripts を単一ソースに生成)。
           mkdir -p firefox-build
-          cp manifest.json firefox-build/manifest.json
-          cp -r icons firefox-build/
-          cp -r src firefox-build/
-          cp -r _locales firefox-build/
+          node build-firefox-manifest.mjs firefox-build/manifest.json
+          # 同梱ディレクトリは Chrome zip と同じ $PKG_DIRS(job env)を単一ソースに使う(片側更新漏れ防止)。
+          for d in $PKG_DIRS; do cp -r "$d" firefox-build/; done
           find firefox-build \( -name "*.DS_Store" -o -name "*.swp" -o -name "*~" \) -delete
           echo "📂 firefox-build 内容:"
           ls -la firefox-build/
@@ -221,7 +226,10 @@ jobs:
     name: Firefox AMO に submission
     runs-on: ubuntu-latest
     needs: package
-    if: ${{ success() || failure() }}
+    # package(テスト/ビルド/artifact 生成)が成功したときだけ走る。CWS publish ジョブとは独立(両者 needs: package)
+    # なので CWS publish が失敗しても Firefox は出せる。package 失敗時は firefox-source artifact が無く、
+    # 旧 success()||failure() だと download-artifact が二次エラーで赤くなり障害切り分けを濁すため result 判定にする。
+    if: ${{ needs.package.result == 'success' }}
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.0

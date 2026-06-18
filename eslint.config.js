@@ -17,7 +17,7 @@ const ACTIONS_GLOBALS = {
   SettingsSchema: "readonly",   // src/lib/actions.js — 設定スキーマ + normalize
   StorageKeys: "readonly",      // src/lib/actions.js — storage キー
   Providers: "readonly",        // src/lib/actions.js — プロバイダ定義 (id/label/endpoint/model)
-  TokenUsage: "readonly",       // src/lib/actions.js — usage 集計ヘルパー (currentMonthKey/addUsage)
+  TokenUsage: "readonly",       // src/lib/actions.js — usage 集計ヘルパー (currentMonthKey/pruneUsage)
   Lang: "readonly",             // src/lib/lang.js — 言語コード ⇔ 表示名テーブル
   ProviderApi: "readonly",      // src/lib/providers.js — buildRequest/parseResponse/parseUsage/parseModels
   BatchTuner: "readonly",       // src/lib/actions.js — バッチサイズ自動学習
