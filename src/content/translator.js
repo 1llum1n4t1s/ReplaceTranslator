@@ -43,6 +43,7 @@
   let flushTimer = null;
   let pendingAttrRoots = new Set();     // 可視性に効く属性変化があった要素 (デバウンスして再 ingest する対象)
   let attrTimer = null;                 // 属性駆動の再 ingest デバウンスタイマー
+  let reingestTimers = [];              // scheduleReingest の遅延再走査タイマー群 (多重起動を畳む/停止時に解除)
   let flushing = false;                 // flush 走行中フラグ (同時多発を直列化して 429 を抑える)
   let firstFlush = true;                // 初回 flush は即時(最初の訳を早く出す)、以降デバウンス
   let announced = false;                // 初回 done 通知済みか (以降のスクロール翻訳では戻さない)
@@ -55,6 +56,11 @@
   const queue = [];                     // 翻訳待ち {node, text}
   const INCOMPLETE_REQUEUE_MAX = 2;     // stream 出力切れ(incomplete)で未訳のまま残ったノードを再キューする上限 (無限ループ防止)
 
+  // 初回翻訳 / SPA 遷移のあと、コンテンツが段階的に描画されるのを待って全体を取り込み直す遅延(ms)。
+  // qiankun 等の micro-frontend や非同期チャートは初回 ingest 時に 0-height で、可視内で高さが付いても IO は
+  // 発火しない (スクロールしないと訳されない)。描画完了後に再走査して「高さの付いたブロック」を near として拾う。
+  // 旧 [350,1200] は遅いダッシュボードの描画(2〜4s+)に間に合わず "翻訳済みなのに英語のまま" になっていた。
+  const REINGEST_DELAYS = [350, 1200, 2500, 4500, 7500, 12000];
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
   const PREFETCH_PX = 1200;
   const PREFETCH_MARGIN = `${PREFETCH_PX}px`;
@@ -550,13 +556,16 @@
     }, 250);
   }
 
-  // SPA 遷移後はコンテンツが段階的に差し変わるので、少し待ってから全体を取り込み直す (2 回)
+  // 初回翻訳 / SPA 遷移後はコンテンツが段階的に描画されるので、REINGEST_DELAYS の各時点で全体を取り込み直す。
+  // 描画完了後の再走査で「初回 ingest 時 0-height → 後から高さが付いた」ブロックを near として拾い、IO 非依存で訳す。
+  // 前のスケジュールは貼り直し前に解除する (SPA 連続遷移で多重起動しないように)。
   function scheduleReingest() {
-    for (const delay of [350, 1200]) {
+    for (const id of reingestTimers) window.clearTimeout(id);
+    reingestTimers = REINGEST_DELAYS.map((delay) =>
       window.setTimeout(() => {
         if (translating && contextAlive()) ingest(document.body || document.documentElement);
-      }, delay);
-    }
+      }, delay)
+    );
   }
   function onPopState() {
     if (translating && location.href !== lastHref) { lastHref = location.href; scheduleReingest(); }
@@ -582,6 +591,8 @@
     if (flushTimer) { window.clearTimeout(flushTimer); flushTimer = null; }
     if (attrTimer) { window.clearTimeout(attrTimer); attrTimer = null; }
     pendingAttrRoots = new Set();
+    for (const id of reingestTimers) window.clearTimeout(id);
+    reingestTimers = [];
     queue.length = 0;
     pendingBatches.clear(); // 復元時に in-flight の streaming partial 紐付けを破棄 (stale 適用防止)
     observedShadowRoots = new WeakSet();
