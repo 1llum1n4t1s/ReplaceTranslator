@@ -43,19 +43,12 @@
     "activeTab",
     "storage",
     "scripting",
-    "contextMenus",
-    "offscreen"
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; frame-ancestors 'none'"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["src/libs/onnxruntime/*"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'self'; frame-ancestors 'none'"
+  }
 }

@@ -23,11 +23,7 @@
     GET_MODELS: "GET_MODELS",               // プロバイダのモデル一覧を動的取得 (新しい順10件 + 価格)
     // content → background
     TRANSLATE_BATCH: "TRANSLATE_BATCH",     // テキスト配列の翻訳を代理依頼
-    TRANSLATE_IMAGE: "TRANSLATE_IMAGE",     // 画像内テキストの翻訳 (vision・オプション)
-    // content → background → offscreen (Chrome) / inline (Firefox): ローカル ONNX 推論 (Phase 3/4・オプション)
-    INPAINT_IMAGE: "INPAINT_IMAGE",         // MI-GAN で原文領域を消去 (ニューラル inpaint)
-    OCR_IMAGE: "OCR_IMAGE",                 // PaddleOCR det+rec を offscreen 内で実行し blocks[{box,cy,original}] を返す
-    RUN_INFERENCE: "RUN_INFERENCE",         // background → offscreen の内部エンベロープ (上記 op を包む)
+    TRANSLATE_IMAGE: "TRANSLATE_IMAGE",     // 画像内テキストの翻訳 (vision)
     // background → content
     APPLY_TRANSLATE_CS: "APPLY_TRANSLATE_CS", // content に翻訳開始を指示
     APPLY_RESTORE_CS: "APPLY_RESTORE_CS",     // content に復元を指示
@@ -40,10 +36,10 @@
   const StorageKeys = Object.freeze({
     SETTINGS: "settings",
     TOKEN_USAGE: "tokenUsage",
-    FAB_POSITION: "fabPosition",   // FAB のドラッグ位置 {left, top}
+    FAB_POSITION: "fabPosition",   // FAB(右端タブ) の縦位置比率 {ratio}。旧 {top}/{left,top} は ratio へ換算
     MODELS_CACHE: "modelsCache",   // 動的取得したモデル一覧 {provider: {models, fetchedAt}}
     BATCH_TUNING: "batchTuning",   // バッチサイズ自動学習の状態 {provider: {size, throughput, dir}}
-    CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, showFab} (apiKeys を含めない)
+    CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, showFab, imageCapable} (apiKeys を含めない)
   });
 
   // ---- プロバイダ定義 ----
@@ -144,6 +140,12 @@
     value: function (id) { return Providers[id] || null; },
     enumerable: false,
   });
+  // 画像翻訳(vision)対応プロバイダか。visionModel を持つ社のみ true (openai/anthropic/gemini/openrouter/groq)。
+  // xai/deepseek(text のみ)/mymemory(NMT) は false。content のボタン出し分けと SW の no_vision 判定で共有する。
+  Object.defineProperty(Providers, "supportsImage", {
+    value: function (id) { const p = Providers[id]; return Boolean(p && p.visionModel); },
+    enumerable: false,
+  });
   Object.freeze(Providers);
 
   const PROVIDER_IDS = Providers.ids;
@@ -166,10 +168,6 @@
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     showFab: true,               // ページ右下のフローティング翻訳ボタンを表示する (OFF でも popup/右クリックから翻訳可)
-    // 画像翻訳エンジン: "cloud"=クラウド vision で OCR+box+訳 (既定) / "local"=PaddleOCR でローカル OCR+box→TRANSLATE_BATCH で訳
-    // (Chrome offscreen 限定。Firefox は cloud にフォールバック)。
-    imageEngine: "cloud",
-    neuralErase: false,          // 原文消去に MI-GAN(ニューラル inpaint)を使う (OFF=背景色 fill。textured 背景で綺麗。Chrome 限定)
   });
 
   // 各社が廃止したモデル ID。保存設定 (settings.models[*]) に残っていると翻訳時に 404 で詰むため、
@@ -203,7 +201,11 @@
       apiKeys[id] = typeof apiKeysIn[id] === "string" ? apiKeysIn[id] : "";
       const saved = (typeof modelsIn[id] === "string" && modelsIn[id]) ? modelsIn[id] : null;
       // 廃止モデルが保存されていたら既定へ移行する (古い保存値で 404 のまま詰むのを防ぐ)。
-      models[id] = (saved && !RETIRED_MODELS.has(saved)) ? saved : Providers[id].defaultModel;
+      // 既定モデル自体が廃止済みのとき (廃止期日が来て RETIRED へ足したが defaultModel の更新を忘れた等) は、
+      // 廃止モデルを書き戻して実行時 404 自己修復と往復し続けないよう null (未選択 → live 取得で解決) に倒す。
+      const def = Providers[id].defaultModel;
+      const fallbackModel = (def && RETIRED_MODELS.has(def)) ? null : def;
+      models[id] = (saved && !RETIRED_MODELS.has(saved)) ? saved : fallbackModel;
     }
     return {
       provider,
@@ -213,8 +215,6 @@
       models,
       autoTranslate: Boolean(r.autoTranslate),
       showFab: r.showFab !== false, // 既定 ON。既存ユーザーの保存済み設定 (キー欠損) でも FAB が消えないよう !== false で判定
-      imageEngine: r.imageEngine === "local" ? "local" : "cloud", // 未知値/欠損は cloud
-      neuralErase: Boolean(r.neuralErase),
     };
   }
 

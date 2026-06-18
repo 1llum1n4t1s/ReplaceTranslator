@@ -22,6 +22,8 @@
   let btn = null;
   let target = null;
   let dead = false; // shutdown 済みフラグ (リスナー解除後の再入を弾く)
+  let imageCapable = false; // 選択中プロバイダが画像翻訳(vision)対応か。CONTENT_FLAGS から読む。確定まで false=安全側
+  // (既定 provider は mymemory=非対応。楽観的に true 初期化すると get 解決前の数ms に非対応でもボタンが一瞬出るため false 始動)
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
@@ -37,6 +39,7 @@
     try { document.removeEventListener("mouseout", onMouseOut, true); } catch (_e) { /* noop */ }
     try { window.removeEventListener("scroll", onScroll, true); } catch (_e) { /* noop */ }
     try { chrome.runtime.onMessage.removeListener(onRuntimeMessage); } catch (_e) { /* noop */ }
+    try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch (_e) { /* noop */ }
     try { if (btn) btn.remove(); } catch (_e) { /* noop */ }
     // 翻訳済み画像の監視タイマーを止める (context 失効時に死んだスクリプトのタイマーが回り続けるのを防ぐ)。
     try { document.querySelectorAll(".__rt-img-wrap").forEach((w) => { if (w.__rtChk) clearInterval(w.__rtChk); }); } catch (_e) { /* noop */ }
@@ -127,7 +130,12 @@
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
     const img = imgAtPoint(e);
-    if (img) { target = img; placeBtn(img); }
+    if (!img) return;
+    // 画像翻訳に未対応のプロバイダ (vision 無し = xai/deepseek/mymemory 等) を選択中は「訳」ボタンを出さない
+    // (クリックしても no_vision になるだけなので無意味な操作を見せない)。ただし既に翻訳済みの画像は「原(戻す)」を
+    // 出して元に戻せるようにする (翻訳した後にプロバイダを非対応へ切り替えたケースで取り残さない)。
+    if (!imageCapable && !isTranslated(img)) return;
+    target = img; placeBtn(img);
   }
 
   // オーバーレイ付き画像ではカード内の子要素を跨ぐたび mouseout が連発し relatedTarget 依存だとちらつく。
@@ -144,9 +152,27 @@
     if (btn) btn.style.display = "none";
   }
 
-  document.addEventListener("mouseover", onMouseOver, true);
-  document.addEventListener("mouseout", onMouseOut, true);
-  window.addEventListener("scroll", onScroll, true);
+  // capture + passive: 全ページに常駐するので、ハンドラがスクロール/ホバーを妨げない (preventDefault しない) ことを
+  // ブラウザに明示してイベント処理の最適化を許す。onMouseOver は eligible(IMG 以外は即 return) で軽い。
+  document.addEventListener("mouseover", onMouseOver, { capture: true, passive: true });
+  document.addEventListener("mouseout", onMouseOut, { capture: true, passive: true });
+  window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+
+  // 選択中プロバイダの画像翻訳対応可否 (imageCapable) を CONTENT_FLAGS から読む。非対応なら「訳」ボタンを出さない。
+  // popup でプロバイダを切り替えたら storage.onChanged で即追従する (開いているページもリロード不要)。
+  const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
+  function applyFlags(f) {
+    if (f && typeof f.imageCapable === "boolean") imageCapable = f.imageCapable;
+    // 非対応へ切り替わった瞬間に、表示中の「訳」ボタン (未翻訳画像) を隠す (翻訳済みの「原」は残す)。
+    if (!imageCapable && btn && (!target || !isTranslated(target))) btn.style.display = "none";
+  }
+  function onStorageChanged(changes, area) {
+    if (area === "local" && changes[CFLAGS_KEY]) applyFlags(changes[CFLAGS_KEY].newValue);
+  }
+  try {
+    chrome.storage.local.get(CFLAGS_KEY, (d) => { if (dead || !contextAlive()) return; applyFlags(d && d[CFLAGS_KEY]); });
+    chrome.storage.onChanged.addListener(onStorageChanged);
+  } catch (_e) { /* noop */ }
 
   function ensureWrap(img) {
     // <picture> 内の img は、img だけ span で包むと img が <picture> の外に出て <source> 解像度選択が
@@ -297,20 +323,20 @@
     try { data = ctx.getImageData(x0, y0, rw, rh).data; } catch (_e) { return null; }
     const ix0 = x - x0, iy0 = y - y0, ix1 = x + w - x0, iy1 = y + h - y0;
     const step = Math.max(1, Math.round(Math.min(rw, rh) / 40));
-    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0, sa = 0;
+    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0;
     for (let py = 0; py < rh; py += step) {
       for (let px = 0; px < rw; px += step) {
         if (px >= ix0 && px < ix1 && py >= iy0 && py < iy1) continue; // box 内側 (文字) は除外
         const o = (py * rw + px) * 4;
         const r = data[o], g = data[o + 1], b = data[o + 2];
-        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; sa += data[o + 3]; n++;
+        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; n++;
       }
     }
     if (!n) return null;
     const mr = sr / n, mg = sg / n, mb = sb / n;
     const variance = Math.max(0, s2 / n - (mr * mr + mg * mg + mb * mb)) / 3; // チャンネル平均分散
     const lum = (0.299 * mr + 0.587 * mg + 0.114 * mb) / 255;
-    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5, alpha: sa / n / 255 };
+    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5 };
   }
 
   // 訳文を maxWidth に折り返す。空白で割れない CJK は 1 文字ずつ詰め、長い英単語も文字単位で割る。
@@ -520,16 +546,16 @@
 
   // 段落 (shouldLinkRowsPitch で連結する隣接行) ごとに pitch を測り、font = pitch*PITCH_TO_FONT で per-block 確定。
   // box.h は det 締めで信用できないため pitch (cy 間隔) を主信号にする。各 index に確定 font(px) を返す
-  // (0 = 縦書き/極小/textured で無効化 → 呼び出し側の個別 fit に委譲)。neural は消去域=素 box のため上限を厳しめに。
-  function computeGroupFonts(ctx, blocks, W, H, neural) {
+  // (0 = 縦書き/極小/textured で無効化 → 呼び出し側の個別 fit に委譲)。
+  function computeGroupFonts(ctx, blocks, W, H) {
     const fonts = new Array(blocks.length).fill(0);
     const items = [];
     blocks.forEach((blk, idx) => { const pb = pixelBoxOf(ctx, blk, W, H); if (pb && pb.h >= 4) items.push({ idx, pb, blk }); });
     if (!items.length) return fonts;
     items.sort((a, b) => a.pb.cyPx - b.pb.cyPx);
     items.forEach((it, i) => { it.avail = availPitchFor(items, i); });
-    const pitchClamp = neural ? 0.90 : 0.92; // pitch に対する font 上限係数
-    const availClamp = neural ? 0.90 : 0.96; // 実測 availPitch に対する頭打ち係数
+    const pitchClamp = 0.92; // pitch に対する font 上限係数
+    const availClamp = 0.96; // 実測 availPitch に対する頭打ち係数
     // 連続行をグループ化
     const groups = [];
     let cur = [];
@@ -567,16 +593,16 @@
       for (const it of group) {
         const pb = it.pb, trans = it.blk.translation;
         const w = pb.w, h = pb.h;
-        if (!neural && !pb.flat) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "textured-skip"); continue; } // textured は従来 fit
+        if (!pb.flat) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "textured-skip"); continue; } // textured は従来 fit
         const aspect = h / w;
         if ((aspect > 2.2 && w < targetFont * 1.2) || trans.trim().length <= 1) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "vert/1char-skip"); continue; } // G2
         if (h < 10) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "tiny-skip h=" + Math.round(h)); continue; } // G6 極小 box
         const innerW = Math.max(4, w - 2 * (w * 0.05));
         // 単独行は均一余白へ横展開する (英→全角で訳文が英文 box.w を超え、折返し/縮小で原文より小さくなるのを防ぐ)。
         // 左右の安全余白の小さい側ぶんだけ対称に広げる (中央寄せ描画と整合・はみ出さない)。
-        // flat は背景色 fill で消すため flat 時のみ・neural は MI-GAN が全 box を消去済みなので textured でも安全に展開する。多行は box.w のまま。
+        // flat は背景色 fill で消すため flat 時のみ展開する。多行は box.w のまま。
         let effInnerW = innerW;
-        if (isSingle && (pb.flat || neural)) {
+        if (isSingle && pb.flat) {
           const hw = availHWForFlat(items, it, W);
           effInnerW = Math.min(innerW + 2 * Math.min(hw.l, hw.r), W * 0.96);
         }
@@ -626,12 +652,10 @@
       const dl = Math.max(3, h * 0.34); // 左: 行頭余白を厚く(行頭ゴースト対策)
       const dr = Math.max(2, h * 0.16); // 右: 訳文はみ出し抑制で控えめ
       const dy = Math.max(2, h * 0.30); // 上下: アセンダ/ディセンダ+行間の薄残り回収
-      // 背景が概ね透明 (透過 PNG/SVG) のときは不透明 fill で原文を消すと透明部が単色の箱になる。透明時は消去を省き
-      // (原文は薄く残るが透過は保つ)、不透明背景のときだけ従来どおり背景色で原文を消す。
-      if (st.alpha == null || st.alpha >= 0.5) {
-        ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
-        ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
-      }
+      // 平坦背景は背景色で原文を無条件に塗り消す (a886f9c の挙動)。alpha ゲートでの消去スキップは、object-fit:cover/contain
+      // 再現で生じる描画域外の透明画素を ring が拾い不透明画像でも誤発火 → 原文ゴースト残りになったため撤去した。
+      ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
+      ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
     } else {
       ctx.fillStyle = "rgba(20,28,38,0.84)"; // textured: 半透明の暗い帯で隠す (従来オーバーレイ相当を canvas に焼く)
       roundRectPath(ctx, x, y, w, h, Math.min(6, h * 0.2));
@@ -674,7 +698,7 @@
 
   const INPAINT_MAX_SIDE = 4096; // 巨大画像で canvas メモリが膨らむのを抑える長辺上限
 
-  // 非同期描画(decode / MI-GAN)中に復元(imgRunId++)や別画像への差替が起きたかを判定する。stale なら append を中止し、
+  // 非同期描画(decode)中に復元(imgRunId++)や別画像への差替が起きたかを判定する。stale なら append を中止し、
   // 取り残しオーバーレイの発生を防ぐ (translateImg の初期チェックは await の前なので、await 後にもう一度確認する)。
   function isStaleImg(guard, img) {
     if (!guard) return false;
@@ -682,6 +706,46 @@
     if (!img || !img.isConnected) return true;
     if (guard.url && (img.currentSrc || img.src) !== guard.url) return true;
     return false;
+  }
+
+  // object-fit:cover/contain を canvas 上で再現する描画先矩形 (canvas px)。
+  // 元画像(全体)をこの矩形へ drawImage(9引数) すると、その object-fit の表示クロップ/レターボックスを複製できる。
+  // fill/none/その他は全面 (= 現行と同一の恒等描画)。これで cover の X 画像等でも歪まず原文消去できる。
+  function fitDrawRect(fit, srcW, srcH, W, H) {
+    if ((fit === "cover" || fit === "contain") && srcW > 0 && srcH > 0) {
+      const s = fit === "cover" ? Math.max(W / srcW, H / srcH) : Math.min(W / srcW, H / srcH);
+      const dw = srcW * s, dh = srcH * s;
+      return { dx: (W - dw) / 2, dy: (H - dh) / 2, dw, dh };
+    }
+    return { dx: 0, dy: 0, dw: W, dh: H };
+  }
+
+  // VLM の block 座標 (フル画像基準の 0..1) を、object-fit 描画後の canvas 正規化座標へ写す。
+  // box/cy のみ写し translation 等の他フィールドは保持。全面 (恒等) のときは元配列をそのまま返す (= 現行維持)。
+  function remapBlocksToFit(blocks, fr, W, H) {
+    if (fr.dx === 0 && fr.dy === 0 && fr.dw === W && fr.dh === H) return blocks;
+    return blocks.map((b) => {
+      if (!b || !b.box) return b;
+      const nb = {
+        ...b,
+        box: {
+          x: (fr.dx + b.box.x * fr.dw) / W,
+          y: (fr.dy + b.box.y * fr.dh) / H,
+          w: (b.box.w * fr.dw) / W,
+          h: (b.box.h * fr.dh) / H,
+        },
+      };
+      if (typeof b.cy === "number") nb.cy = (fr.dy + b.cy * fr.dh) / H;
+      return nb;
+    });
+  }
+
+  // cover で表示外へクロップされた block は焼かない (中心が canvas 内にあるものだけ残す)。
+  function blockInView(b) {
+    if (!b || !b.box) return false;
+    const cx = b.box.x + b.box.w / 2;
+    const cy = (typeof b.cy === "number") ? b.cy : (b.box.y + b.box.h / 2);
+    return cx > 0 && cx < 1 && cy > 0 && cy < 1;
   }
 
   // 元画像を canvas に描き各ブロックを inpaint して、wrap の最前面レイヤーとして被せる (img 自体は触らない)。
@@ -712,14 +776,20 @@
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d ctx");
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(bmp, 0, 0, W, H);
-      dbg("inpaint", W + "x" + H, "scale=" + scale.toFixed(2), "disp=" + Math.round(rect.width) + "x" + Math.round(rect.height), "blocks=" + blocks.length);
+      // object-fit:cover/contain を canvas 上で再現してから描く (X 等の cover クロップでも歪まず原文を消す)。
+      let objFit = "fill";
+      try { objFit = getComputedStyle(img).objectFit || "fill"; } catch (_e) { objFit = "fill"; }
+      const fr = fitDrawRect(objFit, bmp.width, bmp.height, W, H);
+      ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, fr.dx, fr.dy, fr.dw, fr.dh);
+      let fitBlocks = remapBlocksToFit(blocks, fr, W, H); // block 座標も同変換。cover で見切れた分は除外 (恒等時は元配列のまま)
+      if (fitBlocks !== blocks) fitBlocks = fitBlocks.filter(blockInView);
+      dbg("inpaint", W + "x" + H, "scale=" + scale.toFixed(2), "fit=" + objFit, "disp=" + Math.round(rect.width) + "x" + Math.round(rect.height), "blocks=" + fitBlocks.length);
       // 段落の行間に残る原文黒帯を先に消す (flat 同色の隣接行の隙間だけを連結 fill)。失敗は従来挙動へ。
-      try { fillInterlineStrips(ctx, blocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
+      try { fillInterlineStrips(ctx, fitBlocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
       let groupFonts = [];
-      try { groupFonts = computeGroupFonts(ctx, blocks, W, H, false); } catch (_e) { groupFonts = []; } // pitch ベース統一フォント
-      for (let bi = 0; bi < blocks.length; bi++) {
-        const blk = blocks[bi];
+      try { groupFonts = computeGroupFonts(ctx, fitBlocks, W, H); } catch (_e) { groupFonts = []; } // pitch ベース統一フォント
+      for (let bi = 0; bi < fitBlocks.length; bi++) {
+        const blk = fitBlocks[bi];
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
         try { drawInpaintBlock(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
       }
@@ -732,117 +802,19 @@
     }
   }
 
-  const INPAINT_NEURAL_MAX_SIDE = 1536; // MI-GAN は重いので neural 経路は小さめにスケール
-
-  // neural 消去後の clean 背景に、訳文だけを焼き込む (塗り潰しはしない・背景明暗で文字色を決定)。
-  // forcedFont>0 で pitch ベースの確定フォントを無条件採用 (上方向拡大を通す)。scale で物理可読下限を換算。
-  function drawTextOnly(ctx, blk, W, H, forcedFont, scale) {
-    const w = Math.max(2, blk.box.w * W);
-    const h = Math.max(2, blk.box.h * H);
-    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
-    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
-    const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
-    const st = ringStats(ctx, x, y, w, h, W, H); // 消去後の clean 背景をサンプリングして文字色を決める
-    const dark = st ? st.dark : false;
-    const padX = w * 0.05, padY = h * 0.08;
-    const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
-    const effW = (blk.__rtEffInnerW > 0) ? Math.max(innerW, blk.__rtEffInnerW) : innerW; // 横展開幅 (neural は消去無しなので幅予算のみ)
-    const fit = fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
-    // forcedFont は computeGroupFonts が avail(隣行間隔)+幅で重なり/あふれ安全に確定した上限。これを超えて底上げすると
-    // 隣行や幅へ食い込むため、forcedFont があるときはそのまま使う。fallback(0)のときだけ可読下限へ底上げ(箱内に収める)。
-    let fontSize;
-    if (forcedFont && forcedFont > 0) {
-      fontSize = forcedFont;
-    } else {
-      const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
-      fontSize = Math.max(fit.fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
-    }
-    ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
-    let lines = wrapCanvasText(ctx, blk.translation, effW);
-    if (lines.some((l) => ctx.measureText(l).width > effW)) { // 幅はみ出しの最終ゲート
-      fontSize = fit.fontSize; ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`; lines = fit.lines;
-    }
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = dark ? "#f5f5f5" : "#1a1a1a";
-    // halo は stroke パスにだけ載せ (二重縁を避ける)、fill 本体は shadow off で描く。stroke は同色細縁も兼ねる。
-    ctx.lineJoin = "round"; ctx.lineWidth = Math.min(1.5, fontSize * 0.06); ctx.strokeStyle = ctx.fillStyle;
-    ctx.shadowColor = dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.6)"; ctx.shadowBlur = 1;
-    const lineH = fontSize * 1.18;
-    const startY = y + h / 2 - (lines.length - 1) * lineH / 2;
-    lines.forEach((ln, i) => ctx.strokeText(ln, x + w / 2, startY + i * lineH)); // halo + 同色細縁
-    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
-    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));   // 本体
-    ctx.lineWidth = 0;
-  }
-
-  // MI-GAN(offscreen)で原文領域を inpaint 消去 → 返ってきた消去済み画像に訳文を焼き込む (Phase 3・Chrome 限定)。
-  async function renderInpaintNeural(img, blocks, image, guard) {
-    const resp = await chrome.runtime.sendMessage({
-      action: A.INPAINT_IMAGE,
-      payload: {
-        base64: image.base64, mime: image.mime, maxSide: INPAINT_NEURAL_MAX_SIDE,
-        // cy(縦中央)も渡す。MI-GAN の消去マスクを drawTextOnly と同じ cy 中央で抜き、box.y の系統的上ズレで
-        // 消去帯と再描画帯がズレて原文が残る問題を防ぐ。
-        blocks: blocks.map((b) => ({ box: b.box, cy: b.cy })),
-      },
-    });
-    if (!resp || !resp.ok || !resp.result || !resp.result.base64) throw new Error("inpaint failed");
-    const r = resp.result;
-    const bmp = await bitmapFromBase64(r.base64, "image/png");
-    try {
-      const W = r.width || bmp.width, H = r.height || bmp.height;
-      const rect = img.getBoundingClientRect();
-      const scale = rect.width >= 1 ? (W / rect.width) : 1; // neural canvas は r.width 解像度。物理可読下限に使う
-      const canvas = document.createElement("canvas");
-      canvas.className = "__rt-img-layer __rt-img-canvas";
-      canvas.width = W; canvas.height = H;
-      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error("no 2d ctx");
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(bmp, 0, 0, W, H);
-      dbg("neural", W + "x" + H, "scale=" + scale.toFixed(2), "disp=" + Math.round(rect.width) + "x" + Math.round(rect.height), "blocks=" + blocks.length);
-      let groupFonts = [];
-      try { groupFonts = computeGroupFonts(ctx, blocks, W, H, true); } catch (_e) { groupFonts = []; } // pitch ベース統一フォント (neural)
-      for (let bi = 0; bi < blocks.length; bi++) {
-        const blk = blocks[bi];
-        if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
-        try { drawTextOnly(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視 */ }
-      }
-      if (isStaleImg(guard, img)) return; // 復元/差替が MI-GAN 処理中に起きた → wrap を作らず中止 (取り残し防止)
-      const wrap = ensureWrap(img);
-      wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
-      wrap.appendChild(canvas);
-    } finally {
-      if (bmp && bmp.close) bmp.close();
-    }
-  }
-
-  // 描画方式の選択: neuralErase なら MI-GAN 消去 → 失敗で背景色 fill canvas → さらに失敗で HTML オーバーレイ。
+  // 描画方式の選択: canvas inpaint (背景色 fill 消去 + 焼き込み) → 失敗で HTML オーバーレイ。
   // 描画後は startFollow で「外部リサイズ/移動/差替 (ライトボックス等)」を監視し、取り残しオーバーレイを掃除する。
   async function renderTranslated(img, blocks, image, opts) {
-    dbg("render", opts && opts.neuralErase ? "neural" : (image && image.base64 ? "inpaint" : "html"), "blocks=" + (blocks ? blocks.length : 0));
+    dbg("render", image && image.base64 ? "inpaint" : "html", "blocks=" + (blocks ? blocks.length : 0));
     const guard = opts && { myRun: opts.myRun, url: opts.url };
-    // object-fit:cover/contain で表示ボックスとビットマップのアスペクトが有意に食い違う画像は、canvas を全面に
-    // 伸ばすと画像が歪む/クロップが外れる。その場合だけ canvas inpaint を避け、画像を壊さない HTML オーバーレイへ
-    // 回す (アスペクト一致なら歪まないので従来どおり canvas で焼く)。
-    let fitMismatch = false;
-    try {
-      const fit = getComputedStyle(img).objectFit;
-      if (fit === "cover" || fit === "contain") {
-        const r = img.getBoundingClientRect();
-        const da = r.height > 0 ? r.width / r.height : 0;
-        const ba = (img.naturalWidth && img.naturalHeight) ? img.naturalWidth / img.naturalHeight : da;
-        fitMismatch = ba > 0 && Math.abs(da - ba) / ba > 0.08;
-      }
-    } catch (_e) { /* getComputedStyle 不可時は従来経路 */ }
-    if (image && image.base64 && !fitMismatch) {
-      if (opts && opts.neuralErase) {
-        try { await renderInpaintNeural(img, blocks, image, guard); startFollow(img); return; } catch (_e) { /* canvas fill へ */ }
-      }
-      try { await renderInpaint(img, blocks, image, guard); startFollow(img); return; } catch (_e) { /* HTML オーバーレイへ */ }
+    // canvas inpaint(原文消去+焼き込み)が本線。renderInpaint は object-fit:cover/contain を
+    // canvas 上で再現(fitDrawRect)するので、X 等の cover クロップ画像でも歪まず原文を消せる。
+    // base64 が無い/canvas が失敗したときだけ、画像を壊さない HTML オーバーレイ(renderBlocks)へ落とす。
+    if (image && image.base64) {
+      try { await renderInpaint(img, blocks, image, guard); startFollow(img); return; }
+      catch (e) { dbg("inpaint-fail", (e && e.message) || String(e)); /* HTML オーバーレイへ */ }
     }
+    dbg("render", "fallback=blocks", "hasImg=" + !!image, "hasB64=" + !!(image && image.base64));
     renderBlocks(img, blocks);
     startFollow(img);
   }
@@ -874,7 +846,7 @@
 
   // ロゴ/ブランドワードマークを翻訳 overlay から除外する (症状: ヘッダ/フッタの "Claude" 等に訳文が重畳)。
   // 主役は vision の kind フラグ。kind 非対応モデル向けの保険として、端帯(最上部/最下部)+短語+固定辞書の
-  // AND でのみ弾く (本文巻き込みを避ける)。完全には弾けない前提で、確実に消したいなら local OCR へ寄せる。
+  // AND でのみ弾く (本文巻き込みを避ける)。完全には弾けない前提で扱う。
   const BRAND_WORDS = new Set(["claude", "anthropic", "chatgpt", "openai", "gemini", "gpt", "copilot", "github", "google", "grok"]);
   function looksLikeBrandWordmark(blk) {
     const t = (blk.original || "").trim();
@@ -896,6 +868,22 @@
     });
   }
 
+  // 画像翻訳の失敗理由をユーザー向け文言に展開する (無言の「×」で原因不明にしないため。ページ翻訳の errorText 相当)。
+  // SW(translateImage/fetchImageBytes) が返す error 種別を「×」ボタンの title(ホバーで表示) に載せる。
+  function imgErrorText(res) {
+    const e = res && res.error;
+    switch (e) {
+      case "no_vision": return tr("imgErrNoVision", "この翻訳サービスは画像翻訳に対応していません（API設定で対応サービスとキーを設定してください）");
+      case "no_api_key": return tr("imgErrNoKey", "API キーが未設定です（API設定で入力してください）");
+      case "forbidden_target": return tr("imgErrForbidden", "この画像は取得できませんでした");
+      case "image_too_large": return tr("imgErrTooLarge", "画像が大きすぎて翻訳できません");
+      case "not_image": return tr("imgErrNotImage", "画像として読み取れませんでした");
+      case "http": return tr("imgErrHttp", "翻訳に失敗しました") + (res && res.status ? "（HTTP " + res.status + "）" : "");
+      case "aborted": return tr("imgErrAborted", "翻訳を中止しました");
+      default: return tr("imgErrGeneric", "翻訳に失敗しました");
+    }
+  }
+
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
@@ -908,16 +896,31 @@
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
         if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
+        // 切り分けログ (localStorage __rt_debug=1 のときだけ): vision が読んだ原文(orig)と訳文(trans)を出す。
+        // orig が既に崩れていれば vision の読み取り段、orig 正常で trans 崩れなら翻訳段、と一目で確定できる。
+        if (res && res.ok && Array.isArray(res.blocks)) {
+          dbg("img-result", "n=" + res.blocks.length);
+          res.blocks.forEach((b, i) => dbg("  block#" + i, "kind=" + ((b && b.kind) || "-"),
+            "orig=" + JSON.stringify((b && b.original) || ""), "trans=" + JSON.stringify((b && b.translation) || "")));
+        } else {
+          dbg("img-result", "ok=" + !!(res && res.ok), "error=" + (res && res.error));
+        }
         const blocks = (res && res.ok) ? filterBlocks(res.blocks) : []; // ロゴ/ブランド語の重畳を除外
         if (blocks.length) {
-          // canvas inpaint (原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
-          // neuralErase は SW がレスポンスに乗せる (Chrome のみ。Firefox/失敗時は背景色 fill にフォールバック)。
-          renderTranslated(img, blocks, res.image, { neuralErase: res.neuralErase, myRun, url })
+          // canvas inpaint (背景色 fill で原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
+          renderTranslated(img, blocks, res.image, { myRun, url })
             .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
             .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
+          // 「×」表示。res.ok だが空 = 翻訳対象テキスト無し/全ロゴ(正常)。res.ok===false = 失敗。
+          // 失敗時は理由を title(ホバーで表示)に載せ、原因不明の無言失敗を防ぐ(ページ翻訳の errorText 相当)。
+          // 失敗は読めるよう「×」を長め(4s)に保持し、文字無しは短く(1.5s)戻す。
+          const failed = !(res && res.ok);
+          btn.title = failed ? imgErrorText(res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
           btn.textContent = "×";
-          window.setTimeout(() => { if (btn) btn.textContent = "訳"; }, 1500);
+          window.setTimeout(() => {
+            if (btn) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+          }, failed ? 4000 : 1500);
         }
       });
     } catch (_e) { if (btn) btn.textContent = "訳"; } // context 失効は静かに無視

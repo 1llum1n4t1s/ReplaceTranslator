@@ -3,7 +3,7 @@
 開発者向けのセットアップ・ビルド・テスト手順。利用者向けの説明は [README.md](README.md) を参照。
 
 ## ディレクトリ構成
-- `manifest.json` — Chrome / Firefox 共用の単一 MV3 マニフェスト（`background` に `service_worker`(Chrome) と `scripts`(Firefox) を併記、`gecko` を inline）
+- `manifest.json` — MV3 マニフェスト。`background` は Chrome 純正 = `service_worker` のみ（`gecko` は inline）。Firefox 用の `background.scripts` 形式はビルド時に `build-firefox-manifest.mjs` が生成する
 - `src/lib/` — 共通ライブラリ（IIFE + globalThis 公開）
   - `actions.js` — メッセージ定数・設定スキーマ・プロバイダ定義・トークン集計ヘルパー
   - `lang.js` — 言語コード ⇔ 表示名テーブル
@@ -12,8 +12,8 @@
   - `stream.js` — ストリーミング JSON から translations を逐次抽出
 - `src/service_worker.js` — Service Worker（LLM 代理 fetch・メッセージディスパッチ・usage 集計）
 - `src/content/translator.js` — DOM インプレース置換翻訳エンジン
-- `src/content/fab.js` + `fab.css` — 全ページ右下のフローティング翻訳ボタン（ドラッグ移動・36px）
-- `src/content/image-translator.js` + `image-translator.css` — 画像内テキストの翻訳オーバーレイ（オプション・LLM vision）
+- `src/content/fab.js` + `fab.css` — 全ページ右端の翻訳タブ（レール型タブ形状・表面はアプリ専用「朱の栞」＝生成りの和紙×墨×朱・ホバーでせり出し・縦ドラッグ移動・ダーク対応）
+- `src/content/image-translator.js` + `image-translator.css` — 画像内テキストの翻訳オーバーレイ（ホバー手動・常時有効・LLM vision）
 - `src/popup/` — ポップアップ UI（2タブ「翻訳 / API設定」。設定は popup に統合済み、options ページは廃止）
 - `icons/` — `icon.svg`（原本）+ commit 済み `icon{16,48,128}.png`
 - `_locales/{en,ja}/messages.json` — i18n

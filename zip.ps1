@@ -14,6 +14,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Chrome/Firefox 両 variant に同梱する共有ディレクトリ(単一ソース)。CI(publish.yml の job env PKG_DIRS)と揃える。
+# manifest.json は variant 別(Chrome=純正 / Firefox=生成)なので含めず Build-Package 内で個別に扱う。
+$PkgDirs = @("icons", "src", "_locales")
+
 Write-Host "拡張機能パッケージを生成中... (Target: $Target)" -ForegroundColor Cyan
 Write-Host ""
 
@@ -44,9 +48,8 @@ function Build-Package {
     } else {
         Copy-Item "manifest.json" -Destination "$tempDir/manifest.json"  # Chrome はソース manifest をそのまま
     }
-    Copy-Item "icons" -Destination $tempDir -Recurse
-    Copy-Item "src" -Destination $tempDir -Recurse
-    Copy-Item "_locales" -Destination $tempDir -Recurse
+    # 同梱ディレクトリは単一ソース ($PkgDirs)。CI と同じ列挙を保つ (片側更新漏れ=片 OS 欠損 を防ぐ)。
+    foreach ($d in $PkgDirs) { Copy-Item $d -Destination $tempDir -Recurse }
 
     Get-ChildItem -Path $tempDir -Recurse -Include "*.DS_Store","*.swp","*~" | Remove-Item -Force
 

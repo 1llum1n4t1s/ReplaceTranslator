@@ -37,6 +37,18 @@ if (typeof importScripts === "function") {
     });
   } catch (_e) { /* noop */ }
 
+  // ---- fetch タイムアウト ----
+  // 全 LLM/画像 fetch にリクエスト上限を課す。これが無いと half-open 接続や無応答ストリームで fetch/reader が
+  // 永久にハングし、ワーカーが stuck → flush の flushing ガードが張り付き → ページ翻訳が無言で永久停止する。
+  // タブ単位 abort signal と timeout を AbortSignal.any で合成し、どちらの中断でも fetch が確実に reject する。
+  // timeout 中断は TimeoutError(name) で reject するため各 catch の AbortError(=ユーザー中断) 判定に当たらず、
+  // network 系エラー(=translator の transient リトライ対象)へ落ちる(D-003 の error 種別を増やさない最小設計)。
+  const FETCH_TIMEOUT_MS = 60000; // 1 リクエスト上限。バッチ(≤100短文)/vision は通常数秒で完了するので 60s は十分な天井
+  function withTimeout(signal) {
+    const to = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    return signal ? AbortSignal.any([signal, to]) : to;
+  }
+
   // content script に渡す設定から秘密情報 (apiKeys) を除く。
   // content は翻訳対象テキストを TRANSLATE_BATCH で送るだけで、API キーは bg 側でのみ保持・使用する。
   function publicSettings(s) {
@@ -47,7 +59,9 @@ if (typeof importScripts === "function") {
   // content script (fab/image-translator) が読む非機密フラグだけを抽出する。saveSettings と
   // ensureContentFlags の両所で使い、フラグ追加時の片側更新漏れ (= content 側だけ欠落) を防ぐ。
   function contentFlagsOf(s) {
-    return { autoTranslate: s.autoTranslate, showFab: s.showFab };
+    // imageCapable: 選択中プロバイダが画像翻訳(vision)対応か。content(image-translator) がこれを見て、
+    // 非対応プロバイダ選択中はホバーの「訳」ボタンを出さない (クリックしても no_vision になるだけのため)。
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider) };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。
@@ -58,7 +72,15 @@ if (typeof importScripts === "function") {
   // content が送ってきた設定の apiKeys は信用せず、必ず bg 保管値で上書きする (キー漏洩防止)。
   // この不変条件を 1 箇所に集約し、TRANSLATE_BATCH / TRANSLATE_IMAGE での書き忘れ事故を防ぐ。
   function resolveSettings(incoming, stored) {
-    return incoming ? Object.assign({}, incoming, { apiKeys: stored.apiKeys }) : stored;
+    if (!incoming) return stored;
+    // provider/models/apiKeys は SW 保管値を真実とする (content/page 由来の値で課金プロバイダ/モデルを
+    // 勝手に選ばせない内部不変条件)。sourceLang/targetLang だけは translator が auto 解決したページ言語を
+    // 運ぶので incoming を残す (ページ言語ベースの翻訳元解決を壊さない)。
+    return Object.assign({}, incoming, {
+      provider: stored.provider,
+      models: stored.models,
+      apiKeys: stored.apiKeys,
+    });
   }
 
   // HTTP エラー応答の本文を安全に読む (失敗吸収 + 300 字に切り詰め)。各 fetch のエラー message 生成で共用。
@@ -99,7 +121,8 @@ if (typeof importScripts === "function") {
   // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
   async function ensureContentFlags() {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
-    if (cur) return;
+    if (cur && typeof cur.imageCapable === "boolean") return; // 新フィールドまで揃っていれば何もしない
+    // 未作成 / 旧フォーマット (imageCapable 欠落 = 更新前のインストール) は SETTINGS から導出して補完する。
     const s = await getSettings();
     await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(s) });
   }
@@ -116,16 +139,25 @@ if (typeof importScripts === "function") {
     if (!tuningMem) tuningMem = data[StorageKeys.BATCH_TUNING] || {};
     if (!usageMem) usageMem = data[StorageKeys.TOKEN_USAGE] || {};
   }
+  // 保留中の tuning/usage をまとめて storage へ書き出す (デバウンス満了時・SW suspend 直前に呼ぶ)。
+  function flushPersist() {
+    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
+    const patch = {};
+    if (tuningMem) patch[StorageKeys.BATCH_TUNING] = tuningMem;
+    if (usageMem) patch[StorageKeys.TOKEN_USAGE] = usageMem;
+    try { chrome.storage.local.set(patch); } catch (_e) { /* noop */ }
+  }
   function schedulePersist() {
     if (persistTimer) return;
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      const patch = {};
-      if (tuningMem) patch[StorageKeys.BATCH_TUNING] = tuningMem;
-      if (usageMem) patch[StorageKeys.TOKEN_USAGE] = usageMem;
-      try { chrome.storage.local.set(patch); } catch (_e) { /* noop */ }
-    }, 2000);
+    persistTimer = setTimeout(flushPersist, 2000);
   }
+  // MV3 SW は無活動で suspend される。デバウンス保留中の最新増分 (直近 1 ページ分の usage 集計/バッチ学習) が
+  // 取りこぼされないよう、suspend 直前に flush する。onSuspend 非対応環境 (Firefox 等) は無視。
+  try {
+    if (chrome.runtime && chrome.runtime.onSuspend) {
+      chrome.runtime.onSuspend.addListener(() => { if (persistTimer) flushPersist(); });
+    }
+  } catch (_e) { /* noop */ }
 
   // ---- トークン使用量の記録 (SW 専有の usageMem にインプレース加算・デバウンス永続化) ----
   // usageMem は SW 専有の可変 state。毎成功バッチで呼ばれるため、store 全体の deep-copy/再構築を避け
@@ -196,7 +228,7 @@ if (typeof importScripts === "function") {
         method: req.method,
         headers: req.headers,
         body: JSON.stringify(req.body),
-        signal,
+        signal: withTimeout(signal),
       });
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
@@ -258,10 +290,10 @@ if (typeof importScripts === "function") {
     const t0 = Date.now();
     let res;
     try {
-      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal });
+      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal: withTimeout(signal) });
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      return null; // 通信失敗 → 非stream で再試行させる
+      return null; // 通信失敗/タイムアウト → 非stream で再試行させる
     }
     if (!res.ok) {
       // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
@@ -328,11 +360,15 @@ if (typeof importScripts === "function") {
     let firstError = null;     // 表示用 (最初に起きた種別)
     let providerError = null;  // provider 全体の失敗 (build/http/quota/network)。too_long(局所スキップ)とは区別し fatal 判定に使う
     let okCount = 0;           // API が応答した件数。訳文==原文(固有名詞/既に target 言語)でも成功なので translation!==input では数えない
+    let giveUp = false;        // provider 全体のレート制限/拒否(429/403)を検知したら残りの無駄 GET を止める(quota 枯渇後の大量 GET 回避)
 
     async function worker() {
       while (cursor < texts.length) {
         const i = cursor++;
         const text = texts[i];
+        // 既に provider 全体失敗(429/403)を検知済み → 送らず原文で埋める。同じキー/IP が rate-limit/拒否されている以上
+        // 残りノードに GET を撃っても全て失敗するだけで、無駄リクエストが制限を悪化させ復帰を遅らせる(C2-N3)。
+        if (giveUp) { translations[i] = text; continue; }
         // 長すぎるテキストは送れない。原文を返すと「翻訳成功」に見えてしまうため too_long エラーを立てる
         // (Quick Translate は原文を成功表示せずエラー文言を出す。ページ翻訳は部分適用で原文のまま残る)。
         if (encoder.encode(text).length > maxBytes) {
@@ -352,8 +388,8 @@ if (typeof importScripts === "function") {
           continue;
         }
         try {
-          const res = await fetch(req.url, { method: req.method, headers: req.headers, signal });
-          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; translations[i] = text; continue; }
+          const res = await fetch(req.url, { method: req.method, headers: req.headers, signal: withTimeout(signal) });
+          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; translations[i] = text; if (res.status === 429 || res.status === 403) giveUp = true; continue; }
           const json = await res.json();
           // MyMemory は本文 200 でも responseStatus に実ステータス (403/429 等) を入れる
           const rs = Number(json && json.responseStatus);
@@ -361,6 +397,7 @@ if (typeof importScripts === "function") {
             const err = { error: "quota", status: rs, message: String((json && json.responseDetails) || "") };
             providerError = providerError || err; firstError = firstError || err;
             translations[i] = text;
+            if (rs === 429 || rs === 403 || rs >= 500) giveUp = true; // 共有キー/IP の rate-limit/拒否は残り全件で再発 → 打ち切り
             continue;
           }
           const parsed = ProviderApi.parseResponse(providerId, json);
@@ -466,7 +503,9 @@ if (typeof importScripts === "function") {
     const req = ProviderApi.buildModelsRequest(providerId, apiKey);
     if (!req) return { ok: false, error: "unsupported" };
     let res;
-    try { res = await fetch(req.url, { headers: req.headers }); }
+    // 他の全 fetch と同様に withTimeout を課す。これが無いと /models が half-open になったとき
+    // resolveFallbackModel(404 自己修復) がここで永久ハングし、翻訳ホットパスが無言停止する。
+    try { res = await fetch(req.url, { headers: req.headers, signal: withTimeout() }); }
     catch (e) { return { ok: false, error: "network", message: String((e && e.message) || e) }; }
     if (!res.ok) return { ok: false, error: "http", status: res.status };
     let json;
@@ -521,7 +560,7 @@ if (typeof importScripts === "function") {
     return result;
   }
 
-  // ---- 画像内テキストの翻訳 (vision・オプション) ----
+  // ---- 画像内テキストの翻訳 (vision・ホバー手動) ----
   const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB: 巨大画像でメモリspike/過大リクエストを防ぐ上限
   function base64FromBytes(bytes) {
     let bin = "";
@@ -620,7 +659,7 @@ if (typeof importScripts === "function") {
     return out;
   }
 
-  // 画像 URL を host_permissions 経由で取得し base64 化する (cloud vision / ローカル OCR で共用)。
+  // 画像 URL を host_permissions 経由で取得し base64 化する (cloud vision 用)。
   // SSRF 防御 (forbidden 判定 / manual redirect / 最終 URL 再検証)・サイズ上限・MIME 確定を一括で行う。
   // 返り値: { ok:true, b64, mime } または { ok:false, error, ... }。
   async function fetchImageBytes(imageUrl, signal) {
@@ -629,7 +668,7 @@ if (typeof importScripts === "function") {
       // redirect:"manual" で 30x をフォローしない。公開 URL → 30x で内部ホスト (nas / 127.0.0.1 等) へ飛ばす
       // SSRF を、フォロー前=内部ホストへリクエストが飛ぶ前に遮断する。opaqueredirect は Location を読めないので
       // 検証不能 → 拒否 (img の src は通常リダイレクト解決済みの最終 URL なので実害は小さい)。
-      const r = await fetch(imageUrl, { signal, redirect: "manual" });
+      const r = await fetch(imageUrl, { signal: withTimeout(signal), redirect: "manual" });
       if (r.type === "opaqueredirect" || r.status === 0 || (r.status >= 300 && r.status < 400)) {
         return { ok: false, error: "forbidden_target" };
       }
@@ -663,7 +702,9 @@ if (typeof importScripts === "function") {
   async function translateImage(settings, imageUrl, signal) {
     const providerId = settings.provider;
     const provider = Providers.get(providerId);
-    if (!provider || provider.batch === false) return { ok: false, error: "no_vision" }; // MyMemory は不可
+    // vision 非対応プロバイダ (MyMemory/xai/deepseek 等 = visionModel 無し) は画像翻訳不可。
+    // text モデルで vision を試して HTTP エラーになるより、明示的に no_vision を返して理由を出す。
+    if (!Providers.supportsImage(providerId)) return { ok: false, error: "no_vision" };
     const apiKey = keyFor(settings, providerId);
     if (!apiKey) return { ok: false, error: "no_api_key" };
 
@@ -672,99 +713,58 @@ if (typeof importScripts === "function") {
     if (!got.ok) return got;
     const b64 = got.b64, mime = got.mime;
 
-    let req;
-    try {
-      req = ProviderApi.buildImageRequest(providerId, {
-        imageBase64: b64, mimeType: mime,
-        sourceLang: settings.sourceLang, targetLang: settings.targetLang,
-        // 画像翻訳は速い vision モデルを優先 (無ければテキストと同じ選択モデルにフォールバック)
-        model: provider.visionModel || settings.models[providerId], apiKey,
-      });
-    } catch (e) {
-      return { ok: false, error: "build", message: String((e && e.message) || e) };
-    }
-    if (!req) return { ok: false, error: "unsupported" };
+    // 画像翻訳は速い vision モデルを優先 (無ければテキストと同じ選択モデルにフォールバック)。
+    // visionModel はコード固定値なので廃止されると 404 で全滅する → ページ翻訳と同じ 404 自己修復を vision にも適用。
+    // 先回り: 過去に 404 解決済みの vision モデルがあれば最初から現行へ差し替える (modelFallback はメモリキャッシュ)。
+    // text モデル選択を上書きする persistModelSwitch は vision には使わない (vision はコード固定値で別 state のため)。
+    const baseModel = provider.visionModel || settings.models[providerId];
+    let model = baseModel;
+    const cachedGood = modelFallback.get(providerId + ":" + baseModel);
+    if (cachedGood && cachedGood !== baseModel) model = cachedGood;
 
-    let res;
-    try {
-      res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal });
-    } catch (e) {
-      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      return { ok: false, error: "network", message: String((e && e.message) || e) };
+    // 1 回ぶんの vision リクエスト。404 自己修復で 2 回呼べるよう関数化する。
+    async function runVision(useModel) {
+      let req;
+      try {
+        req = ProviderApi.buildImageRequest(providerId, {
+          imageBase64: b64, mimeType: mime,
+          sourceLang: settings.sourceLang, targetLang: settings.targetLang,
+          model: useModel, apiKey,
+        });
+      } catch (e) {
+        return { ok: false, error: "build", message: String((e && e.message) || e) };
+      }
+      if (!req) return { ok: false, error: "unsupported" };
+      let res;
+      try {
+        res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal: withTimeout(signal) });
+      } catch (e) {
+        if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
+        return { ok: false, error: "network", message: String((e && e.message) || e) };
+      }
+      if (!res.ok) {
+        const detail = await readDetail(res);
+        return { ok: false, error: "http", status: res.status, message: detail };
+      }
+      try { return { ok: true, json: await res.json() }; } catch (_e) { return { ok: false, error: "parse" }; }
     }
-    if (!res.ok) {
-      const detail = await readDetail(res);
-      return { ok: false, error: "http", status: res.status, message: detail };
+
+    let r = await runVision(model);
+    // 廃止 vision モデル(404)を同プロバイダの現行モデルへ解決して 1 回だけ再試行する。
+    if (isModelGone(r)) {
+      const good = await resolveFallbackModel(providerId, model);
+      if (good && good !== model) { model = good; r = await runVision(model); }
     }
-    let json;
-    try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
-    const blocks = ProviderApi.parseImageBlocks(providerId, json);
-    const usage = ProviderApi.parseUsage(providerId, json);
+    if (!r.ok) return r;
+
+    const blocks = ProviderApi.parseImageBlocks(providerId, r.json);
+    const usage = ProviderApi.parseUsage(providerId, r.json);
     await ensureMem(); // 既存の月次 usage を読み込んでから加算 (cold start の初回が画像翻訳でも上書きしない)
     recordUsage(providerId, usage);
     // image: content 側の canvas inpaint 用に取得済みバイトを返す。ページ側で cross-origin <img> を
     // 直接 draw すると canvas が taint され getImageData/toDataURL が封じられるため、SW が host_permissions で
     // 取得済みの base64 を渡し content は createImageBitmap(blob) で CORS-safe に再構築する。
-    // neuralErase: content が MI-GAN(offscreen)で原文を消すかの判断に使う (Chrome のみ。設定で OFF が既定)。
-    return { ok: true, blocks, image: { base64: b64, mime }, neuralErase: settings.neuralErase };
-  }
-
-  // ローカル OCR 経路 (Chrome offscreen + ONNX)。画像を取得 → offscreen の PaddleOCR で原文抽出 →
-  // 通常の翻訳パイプライン (translateWith) で訳す。content には cloud と同形 {blocks, image, neuralErase} を返す。
-  // vision モデル不要なので MyMemory 等の非 vision プロバイダでも画像が訳せる (OCR はローカル・翻訳は任意社)。
-  async function translateImageLocal(settings, imageUrl, signal) {
-    const got = await fetchImageBytes(imageUrl, signal);
-    if (!got.ok) return got;
-    let ocr;
-    try {
-      ocr = await runInference(Actions.OCR_IMAGE, { base64: got.b64, mime: got.mime, maxSide: 2048 });
-    } catch (e) {
-      return { ok: false, error: "ocr", message: String((e && e.message) || e) };
-    }
-    const blocks = (ocr && Array.isArray(ocr.blocks) ? ocr.blocks : []).filter((b) => b && b.original && b.original.trim());
-    const image = { base64: got.b64, mime: got.mime };
-    if (!blocks.length) return { ok: true, blocks: [], image, neuralErase: settings.neuralErase };
-    // 抽出した原文を翻訳。全行失敗(キー無効/quota 等)なら原文を黙って焼かず error で返す。
-    const texts = blocks.map((b) => b.original);
-    let translations;
-    try { translations = await translateImageTexts(settings, texts, signal); }
-    catch (e) {
-      if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      return { ok: false, error: "translate", message: String((e && e.message) || e) };
-    }
-    if (!translations) return { ok: false, error: "translate" }; // 全行翻訳不可 → content は "×" 表示
-    blocks.forEach((b, i) => { b.translation = (translations[i] != null ? translations[i] : b.original); });
-    return { ok: true, blocks, image, neuralErase: settings.neuralErase };
-  }
-
-  // 画像 OCR で抽出した行を翻訳する。LLM バッチは「返却数==入力数」を要求し(translateBatch:incomplete)、
-  // OCR の行数と LLM 返却数がズレると 1 件の取りこぼしでバッチ全滅 → 原文(英語)フォールバックになる。
-  // そこで まずバッチ一括(速い)を試し、件数不一致/失敗時は 1 行ずつ訳して取りこぼしを局所化する
-  // (画像は行数が少ないので per-line でも許容)。返り値: texts と同数の訳文配列(失敗行は null)。全滅なら null。
-  async function translateImageTexts(settings, texts, signal) {
-    let res = null;
-    // translateWithHeal でページ翻訳と同じ 404→現行モデル自己修復を通す (ローカル OCR でも廃止モデルが死んだ瞬間に
-    // 自動移行する。一括が 404 で治ればキャッシュ済みになり、後続の per-line もキャッシュ先回りで現行モデルを使う)。
-    try { res = await translateWithHeal(settings, texts, signal, null, null, null, true); }
-    catch (e) { if (e && e.name === "AbortError") throw e; /* それ以外は per-line へ */ }
-    if (res && res.ok && Array.isArray(res.translations) && res.translations.length === texts.length) {
-      return res.translations;
-    }
-    // バッチ不完全/失敗 → 1 行ずつ。レート制限を避けるため少並列(6)に区切る。失敗行は null。
-    const out = new Array(texts.length).fill(null);
-    const CONC = 6;
-    for (let i = 0; i < texts.length; i += CONC) {
-      const slice = texts.slice(i, i + CONC);
-      const part = await Promise.all(slice.map(async (t) => {
-        try {
-          const r = await translateWithHeal(settings, [t], signal, null, null, null, true);
-          if (r && r.ok && Array.isArray(r.translations) && r.translations.length === 1) return r.translations[0];
-        } catch (e) { if (e && e.name === "AbortError") throw e; }
-        return null;
-      }));
-      part.forEach((v, j) => { out[i + j] = v; });
-    }
-    return out.every((v) => v == null) ? null : out; // 全滅は null(翻訳不可)、一部成功は部分的に返す
+    return { ok: true, blocks, image: { base64: b64, mime } };
   }
 
   // ---- ページ翻訳/復元の指示 ----
@@ -804,6 +804,13 @@ if (typeof importScripts === "function") {
 
   async function restorePage(tabId) {
     abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
+    // 集約状態を直接リセットする (translatePage と対称化)。通常は translator の "restored" 通知が reset を促すが、
+    // フレームが context 失効/離脱して "restored" を返せないと st.errored/loading が残置する。ここで直接リセットすれば
+    // 「翻訳が loading に張り付いた → FAB クリックで復元」が確実に状態を解除できる手動脱出になる。
+    resetFrameProgress(tabId);
+    // translator 未注入のタブ (画像翻訳のみ等) では translator の "restored" 通知が来ず、FAB/popup が
+    // loading/on/error に張り付く。SW から能動的に restored を中継して確実に未翻訳状態へ戻す。
+    relayProgress(tabId, { action: Actions.TRANSLATION_PROGRESS, state: "restored" });
     try {
       await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_RESTORE_CS });
     } catch (_e) {
@@ -816,6 +823,11 @@ if (typeof importScripts === "function") {
   // グローバル done を発行する。小さい iframe / 子フレームが先に done で UI が早期確定するのを防ぐ。
   const frameProgress = new Map(); // tabId -> { active:Set<frameId>, done:Set<frameId>, timer:id|null }
   const FRAME_DONE_GRACE_MS = 8000; // 一部フレーム done 後、残りがこの時間応答しなければ離脱とみなし done を発行
+  // 直近の翻訳エラーをタブ単位で状態化する。error は揮発イベントで、自動翻訳/FAB はエラー後に popup を
+  // 開かないと理由が分からない。GET_STATE で直近エラーを返し、後から popup を開いても原因 (キー無効/quota 等)
+  // を出せるようにする (新セッション開始/復元で resetFrameProgress がクリア)。
+  const lastErrorByTab = new Map(); // tabId -> { detail, ts }
+  const LAST_ERROR_TTL_MS = 90000;  // この時間内に開いた popup にだけ直近エラーを見せる (古いエラーの誤表示を防ぐ)
   function relayProgress(tabId, msg) {
     chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ }); // FAB (content top frame)
     // popup が閉じていると runtime.sendMessage は「Receiving end does not exist」で非同期に reject する。
@@ -830,13 +842,18 @@ if (typeof importScripts === "function") {
   function resetFrameProgress(tabId) {
     clearFrameTimer(frameProgress.get(tabId));
     frameProgress.delete(tabId);
+    lastErrorByTab.delete(tabId); // 新セッション開始/復元で直近エラーをクリア (古い理由が残らないように)
   }
   function handleFrameProgress(tabId, frameId, msg) {
     let st = frameProgress.get(tabId);
     if (!st) { st = { active: new Set(), done: new Set(), errored: false, timer: null }; frameProgress.set(tabId, st); }
     // error は終端。どれかのフレームが error を出したら、その後の done/progress で上書きしない
     // (別フレームの done が error 表示を消して「成功したように見える」のを防ぐ)。restore/新セッションでリセット。
-    if (msg.state === "error") { st.errored = true; clearFrameTimer(st); relayProgress(tabId, msg); return; }
+    if (msg.state === "error") {
+      st.errored = true; clearFrameTimer(st);
+      lastErrorByTab.set(tabId, { detail: msg.detail, ts: Date.now() }); // 後から popup を開いても理由を出せるよう状態化
+      relayProgress(tabId, msg); return;
+    }
     if (st.errored && msg.state !== "restored") return; // 終端後は restore 以外を中継しない
     switch (msg.state) {
       case "progress":
@@ -913,7 +930,10 @@ if (typeof importScripts === "function") {
     resolvingFallback.set(key, job);
     let out = null;
     try { out = await job; } finally { resolvingFallback.delete(key); }
-    if (out) modelFallback.set(key, out);
+    // 解決成功はその現行モデルを、解決不能(null)は deadModel 自身を記録する。後者で「これ以上良いモデルは無い」を
+    // 表し、後続バッチが毎回 fetchModels を再発火するスラッシングを抑える (呼び出し側は cached!==cur / good!==dead で
+    // 再試行しないので deadModel キャッシュは安全)。SW は MV3 で頻繁に再起動 → キャッシュ揮発で再解決され、キー追加後も復旧する。
+    modelFallback.set(key, out || deadModel);
     return out;
   }
 
@@ -931,7 +951,7 @@ if (typeof importScripts === "function") {
   // 廃止モデル(404)を同プロバイダの現行モデルへ自動フォールバックして 1 回だけ再試行する共通ヘルパ。
   // ① キャッシュ済みの「死亡モデル→現行」があれば最初の呼び出し前に先回りで差し替える(以後のバッチ/行で無駄な 404 を出さない)。
   // ② 実際に 404 を食らったら resolveFallbackModel→persistModelSwitch(dead ガード付き)→同入力を 1 回再試行する。
-  // TRANSLATE_BATCH(ページ/クイック)と translateImageTexts(ローカル OCR)の両方から呼び、自己修復を共通化する。
+  // TRANSLATE_BATCH(ページ/クイック)から呼び、廃止モデルの自己修復を共通化する。
   async function translateWithHeal(settings, texts, signal, batchId, tabId, frameId, quick) {
     if (settings.provider !== "mymemory") {
       const cur = (settings.models && settings.models[settings.provider]) || "";
@@ -968,33 +988,8 @@ if (typeof importScripts === "function") {
     return res;
   }
 
-  // ---- ローカル ONNX 推論の中継 (Chrome: offscreen document / Firefox: 非対応→呼び出し側が cloud にフォールバック) ----
-  // SW は DOM/navigator.gpu/Worker を持たないため ort-web を直接動かせない。offscreen document に中継する。
-  async function ensureOffscreen() {
-    if (!chrome.offscreen) throw new Error("offscreen_unavailable"); // Firefox 等 (event page で動かす設計だが未配線→cloud へ)
-    if (chrome.offscreen.hasDocument && (await chrome.offscreen.hasDocument())) return;
-    try {
-      await chrome.offscreen.createDocument({
-        url: chrome.runtime.getURL("src/offscreen/offscreen.html"),
-        reasons: [chrome.offscreen.Reason.WORKERS], // ort が内部 worker を使う
-        justification: "On-device ONNX inference for image inpainting and OCR",
-      });
-    } catch (e) {
-      if (!String((e && e.message) || e).includes("single offscreen")) throw e; // 競合生成 (既に存在) は無視
-    }
-  }
-  // op を offscreen の handleOp に渡して結果を受け取る (RUN_INFERENCE エンベロープ)。offscreen のみが応答する。
-  async function runInference(op, payload) {
-    await ensureOffscreen();
-    const res = await chrome.runtime.sendMessage({ action: Actions.RUN_INFERENCE, op, payload });
-    if (!res) throw new Error("offscreen_no_response");
-    if (!res.ok) throw new Error(res.error || "inference_failed");
-    return res.result;
-  }
-
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.action !== "string") return undefined;
-    if (msg.action === Actions.RUN_INFERENCE) return undefined; // offscreen 宛のエンベロープは SW では処理しない
     // 自拡張由来のみ受理 (content / popup / options はいずれも sender.id が拡張 ID)
     if (sender && sender.id && chrome.runtime.id && sender.id !== chrome.runtime.id) return undefined;
 
@@ -1028,30 +1023,15 @@ if (typeof importScripts === "function") {
           }
           case Actions.TRANSLATE_IMAGE: {
             // ページから直接来る (popup の pendingSave を待てない) ため、進行中の APPLY_SETTINGS 保存を待ってから
-            // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回 OCR が旧 provider/旧言語で実行されるのを防ぐ。
+            // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回が旧 provider/旧言語で実行されるのを防ぐ。
             await settingsWriteChain;
             const stored = await getSettingsCached();
             const settings = resolveSettings(msg.settings, stored);
             const controller = new AbortController();
             const untrack = trackController(sender.tab && sender.tab.id, controller);
             try {
-              // imageEngine==="local" かつ Chrome(offscreen 有) ならローカル OCR、それ以外は cloud vision。
-              // ローカルが失敗 (offscreen 無/モデル DL 失敗/OCR 例外) したときは cloud vision にフォールバックする。
-              const useLocal = settings.imageEngine === "local" && !!chrome.offscreen;
-              let out = useLocal
-                ? await translateImageLocal(settings, msg.imageUrl, controller.signal)
-                : await translateImage(settings, msg.imageUrl, controller.signal);
-              if (useLocal && (!out || !out.ok) && out && out.error !== "aborted") {
-                out = await translateImage(settings, msg.imageUrl, controller.signal);
-              }
-              sendResponse(out);
+              sendResponse(await translateImage(settings, msg.imageUrl, controller.signal));
             } finally { untrack(); }
-            break;
-          }
-          case Actions.INPAINT_IMAGE: {
-            // content からの neural inpaint 要求を offscreen に中継 (Chrome のみ)。失敗時は content が canvas 消去にフォールバック。
-            try { sendResponse({ ok: true, result: await runInference(msg.action, msg.payload || {}) }); }
-            catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
             break;
           }
           case Actions.TRANSLATE_PAGE: {
@@ -1078,7 +1058,12 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.GET_STATE: {
-            sendResponse({ ok: true, settings: await getSettings() });
+            // popup が自タブの直近エラーを再表示できるよう、TTL 内の last-error も返す
+            // (自動翻訳/FAB はエラー後に popup を開かず、揮発イベントを逃すため)。
+            const errTab = msg.tabId;
+            const le = (errTab != null) ? lastErrorByTab.get(errTab) : null;
+            const lastError = (le && (Date.now() - le.ts) < LAST_ERROR_TTL_MS) ? le.detail : null;
+            sendResponse({ ok: true, settings: await getSettings(), lastError });
             break;
           }
           case Actions.GET_MODELS: {

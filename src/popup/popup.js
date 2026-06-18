@@ -1,10 +1,10 @@
 "use strict";
 
 /**
- * popup.js — ポップアップ UI (2タブ: 翻訳 / キー)
+ * popup.js — ポップアップ UI (2タブ: 翻訳 / API設定)
  *
- * - API設定タブ: サービス切替(状態) + キー入力 / 動的モデル一覧(新しい順10件 + コスト相対バー)
- * - キータブ: API キー入力 + 内蔵検出 (バッチサイズは自動学習に委ねるため UI なし)
+ * - 翻訳タブ: 自動翻訳トグル / 言語(元・先) / オプション / 翻訳・復元 / status / クイック翻訳
+ * - API設定タブ: サービス切替(状態) + キー入力 + 動的モデル一覧(新しい順10件 + コスト相対バー)
  * モデルは GET_MODELS で動的取得し、選択中が消えていれば background がマイグレーションする。
  */
 
@@ -240,8 +240,6 @@
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("show-fab").checked = state.settings.showFab !== false;
-    $("image-engine-local").checked = state.settings.imageEngine === "local";
-    $("neural-erase").checked = Boolean(state.settings.neuralErase);
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -385,11 +383,16 @@
     fillLangSelect($("source"), true);
     fillLangSelect($("target"), false);
 
-    chrome.runtime.sendMessage({ action: Actions.GET_STATE }, (res) => {
-      if (res && res.ok) {
-        state.settings = res.settings;
-        reflect();
-      }
+    // 自タブの直近翻訳エラーも受け取りたいので tabId を添えて状態を取得する。
+    // (自動翻訳/FAB でエラーが出た後にこの popup を開くと、揮発した error イベントは逃すが last-error で再表示できる。)
+    getActiveTab().then((tab) => {
+      chrome.runtime.sendMessage({ action: Actions.GET_STATE, tabId: tab && tab.id }, (res) => {
+        if (res && res.ok) {
+          state.settings = res.settings;
+          reflect();
+          if (res.lastError) setStatus(errorText(res.lastError)); // 直近の失敗理由 (キー無効/quota 等) を出す
+        }
+      });
     });
 
     document.querySelectorAll(".tab").forEach((t) => {
@@ -434,8 +437,6 @@
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
     $("show-fab").addEventListener("change", (e) => save({ showFab: e.target.checked }));
-    $("image-engine-local").addEventListener("change", (e) => save({ imageEngine: e.target.checked ? "local" : "cloud" }));
-    $("neural-erase").addEventListener("change", (e) => save({ neuralErase: e.target.checked }));
 
     // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
     $("refresh-models").addEventListener("click", () => loadModels(true));

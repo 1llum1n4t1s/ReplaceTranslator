@@ -73,7 +73,15 @@
     const id = String(modelId).toLowerCase();
     let best = null;
     for (const row of TABLE) {
-      if (id.includes(row[0]) && (!best || row[0].length > best[0].length)) best = row;
+      const key = row[0];
+      const idx = id.indexOf(key);
+      if (idx < 0) continue;
+      // 世代境界ガード: 一致キーの直後が数字/ドットなら別世代 (例: 将来の grok-4.5 が grok-4 に、
+      // gpt-5.6-nano が gpt-5 に当たる) なので不一致扱いにする。表の更新漏れで誤った高価格をサイレントに
+      // 表示するより、価格不明 ("—") に倒す方が安全 (fail-loud)。"-" 区切り (gpt-4o-mini 等) は従来通り一致。
+      const after = id.charAt(idx + key.length);
+      if (after === "." || (after >= "0" && after <= "9")) continue;
+      if (!best || key.length > best[0].length) best = row;
     }
     if (!best) return null;
     return { input: best[1], output: best[2], total: best[1] + best[2] };

@@ -17,7 +17,7 @@ const ACTIONS_GLOBALS = {
   SettingsSchema: "readonly",   // src/lib/actions.js — 設定スキーマ + normalize
   StorageKeys: "readonly",      // src/lib/actions.js — storage キー
   Providers: "readonly",        // src/lib/actions.js — プロバイダ定義 (id/label/endpoint/model)
-  TokenUsage: "readonly",       // src/lib/actions.js — usage 集計ヘルパー (currentMonthKey/addUsage)
+  TokenUsage: "readonly",       // src/lib/actions.js — usage 集計ヘルパー (currentMonthKey/pruneUsage)
   Lang: "readonly",             // src/lib/lang.js — 言語コード ⇔ 表示名テーブル
   ProviderApi: "readonly",      // src/lib/providers.js — buildRequest/parseResponse/parseUsage/parseModels
   BatchTuner: "readonly",       // src/lib/actions.js — バッチサイズ自動学習
@@ -43,7 +43,6 @@ module.exports = [
       "web-ext-artifacts/**",
       "temp-build*/**",
       "**/*.min.js",
-      "src/libs/onnxruntime/**", // vendored onnxruntime-web 成果物 (lint 対象外)
     ],
   },
   {
@@ -62,19 +61,6 @@ module.exports = [
         LanguageDetector: "readonly",
         LanguageModel: "readonly",
         ...ACTIONS_GLOBALS,
-      },
-    },
-    rules: COMMON_RULES,
-  },
-  {
-    // offscreen 推論ホスト (src/offscreen/): ort を ESM import するため module として解析する。
-    files: ["src/offscreen/**/*.js"],
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: "module",
-      globals: {
-        ...globals.browser,
-        chrome: "readonly",
       },
     },
     rules: COMMON_RULES,

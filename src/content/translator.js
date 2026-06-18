@@ -415,7 +415,9 @@
           // なるのを防ぐ。無限ループ防止に再キュー回数を INCOMPLETE_REQUEUE_MAX で打ち切り、超えたら諦める。
           for (const b of batch) {
             if (!b.node.isConnected || b.node.nodeValue !== b.text || translatedNodes.has(b.node)) continue;
-            if ((b.incompleteRetry || 0) >= INCOMPLETE_REQUEUE_MAX) { translatedNodes.add(b.node); continue; }
+            // 再キュー上限を超えて諦めたノードは未訳のまま残る。transient drop と同様に数え、
+            // done を partial で正直に通知する (「完了なのに一部未訳」の無言化を防ぐ)。
+            if ((b.incompleteRetry || 0) >= INCOMPLETE_REQUEUE_MAX) { translatedNodes.add(b.node); droppedTransient++; continue; }
             b.incompleteRetry = (b.incompleteRetry || 0) + 1;
             queue.push(b);
           }
@@ -574,31 +576,37 @@
     return s.slice(0, limit);
   }
 
-  // chrome.i18n.detectLanguage (CLD) で言語判定し、この拡張の言語コードへ正規化して返す。
-  // 判定が不確実 (isReliable=false) / API 不在 / 表外言語は null。
-  function detectLanguageOf(text) {
+  // chrome.i18n.detectLanguage (CLD) の言語内訳をそのまま返す ([{language, percentage}] / 不確実時 null)。
+  // 主要言語だけでなく割合も使う = 「target 主体でも非 target 本文が一定量混在するページ」を skip しないため。
+  function detectLanguagesOf(text) {
     return new Promise((resolve) => {
       try {
         chrome.i18n.detectLanguage(text, (res) => {
           const ok = !chrome.runtime.lastError && res && res.isReliable &&
             Array.isArray(res.languages) && res.languages.length > 0;
-          resolve(ok ? ((globalThis.Lang && Lang.normalizeCode(res.languages[0].language)) || null) : null);
+          resolve(ok ? res.languages : null);
         });
       } catch (_e) { resolve(null); }
     });
   }
 
   // 実テキストの CLD 判定を優先し、html lang 属性は補助に使う (テンプレ由来で実内容と違う lang が多いため)。
-  // どちらも取れなければ null (= 従来どおり「翻訳先以外を翻訳」にフォールバック)。
+  // 返り値: { lang, langs }。lang = 主要言語 (正規化・null 可)、langs = [{code, pct}] (skip 判定で非 target の混在量を見る)。
   async function detectPageLang() {
     // 2000 字: ページ先頭に英語ナビ等の異言語が固まっていても、本文まで含めれば CLD は多数派言語を返す
     const text = samplePageText(2000);
     if (text.length >= 40) { // 短文すぎる判定は誤りやすいので CLD には最低量を要求
-      const byText = await detectLanguageOf(text);
-      if (byText) return byText;
+      const raw = await detectLanguagesOf(text);
+      if (raw && raw.length) {
+        const langs = raw
+          .map((l) => ({ code: (globalThis.Lang && Lang.normalizeCode(l.language)) || null, pct: Number(l.percentage) || 0 }))
+          .filter((l) => l.code);
+        if (langs.length) return { lang: langs[0].code, langs };
+      }
     }
     const attr = (document.documentElement && document.documentElement.lang) || "";
-    return (globalThis.Lang && Lang.normalizeCode(attr)) || null;
+    const norm = (globalThis.Lang && Lang.normalizeCode(attr)) || null;
+    return { lang: norm, langs: norm ? [{ code: norm, pct: 100 }] : [] };
   }
 
   // 適用済みの訳文を原文へ戻し、翻訳済みマークをクリアする (再翻訳前のリセット / 復元で共用)
@@ -633,15 +641,23 @@
       translating = false; // 検出の await 中は旧 observers/ループを止めておく
       runId += 1;
       const myDetect = runId;
-      const pageLang = await detectPageLang();
+      const detected = await detectPageLang();
       if (runId !== myDetect) return; // 検出中に restore / 別の翻訳開始が走った
-      if (pageLang && pageLang === settings.targetLang) {
+      const pageLang = detected.lang;
+      // ページ主要言語が翻訳先でも、非翻訳先の言語が一定量混在していれば訳す
+      // (日本語UI に囲まれた英語本文記事のような混在ページで、本文を skip で取り残さないため)。
+      const otherPct = detected.langs.filter((l) => l.code !== settings.targetLang).reduce((a, l) => a + l.pct, 0);
+      const mixedOther = otherPct >= 20; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
+      if (pageLang && pageLang === settings.targetLang && !mixedOther) {
+        // 実質ページ全体が翻訳先言語 → 訳すものが無い
         stopObservers();
         // skip の通知はメインフレームのみ (iframe の skip は frameHasEnoughText 不通過と同様に静かに終わる)
         if (window.top === window.self) notifyProgress("skipped");
         return;
       }
-      if (pageLang) settings = Object.assign({}, settings, { sourceLang: pageLang });
+      // 主要言語が翻訳先でないときだけ翻訳元として確定する。混在ページ (target 主体 + 非 target 本文) は
+      // sourceLang を "auto" のまま残し、buildSystemPrompt の「target 以外を翻訳」で非 target 本文を拾う。
+      if (pageLang && pageLang !== settings.targetLang) settings = Object.assign({}, settings, { sourceLang: pageLang });
     }
     translating = true;
     runId += 1;

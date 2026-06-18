@@ -36,12 +36,5 @@ if (libs.length === 0) {
 
 manifest.background = { scripts: [...libs, "src/service_worker.js"] };
 
-// Firefox は chrome.offscreen 非対応のため offscreen 権限を外す。
-// ローカル ONNX 推論 (MI-GAN inpaint / PaddleOCR) は offscreen document 前提なので Chrome 限定で、
-// Firefox では SW の ensureOffscreen が "offscreen_unavailable" を投げ、呼び出し側が cloud/canvas にフォールバックする。
-if (Array.isArray(manifest.permissions)) {
-  manifest.permissions = manifest.permissions.filter((p) => p !== "offscreen");
-}
-
 writeFileSync(out, JSON.stringify(manifest, null, 2) + "\n");
 console.log(`Firefox manifest 生成: ${out} (background.scripts: ${manifest.background.scripts.length} 件)`);

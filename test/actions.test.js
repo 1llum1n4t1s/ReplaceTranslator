@@ -44,6 +44,23 @@ test("normalize migrates retired models to the provider default (404 復旧)", (
   assert.equal(SettingsSchema.normalize({ models: { gemini: "gemini-3.5-flash" } }).models.gemini, "gemini-3.5-flash");
 });
 
+test("provider default/vision models are never themselves retired (期日到来時の足し忘れ検出)", () => {
+  // defaultModel/visionModel が RETIRED 入りだと normalize が廃止モデルを書き戻し、実行時 404 自己修復と
+  // 往復し続ける。「そのモデルを保存値として normalize したら同値が残る (= RETIRED でない)」を不変条件として
+  // CI で守る。廃止期日 (例: gemini-2.5-flash 2026-10-16) で RETIRED に足したら defaultModel/visionModel も
+  // 現行へ更新せよ、を強制する (足し忘れるとこのテストが赤くなる)。
+  for (const id of Providers.ids) {
+    const p = Providers.get(id);
+    for (const m of [p.defaultModel, p.visionModel]) {
+      if (!m) continue; // mymemory 等 (default/vision なし) はスキップ
+      assert.equal(
+        SettingsSchema.normalize({ models: { [id]: m } }).models[id], m,
+        `${id} のモデル "${m}" が RETIRED 扱い。RETIRED_MODELS に足したなら defaultModel/visionModel も現行へ更新せよ`,
+      );
+    }
+  }
+});
+
 test("normalize coerces boolean flags", () => {
   const s = SettingsSchema.normalize({ autoTranslate: "yes" });
   assert.equal(s.autoTranslate, true);
@@ -77,6 +94,21 @@ test("Providers expose ids and get()", () => {
   assert.equal(Providers.get("openai").label, "OpenAI");
   assert.equal(Providers.get("gemini").defaultModel, "gemini-2.5-flash");
   assert.equal(Providers.get("nope"), null);
+});
+
+test("Providers.supportsImage reflects visionModel presence (画像翻訳ボタンの出し分け根拠)", () => {
+  // visionModel を持つ社のみ画像翻訳対応 (content の「訳」ボタン表示 + SW の no_vision 判定で共有)。
+  for (const id of ["openai", "anthropic", "gemini", "openrouter", "groq"]) {
+    assert.equal(Providers.supportsImage(id), true, `${id} は vision 対応のはず`);
+  }
+  for (const id of ["xai", "deepseek", "mymemory"]) {
+    assert.equal(Providers.supportsImage(id), false, `${id} は vision 非対応のはず`);
+  }
+  assert.equal(Providers.supportsImage("nope"), false); // 未知 ID は false
+  // visionModel を持つ社は必ず supportsImage=true (定義の取りこぼし防止)
+  for (const id of Providers.ids) {
+    assert.equal(Providers.supportsImage(id), Boolean(Providers.get(id).visionModel));
+  }
 });
 
 // ---- BatchTuner (バッチサイズ自動学習) ----
