@@ -30,11 +30,14 @@
   // 診断ログ (既定無音)。ページ console で localStorage.setItem("__rt_debug","1") を立てたときだけ出す。
   // content script は同一オリジンの localStorage を page と共有するので、page 側で立てれば次回注入時から出る。
   const RT_BUILD = "2026-06-19-diag";
+  // フラグは起動時に 1 回だけ読み、以後は in-memory 参照(高頻度 ingest で毎回 localStorage を叩かない)。
+  // 別タブでの変更は storage イベントで追従(同一タブは再注入/リロード時に読み直す)。
+  let rtDebug = false;
+  try { rtDebug = localStorage.getItem("__rt_debug") === "1"; } catch (_e) { /* noop */ }
+  try { window.addEventListener("storage", (e) => { if (e && e.key === "__rt_debug") rtDebug = e.newValue === "1"; }); } catch (_e) { /* noop */ }
   function dbg() {
-    try {
-      if (localStorage.getItem("__rt_debug") !== "1") return;
-      console.debug.apply(console, ["[rt]"].concat(Array.prototype.slice.call(arguments)));
-    } catch (_e) { /* noop */ }
+    if (!rtDebug) return;
+    try { console.debug.apply(console, ["[rt]"].concat(Array.prototype.slice.call(arguments))); } catch (_e) { /* noop */ }
   }
 
   // ---- 状態 ----
@@ -51,7 +54,10 @@
   let io = null;                        // IntersectionObserver (ビューポート優先)
   let mo = null;                        // MutationObserver (動的追加)
   let ro = null;                        // ResizeObserver (初回 0×0 で observe した block の高さ確定を能動検知)
-  let zeroSizedBlocks = new WeakSet();  // 初回 ingest 時 0×0(near=false)で io.observe した block。高さ確定後に near 再評価する対象 (ResizeObserver + reingest で promote)
+  // 初回 ingest 時 0×0(near=false)で io.observe した block。高さ確定後に near 再評価する対象 (ResizeObserver + reingest で promote)。
+  // Set にして (a) 監視数の上限ガード(size), (b) DOM から外れた block の掃除(列挙→ro.unobserve) を可能にする
+  // (WeakSet では列挙不可。RO は元々ターゲットを強参照するため、Set 化で増える保持は無く掃除経路だけ得られる)。
+  let zeroSizedBlocks = new Set();
   let flushTimer = null;
   let pendingAttrRoots = new Set();     // 可視性に効く属性変化があった要素 (デバウンスして再 ingest する対象)
   let attrTimer = null;                 // 属性駆動の再 ingest デバウンスタイマー
@@ -73,6 +79,9 @@
   // 発火しない (スクロールしないと訳されない)。描画完了後に再走査して「高さの付いたブロック」を near として拾う。
   // 旧 [350,1200] は遅いダッシュボードの描画(2〜4s+)に間に合わず "翻訳済みなのに英語のまま" になっていた。
   const REINGEST_DELAYS = [350, 1200, 2500, 4500, 7500, 12000];
+  // ResizeObserver で同時追跡する 0×0 block の上限。仮想化リスト等で 0×0 placeholder が大量生成されても
+  // RO 監視(と強参照)が無制限に増えないようにする保険。超過分は io.observe + スクロールの IO 発火に委ねる。
+  const ZEROSIZE_CAP = 400;
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
   const PREFETCH_PX = 1200;
   const PREFETCH_MARGIN = `${PREFETCH_PX}px`;
@@ -240,7 +249,7 @@
         // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外: 初回 0×0 で observe した block だけは
         // 高さが付いて near 化したか再評価し、near なら IO 発火を待たず即翻訳へ promote する(0×0→サイズ付与の
         // in-viewport 遷移は IO が発火しないことがあるため)。promoteSizedBlock がその block の全ノードを enqueue する。
-        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block)) { immediate = true; dc.promoted++; }
+        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block, metaOf(block))) { immediate = true; dc.promoted++; }
         continue;
       }
       const meta = metaOf(block);
@@ -262,12 +271,13 @@
       io.observe(block);
       // 初回 0×0 の block は遅延描画で後から高さが付く可能性 → ResizeObserver で能動監視し、
       // サイズ確定した瞬間に onResize→promoteSizedBlock で即取り込む(IO 再発火に依存しない)。
-      if (metaOf(block).zeroSized && !zeroSizedBlocks.has(block)) {
+      // ZEROSIZE_CAP で監視数を上限化(仮想化リストの 0×0 大量生成で RO が無制限に増えるのを防ぐ)。
+      if (metaOf(block).zeroSized && !zeroSizedBlocks.has(block) && zeroSizedBlocks.size < ZEROSIZE_CAP) {
         zeroSizedBlocks.add(block);
         if (ro) { try { ro.observe(block); } catch (_e) { /* noop */ } }
       }
     }
-    dbg("ingest", JSON.stringify(dc), "queue=", queue.length);
+    if (rtDebug) dbg("ingest", JSON.stringify(dc), "queue=", queue.length); // JSON.stringify を無効時に評価しない
     if (immediate) scheduleFlush();
   }
 
@@ -544,15 +554,23 @@
     zeroSizedBlocks.delete(block);
     if (ro) { try { ro.unobserve(block); } catch (_e) { /* noop */ } }
   }
+  // DOM から外れた 0×0 block を掃除して RO の強参照を解放する。0×0 のまま resize せず除去された block は
+  // onResize も ingest 再収集も来ず detach されないため、再走査タイミングで列挙して回収する(リーク上限)。
+  function sweepZeroSized() {
+    if (zeroSizedBlocks.size === 0) return;
+    for (const b of zeroSizedBlocks) { if (!b.isConnected) detachZeroSized(b); } // Set は反復中の delete 安全
+  }
 
   // 初回 0×0 で io.observe した block が、後から高さを得て near 化したら即翻訳へ promote する単一ソース。
   // ingest(reingest/MO 由来) と onResize(ResizeObserver 由来) の双方から呼ぶ。promote した block の全ノードを enqueue する。
   // 戻り値: enqueue したか(呼び出し側が scheduleFlush するため)。
-  function promoteSizedBlock(block) {
+  function promoteSizedBlock(block, meta) {
     if (!translating || !block) return false;
     if (flushedBlocks.has(block)) { detachZeroSized(block); return false; } // 既に取り込み済み
     if (!block.isConnected) { detachZeroSized(block); return false; }        // DOM から外れた
-    const m = blockMeta(block);
+    // meta を渡されたら共有(ingest の metaCache 経由=同一 block を複数ノードで再評価しても rect は 1 回読み)。
+    // onResize はサイズ変化イベントなので最新 rect が要る → 渡さず blockMeta で読み直す。
+    const m = meta || blockMeta(block);
     if (m.zeroSized) return false;        // まだ 0×0 → 監視継続(次の resize/tick で再評価)
     detachZeroSized(block);                // サイズ確定 → 再評価/RO 監視を終了
     if (!m.near) return false;             // サイズは付いたが画面外 → IO(スクロール発火)に委ねる(io.observe 済み)
@@ -634,7 +652,9 @@
     for (const id of reingestTimers) window.clearTimeout(id);
     reingestTimers = REINGEST_DELAYS.map((delay) =>
       window.setTimeout(() => {
-        if (translating && contextAlive()) ingest(document.body || document.documentElement);
+        if (!translating || !contextAlive()) return;
+        sweepZeroSized(); // DOM から外れた 0×0 block の RO 監視を回収(リーク上限)
+        ingest(document.body || document.documentElement);
       }, delay)
     );
   }
@@ -663,7 +683,7 @@
     if (io) { io.disconnect(); io = null; }
     if (mo) { mo.disconnect(); mo = null; }
     if (ro) { ro.disconnect(); ro = null; }
-    zeroSizedBlocks = new WeakSet();
+    zeroSizedBlocks = new Set();
     if (flushTimer) { window.clearTimeout(flushTimer); flushTimer = null; }
     if (attrTimer) { window.clearTimeout(attrTimer); attrTimer = null; }
     pendingAttrRoots = new Set();
@@ -803,7 +823,7 @@
     observedBlocks = new WeakSet(); // 再翻訳 (復元→再 ON) で取りこぼさないよう作り直す
     flushedBlocks = new WeakSet();
     observedShadowRoots = new WeakSet();
-    zeroSizedBlocks = new WeakSet();
+    zeroSizedBlocks = new Set();
     startObservers();
     notifyProgress("progress");
     dbg("translating=true runId=", myRun, "ResizeObserver=", typeof ResizeObserver === "function");
