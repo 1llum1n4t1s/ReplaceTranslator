@@ -27,6 +27,16 @@
 
   const A = globalThis.Actions;
 
+  // 診断ログ (既定無音)。ページ console で localStorage.setItem("__rt_debug","1") を立てたときだけ出す。
+  // content script は同一オリジンの localStorage を page と共有するので、page 側で立てれば次回注入時から出る。
+  const RT_BUILD = "2026-06-19-diag";
+  function dbg() {
+    try {
+      if (localStorage.getItem("__rt_debug") !== "1") return;
+      console.debug.apply(console, ["[rt]"].concat(Array.prototype.slice.call(arguments)));
+    } catch (_e) { /* noop */ }
+  }
+
   // ---- 状態 ----
   const originalMap = new WeakMap();    // Node → 原文 (復元用)
   const writtenValue = new WeakMap();   // Node → 我々が書き込んだ訳文 (ページ側の書き換えと区別するため)
@@ -221,14 +231,16 @@
       return m;
     };
     let immediate = false;
+    const dc = { collected: 0, flushedHit: 0, promoted: 0, near: 0, observe: 0, zero: 0 }; // 診断カウンタ
     for (const node of collectNodes(root)) {
+      dc.collected++;
       const block = blockAncestor(node);
-      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; continue; }
+      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; dc.flushedHit++; continue; }
       if (observedBlocks.has(block)) {
         // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外: 初回 0×0 で observe した block だけは
         // 高さが付いて near 化したか再評価し、near なら IO 発火を待たず即翻訳へ promote する(0×0→サイズ付与の
         // in-viewport 遷移は IO が発火しないことがあるため)。promoteSizedBlock がその block の全ノードを enqueue する。
-        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block)) immediate = true;
+        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block)) { immediate = true; dc.promoted++; }
         continue;
       }
       const meta = metaOf(block);
@@ -238,10 +250,13 @@
         observedBlocks.add(block);
         enqueue(node, meta.y);
         immediate = true;
+        dc.near++;
       } else {
         toObserve.add(block);
+        if (meta.zeroSized) dc.zero++;
       }
     }
+    dc.observe = toObserve.size;
     for (const block of toObserve) {
       observedBlocks.add(block);
       io.observe(block);
@@ -252,6 +267,7 @@
         if (ro) { try { ro.observe(block); } catch (_e) { /* noop */ } }
       }
     }
+    dbg("ingest", JSON.stringify(dc), "queue=", queue.length);
     if (immediate) scheduleFlush();
   }
 
@@ -488,6 +504,7 @@
   function maybeAnnounceDone(myRun) {
     if (myRun !== runId || !translating || announced) return;
     if (!flushing && queue.length === 0 && !flushTimer) {
+      dbg("DONE announced (queue 空) droppedTransient=", droppedTransient);
       announced = true;
       // レート制限/混雑(429/503)でリトライ枯渇し未訳のまま諦めたノードがあれば partial を立て、
       // popup が「完了」ではなく「一部未翻訳(レート制限)」を出せるようにする (一部は訳せているので state は done のまま)。
@@ -553,6 +570,7 @@
     if (!translating) return;
     let added = false;
     for (const entry of entries) { if (promoteSizedBlock(entry.target)) added = true; }
+    dbg("onResize entries=", entries.length, "promoted→queue=", added, "queue=", queue.length);
     if (added) scheduleFlush();
   }
 
@@ -729,6 +747,7 @@
 
   async function startTranslate(newSettings) {
     settings = newSettings;
+    dbg("startTranslate BUILD", RT_BUILD, "top=", window.top === window.self, "src=", newSettings && newSettings.sourceLang, "tgt=", newSettings && newSettings.targetLang, "provider=", newSettings && newSettings.provider, "url=", location.href.slice(0, 80));
     // 2 回目以降の翻訳 (言語/provider 変更で再実行) は先に原文へ戻す。前回の訳が残ると accept() が既訳ノードを
     // 全弾きし、iframe では frameHasEnoughText() が 0 字と誤判定して再翻訳されないため、閾値判定より前に revert する。
     revertTranslations();
@@ -737,6 +756,7 @@
     // (translating/observers/queue/runId を残すと、旧 run の遅延バッチが現 runId で適用されたり、
     //  MutationObserver が新 settings で訳し続ける。runId++ で進行中ループ/遅延応答を無効化し observers を破棄。)
     if (!frameHasEnoughText()) {
+      dbg("SKIP frameHasEnoughText=false (iframe テキスト不足)");
       translating = false;
       runId += 1;
       stopObservers(); // io/mo 切断 + queue/pendingBatches クリア (未起動なら no-op)
@@ -755,8 +775,10 @@
       // (日本語UI に囲まれた英語本文記事のような混在ページで、本文を skip で取り残さないため)。
       const otherPct = detected.langs.filter((l) => l.code !== settings.targetLang).reduce((a, l) => a + l.pct, 0);
       const mixedOther = otherPct >= 20; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
+      dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther);
       if (pageLang && pageLang === settings.targetLang && !mixedOther) {
         // 実質ページ全体が翻訳先言語 → 訳すものが無い
+        dbg("SKIP same-language (pageLang===targetLang)");
         stopObservers();
         // skip の通知はメインフレームのみ (iframe の skip は frameHasEnoughText 不通過と同様に静かに終わる)
         if (window.top === window.self) notifyProgress("skipped");
@@ -784,6 +806,7 @@
     zeroSizedBlocks = new WeakSet();
     startObservers();
     notifyProgress("progress");
+    dbg("translating=true runId=", myRun, "ResizeObserver=", typeof ResizeObserver === "function");
     ingest(document.body || document.documentElement);
     // 初回 scan 後にアップグレードで open shadow root を遅延 attach する web component を取りこぼさないよう、
     // 少し待ってから再 ingest する (scheduleReingest=350/1200ms)。新規 shadow root とその MutationObserver を拾う。
