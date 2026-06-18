@@ -311,8 +311,13 @@
     ctx.closePath();
   }
 
-  // box の外周リング (内側=文字部分は除外) をサンプリングし、背景の代表色・平坦さ(std)・明暗を返す。
-  // 平坦なら「背景色 fill で原文を消す」、textured なら「半透明の帯で隠す」を選ぶ判断に使う。
+  // renderInpaint が描画前に object-fit 描画域 (fitDrawRect の戻り) を入れる。ringStats が contain の
+  // レターボックス透明画素をサンプリングから除外するのに使う (null=全面=恒等)。renderInpaint の描画区間は
+  // await を挟まない同期処理なので、set→使用→finally で null クリアまで他の renderInpaint と競合しない。
+  let inpaintFit = null;
+
+  // box の外周リング (内側=文字部分は除外) をサンプリングし、背景の代表色・平坦さ(std)・明暗・不透明度(alpha)を返す。
+  // 平坦なら「背景色 fill で原文を消す」、textured なら「半透明の帯で隠す」を選ぶ判断に使う。alpha は透過背景の保護用。
   function ringStats(ctx, x, y, w, h, W, H) {
     const pad = Math.max(2, Math.round(Math.min(w, h) * 0.15));
     const x0 = Math.max(0, Math.floor(x - pad)), y0 = Math.max(0, Math.floor(y - pad));
@@ -323,20 +328,22 @@
     try { data = ctx.getImageData(x0, y0, rw, rh).data; } catch (_e) { return null; }
     const ix0 = x - x0, iy0 = y - y0, ix1 = x + w - x0, iy1 = y + h - y0;
     const step = Math.max(1, Math.round(Math.min(rw, rh) / 40));
-    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0;
+    let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0, sa = 0;
+    const fit = inpaintFit; // object-fit 描画域。contain のレターボックス透明画素を弾き alpha/色の誤検出を防ぐ
     for (let py = 0; py < rh; py += step) {
       for (let px = 0; px < rw; px += step) {
         if (px >= ix0 && px < ix1 && py >= iy0 && py < iy1) continue; // box 内側 (文字) は除外
+        if (fit && (x0 + px < fit.dx || x0 + px >= fit.dx + fit.dw || y0 + py < fit.dy || y0 + py >= fit.dy + fit.dh)) continue; // 描画域外 (透明レターボックス) は除外
         const o = (py * rw + px) * 4;
         const r = data[o], g = data[o + 1], b = data[o + 2];
-        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; n++;
+        sr += r; sg += g; sb += b; s2 += r * r + g * g + b * b; sa += data[o + 3]; n++;
       }
     }
     if (!n) return null;
     const mr = sr / n, mg = sg / n, mb = sb / n;
     const variance = Math.max(0, s2 / n - (mr * mr + mg * mg + mb * mb)) / 3; // チャンネル平均分散
     const lum = (0.299 * mr + 0.587 * mg + 0.114 * mb) / 255;
-    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5 };
+    return { color: [Math.round(mr), Math.round(mg), Math.round(mb)], std: Math.sqrt(variance), dark: lum < 0.5, alpha: sa / n / 255 };
   }
 
   // 訳文を maxWidth に折り返す。空白で割れない CJK は 1 文字ずつ詰め、長い英単語も文字単位で割る。
@@ -431,7 +438,7 @@
     const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
     const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
     const st = ringStats(ctx, x, y, w, h, W, H);
-    if (!st || st.std >= 24) return null; // flat 背景のみ対象 (textured は半透明帯方式を尊重)
+    if (!st || st.std >= 24 || (st.alpha != null && st.alpha < 0.5)) return null; // flat 不透明背景のみ (textured/透過は除外し行間 fill を乗せない)
     return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, color: st.color };
   }
 
@@ -652,10 +659,13 @@
       const dl = Math.max(3, h * 0.34); // 左: 行頭余白を厚く(行頭ゴースト対策)
       const dr = Math.max(2, h * 0.16); // 右: 訳文はみ出し抑制で控えめ
       const dy = Math.max(2, h * 0.30); // 上下: アセンダ/ディセンダ+行間の薄残り回収
-      // 平坦背景は背景色で原文を無条件に塗り消す (a886f9c の挙動)。alpha ゲートでの消去スキップは、object-fit:cover/contain
-      // 再現で生じる描画域外の透明画素を ring が拾い不透明画像でも誤発火 → 原文ゴースト残りになったため撤去した。
-      ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
-      ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
+      // 平坦背景は背景色 fill で原文を消す。ただし背景が概ね透明 (alpha<0.5) のときは不透明 fill を省いて透過を保つ
+      // (透過 PNG/SVG の透明部が単色箱になるのを防ぐ)。かつて誤発火源だった object-fit 描画域外の透明レターボックスは
+      // ringStats が inpaintFit でサンプリング域から除外済みなので、ここでの alpha は実画像の透過のみを反映する。
+      if (st.alpha == null || st.alpha >= 0.5) {
+        ctx.fillStyle = `rgb(${st.color[0]},${st.color[1]},${st.color[2]})`;
+        ctx.fillRect(x - dl, y - dy, w + dl + dr, h + 2 * dy);
+      }
     } else {
       ctx.fillStyle = "rgba(20,28,38,0.84)"; // textured: 半透明の暗い帯で隠す (従来オーバーレイ相当を canvas に焼く)
       roundRectPath(ctx, x, y, w, h, Math.min(6, h * 0.2));
@@ -780,6 +790,7 @@
       let objFit = "fill";
       try { objFit = getComputedStyle(img).objectFit || "fill"; } catch (_e) { objFit = "fill"; }
       const fr = fitDrawRect(objFit, bmp.width, bmp.height, W, H);
+      inpaintFit = fr; // ringStats が描画域外 (contain レターボックス) の透明画素を弾くため (finally で null クリア)
       ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, fr.dx, fr.dy, fr.dw, fr.dh);
       let fitBlocks = remapBlocksToFit(blocks, fr, W, H); // block 座標も同変換。cover で見切れた分は除外 (恒等時は元配列のまま)
       if (fitBlocks !== blocks) fitBlocks = fitBlocks.filter(blockInView);
@@ -798,6 +809,7 @@
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove()); // 旧オーバーレイ/canvas を除去
       wrap.appendChild(canvas);
     } finally {
+      inpaintFit = null; // 描画区間外では常に全面 (恒等) に戻す
       if (bmp && bmp.close) bmp.close();
     }
   }
