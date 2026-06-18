@@ -41,6 +41,8 @@
   let io = null;                        // IntersectionObserver (ビューポート優先)
   let mo = null;                        // MutationObserver (動的追加)
   let flushTimer = null;
+  let pendingAttrRoots = new Set();     // 可視性に効く属性変化があった要素 (デバウンスして再 ingest する対象)
+  let attrTimer = null;                 // 属性駆動の再 ingest デバウンスタイマー
   let flushing = false;                 // flush 走行中フラグ (同時多発を直列化して 429 を抑える)
   let firstFlush = true;                // 初回 flush は即時(最初の訳を早く出す)、以降デバウンス
   let announced = false;                // 初回 done 通知済みか (以降のスクロール翻訳では戻さない)
@@ -100,6 +102,14 @@
   // 末尾は拡張自身の UI (FAB / 画像ホバーボタン / 画像オーバーレイ層)。これらは fab.js / image-translator.js が
   // 描画・管理するので、collectNodes がラベルや訳文オーバーレイを訳し直したり、復元時に stale なラベルへ戻すのを防ぐ。
   const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, .__rt-img-btn, .__rt-img-layer";
+
+  // 可視性に影響する属性。これらが変わったら display:none→表示になったドロップダウン/モーダル/タブ/
+  // アコーディオン等の中身を取り込み直す (IO は display 切替を取りこぼすことがあるため属性駆動で補う)。
+  // data-state は Radix/shadcn 等が open/closed の表示制御に使う。
+  const ATTR_FILTER = ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded", "data-state"];
+  // MutationObserver の監視設定 (本体 / shadow root で共通)。childList+characterData で動的追加・文言差し替えを、
+  // attributes(ATTR_FILTER) で表示トグルを拾う。我々は属性を書き換えないので自己再発火は起きない。
+  const MO_OPTS = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR_FILTER };
 
   function shouldTranslateText(s) {
     if (!s) return false;
@@ -162,7 +172,7 @@
         // shadow root 内部の動的更新も拾えるよう MutationObserver に登録する (翻訳中のみ)
         if (mo && !observedShadowRoots.has(node.shadowRoot)) {
           observedShadowRoots.add(node.shadowRoot);
-          mo.observe(node.shadowRoot, { childList: true, subtree: true, characterData: true });
+          mo.observe(node.shadowRoot, MO_OPTS);
         }
       }
       const kids = node.childNodes;
@@ -510,8 +520,34 @@
         ingest(tn.parentNode || tn);
         continue;
       }
+      if (m.type === "attributes") {
+        // class/style/hidden/aria 等の変化で display:none→表示になったドロップダウン/モーダル/タブ/
+        // アコーディオンの中身を取り込む。属性は高頻度で変わる(ホバー/アニメ)ので個別 ingest せず、
+        // 対象をためてデバウンス再 ingest する (collectNodes は既訳/監視中ブロックを skip するので冪等)。
+        scheduleAttrReingest(m.target);
+        continue;
+      }
       for (const node of m.addedNodes) ingest(node);
     }
+  }
+
+  // 属性駆動の再 ingest。高頻度な属性変化を 250ms に集約し、ためた要素 (および IO 盲点対策で body 全体) を
+  // 取り込み直す。子孫関係でネストした要素は ingest の skip 判定で二重処理にならない。
+  function scheduleAttrReingest(el) {
+    if (el) pendingAttrRoots.add(el);
+    if (attrTimer) return;
+    attrTimer = window.setTimeout(() => {
+      attrTimer = null;
+      const roots = pendingAttrRoots;
+      pendingAttrRoots = new Set();
+      if (!translating || !contextAlive()) return;
+      // 属性変化が多発するページ (アニメ/ホバーで class が頻繁に変わる) で個別 ingest を撃ち続けないよう、
+      // 対象が多いときは body 全体の 1 回再走査に畳む (collectNodes が既処理ブロックを skip するので冪等)。
+      if (roots.size > 30) { ingest(document.body || document.documentElement); return; }
+      for (const r of roots) {
+        if (r && r.isConnected) ingest(r);
+      }
+    }, 250);
   }
 
   // SPA 遷移後はコンテンツが段階的に差し変わるので、少し待ってから全体を取り込み直す (2 回)
@@ -532,7 +568,7 @@
     }
     if (!mo) {
       mo = new MutationObserver(onMutate);
-      mo.observe(document.body || document.documentElement, { childList: true, subtree: true, characterData: true });
+      mo.observe(document.body || document.documentElement, MO_OPTS);
     }
     lastHref = location.href;
     window.removeEventListener("popstate", onPopState);
@@ -544,6 +580,8 @@
     if (io) { io.disconnect(); io = null; }
     if (mo) { mo.disconnect(); mo = null; }
     if (flushTimer) { window.clearTimeout(flushTimer); flushTimer = null; }
+    if (attrTimer) { window.clearTimeout(attrTimer); attrTimer = null; }
+    pendingAttrRoots = new Set();
     queue.length = 0;
     pendingBatches.clear(); // 復元時に in-flight の streaming partial 紐付けを破棄 (stale 適用防止)
     observedShadowRoots = new WeakSet();
