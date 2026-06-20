@@ -30,6 +30,7 @@
   border-radius: 3px 0 0 3px; /* 画面端(右)は密着、ページ側(左)だけ角丸 */
   border: 1px solid var(--line);
   border-right: 0;            /* 右は画面端に密着するので線を出さない */
+  padding-left: 4px;          /* 左端の朱バー(::after 4px)ぶん中身を右へ寄せ、アイコンを朱バー右の領域で中央にする */
   cursor: grab;
   touch-action: none;
   display: flex;
