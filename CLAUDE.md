@@ -102,6 +102,14 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - **クイック翻訳**（popup「翻訳」タブ末尾・常時表示）: 上部の翻訳元⇄翻訳先を流用し、入力を debounce して `TRANSLATE_BATCH` に 1 件投げる。ページは翻訳しない短文用。コピー/クリア/文字数/`Ctrl+Enter`
 - デザインはパステル・モダン（生成り × 墨 × 朱のテーマ色を維持しつつ柔らかく）
 
+## 選択テキスト翻訳（ホットキー / 右クリックで浮遊バブル表示）
+- **明示操作でのみ起動**: `selection-translator.js`（content・**トップフレームのみ**常駐、fab/image と同じ manifest content_scripts に同梱）が、`chrome.commands` のホットキー（`translate-selection`・既定 `Ctrl+Shift+L`／Mac `Command+Shift+L`、`chrome://extensions/shortcuts`(Firefox=about:addons) で再割り当て可）または右クリック「選択テキストを翻訳」(`rt-translate-selection`・`contexts:["selection"]`) を受けて、選択範囲の近くに**浮遊バブル**で訳文を出す。「選択しただけ」では送らない（FAB の `isTrusted`・画像のクリック要求と同じ "勝手に送らない" 原則）
+- **起動経路**: SW はページ選択を直接読めないため、ホットキー(`commands.onCommand`)/右クリック(`contextMenus.onClicked`)とも `triggerSelectionTranslate(tabId)` が content に `TRANSLATE_SELECTION_CS` を送るだけ。content が `window.getSelection()` を読み、`selection.getRangeAt(0).getBoundingClientRect()` を anchor にバブルを置き、**popup クイック翻訳と同形**で `TRANSLATE_BATCH`(`texts:[選択文]`+`quick:true`) を投げる（API キーは content に渡さず SW 保管値を使う）
+- **ページ翻訳とは独立**: 選択翻訳は「いま見えている選択テキスト」をそのまま訳す（翻訳済みページの訳文選択は実質 no-op だが、ページ翻訳が skip した箇所＝code/pre/notranslate/短文は原文のままなので訳せる）。**`quick:true` は `trackController` をスキップ**し、`abortTab`（FAB 復元/再翻訳）に巻き込まれて中断されないようにする（popup クイック翻訳は元々 `sender.tab` 無しで未追跡＝無影響）。content は `reqId` ガードで stale 応答を捨てる
+- **有効フラグ `selectionTranslate`**（既定 ON）: popup「翻訳」タブのトグルで ON/OFF。`SettingsSchema.normalize` は `!== false`（showFab と同形）で欠損設定でも有効を保つ。`contentFlagsOf` が `CONTENT_FLAGS` に載せ（`ensureContentFlags` の鮮度ガードも `selectionTranslate` の有無を見る）、content は `storage.onChanged` で provider/トグル切替に即追従（OFF で開いているバブルも閉じる）
+- **バブル UI**: `#__rt_sel_bubble` に `all:initial` + `__rt-sel-*` 接頭辞でページ CSS と隔離（Shadow DOM 不使用・selection-translator.css）。FAB と同じ栞ブランド（生成り和紙 × 墨 × 朱）+ ダークモード。状態は `loading`(淡い朱レール)/`result`(墨本文+コピーボタン)/`error`(濃い朱・理由を i18n 展開＝`statusNoKey`/`statusBadKey`/`statusQuotaDaily`/`statusNetwork` を fab/popup と共有)。消去は バブル外 pointerdown・Esc・選択解除(`selectionchange`)・スクロール/リサイズで anchor 消失時。`window.__rtSelectionLoaded` 冪等ガード + `contextAlive()`/`shutdown()` で context 失効ハードニング
+- **既知の制限**: iframe 内の選択は対象外（トップフレームのみ常駐＝広告枠コスト回避。fab.js と同方針）
+
 ## popup フォント（IBM Plex Sans JP を同梱）
 - MV3 拡張は CSP/プライバシー/審査の都合で**外部 CDN フォント不可** → フル TTF を `pyftsubset` で必要範囲(Latin/かな/漢字 U+4E00-9FFF/記号)だけサブセット化した woff2 を `src/popup/fonts/` に同梱し `@font-face` で `'self'` から読む（400/600/700）。`popup.css` の `--display`/`--sans` 先頭に指定。明朝は使わない
 

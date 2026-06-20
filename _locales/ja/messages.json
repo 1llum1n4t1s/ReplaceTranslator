@@ -47,6 +47,8 @@
 
   "ctxTranslate": { "message": "このページを翻訳" },
   "ctxRestore": { "message": "原文に戻す" },
+  "ctxTranslateSelection": { "message": "選択テキストを翻訳" },
+  "cmdTranslateSelection": { "message": "選択テキストを翻訳" },
 
   "optionsTitle": { "message": "Replace AI Translator API — 設定" },
   "optionsLead": { "message": "各プロバイダの API キーを入力してください。キーはこのブラウザ内にローカル保存され、翻訳時に該当プロバイダの API にのみ送信されます。" },
@@ -57,6 +59,12 @@
   "optMyMemoryNote": { "message": "キー不要。メールを入れると無料枠が増えます（匿名 5千 / メール登録 5万字/日）。NMT エンジン・1テキスト最大500バイト。" },
   "optShowFab": { "message": "フローティングボタン" },
   "optShowFabDesc": { "message": "ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。" },
+  "optSelectionTranslate": { "message": "選択テキスト翻訳" },
+  "optSelectionTranslateDesc": { "message": "テキストを選択して Ctrl+Shift+L または右クリックで、その場に訳をポップ表示します。" },
+  "optSelShortcut": { "message": "ショートカットを変更" },
+  "selTranslating": { "message": "翻訳中…" },
+  "selCopy": { "message": "コピー" },
+  "selCopied": { "message": "✓ コピー" },
   "imgBtn": { "message": "画像内のテキストを翻訳" },
   "imgRevert": { "message": "画像の翻訳を消して元に戻す" },
   "imgNoText": { "message": "翻訳できる文字が見つかりませんでした" },
