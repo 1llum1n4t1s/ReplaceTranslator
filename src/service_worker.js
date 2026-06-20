@@ -192,6 +192,24 @@ if (typeof importScripts === "function") {
     inflightByTab.delete(tabId);
   }
 
+  // ---- タブ単位の翻訳/復元 世代トークン (translate ⇄ restore の順序競合を断つ) ----
+  // translatePage と restorePage は別々の async メッセージハンドラで、タブ単位の直列化が無い。
+  // autoTranslate ON でページを開くと fab が TRANSLATE_PAGE を送り、translatePage が injectTranslator
+  // (executeScript・低速) を await している"最中"にユーザーが popup で OFF にすると、restorePage が先に
+  // APPLY_RESTORE_CS を送って原文へ戻しても、後から translatePage の await が解けて APPLY_TRANSLATE_CS を
+  // 後着送信し、startTranslate が新しい runId を採番して再翻訳してしまう (restore() の runId++ は旧ループしか
+  // 止められず後発 translate を打ち消せない)。結果「OFF にしたのに今のタブが翻訳済みのまま」になる。
+  // 対策: タブ単位の世代番号を採番し、translatePage は APPLY_TRANSLATE_CS を送る直前に「自分の世代が最新か」を
+  // 確認する。await 中に restorePage (や別の translatePage) が世代を進めていたら送信を取り止める = stale な
+  // 再翻訳を発生源で断つ。Map は tabId キーなので裏タブには一切干渉しない (今のタブだけ確実に意図どおりへ)。
+  const tabGen = new Map(); // tabId -> number (translate/restore の最新意図の世代)
+  function bumpTabGen(tabId) {
+    if (tabId == null) return 0;
+    const g = (tabGen.get(tabId) || 0) + 1;
+    tabGen.set(tabId, g);
+    return g;
+  }
+
   // ---- 翻訳代理 fetch (核心) ----
   async function translateBatch(settings, texts, signal, opts) {
     const providerId = settings.provider;
@@ -814,6 +832,7 @@ if (typeof importScripts === "function") {
   // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId) {
+    const myGen = bumpTabGen(tabId); // この翻訳指示の世代を採番 (await 中に restore が割り込んだら陳腐化する)
     abortTab(tabId); // 再翻訳: このタブの前回の in-flight fetch を中断 (古い設定の無駄リクエストを切る)
     resetFrameProgress(tabId); // フレーム横断の進捗集約をリセット (watchdog も解除・新しい翻訳セッション)
     // FAB/右クリック/自動は popup の pendingSave を待てないため、進行中の APPLY_SETTINGS 保存を待ってから読む。
@@ -827,12 +846,17 @@ if (typeof importScripts === "function") {
       // ではなく専用エラーで返す (popup は !ok を一律 "Error" 表示するので UX は同値、将来の個別文言にも備える)。
       return { ok: false, error: "not_injectable" };
     }
+    // injectTranslator の await 中に restorePage (OFF) や別の翻訳指示が世代を進めていたら、この APPLY_TRANSLATE_CS は
+    // stale。送ると復元を上書きして再翻訳してしまうので送信を取り止める (発生源で断つ)。ok:true で静かに無視し、
+    // popup の「翻訳」ボタンが !ok を Error 表示するのを避ける (ユーザー意図は最新の restore/別翻訳が表現する)。
+    if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
     await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_TRANSLATE_CS, settings: publicSettings(settings) });
     return { ok: true };
   }
 
   async function restorePage(tabId) {
+    bumpTabGen(tabId); // 世代を進める。await 中の translatePage の myGen を陳腐化させ、後発の APPLY_TRANSLATE_CS を止める
     abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
     // 集約状態を直接リセットする (translatePage と対称化)。通常は translator の "restored" 通知が reset を促すが、
     // フレームが context 失効/離脱して "restored" を返せないと st.errored/loading が残置する。ここで直接リセットすれば
@@ -923,7 +947,7 @@ if (typeof importScripts === "function") {
   }
   // タブが閉じたら集約状態と in-flight を後始末する (離脱フレーム/タブの取り残し防止)
   try {
-    chrome.tabs.onRemoved.addListener((tabId) => { resetFrameProgress(tabId); abortTab(tabId); });
+    chrome.tabs.onRemoved.addListener((tabId) => { resetFrameProgress(tabId); abortTab(tabId); tabGen.delete(tabId); });
   } catch (_e) { /* noop */ }
 
   // ---- メッセージディスパッチ ----
