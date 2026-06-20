@@ -28,6 +28,7 @@
     APPLY_TRANSLATE_CS: "APPLY_TRANSLATE_CS", // content に翻訳開始を指示
     APPLY_RESTORE_CS: "APPLY_RESTORE_CS",     // content に復元を指示
     TRANSLATE_PARTIAL: "TRANSLATE_PARTIAL",   // ストリーミングで確定した訳文要素を逐次 content へ (早出し)
+    TRANSLATE_SELECTION_CS: "TRANSLATE_SELECTION_CS", // ホットキー/右クリックで選択テキスト翻訳の起動を content に合図
     // content → runtime (進捗通知; popup が開いていれば受信)
     TRANSLATION_PROGRESS: "TRANSLATION_PROGRESS",
   });
@@ -168,6 +169,7 @@
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     showFab: true,               // ページ右下のフローティング翻訳ボタンを表示する (OFF でも popup/右クリックから翻訳可)
+    selectionTranslate: true,    // 選択テキスト翻訳 (ホットキー Ctrl+Shift+L / 右クリックで選択範囲をその場にバブル表示)
   });
 
   // 各社が廃止したモデル ID。保存設定 (settings.models[*]) に残っていると翻訳時に 404 で詰むため、
@@ -215,6 +217,7 @@
       models,
       autoTranslate: Boolean(r.autoTranslate),
       showFab: r.showFab !== false, // 既定 ON。既存ユーザーの保存済み設定 (キー欠損) でも FAB が消えないよう !== false で判定
+      selectionTranslate: r.selectionTranslate !== false, // 既定 ON。欠損設定でも選択翻訳が消えないよう !== false で判定 (showFab と同形)
     };
   }
 
