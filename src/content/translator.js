@@ -44,6 +44,11 @@
   const originalMap = new WeakMap();    // Node → 原文 (復元用)
   const writtenValue = new WeakMap();   // Node → 我々が書き込んだ訳文 (ページ側の書き換えと区別するため)
   const translatedNodes = new Set();    // 翻訳/処理済みノード (再翻訳防止 + 復元走査用)
+  // 原文テキスト → 訳文のセッション内メモ。SPA 再レンダで Text ノード実体が差し替わると WeakMap キーから
+  // 外れて同一原文を再翻訳してしまう (= autoTranslate で「翻訳済みを何度も再翻訳」)。同じ原文を既に訳して
+  // いれば API を呼ばずキャッシュ適用する。provider/targetLang が変わると訳が変わるので revert で clear する。
+  const translationMemo = new Map();
+  const MEMO_MAX = 4000;                // メモの上限 (巨大ページでの無制限増加を防ぐ。超過後は新規登録のみ停止)
   let observedBlocks = new WeakSet();   // io.observe 済みのブロック要素
   let flushedBlocks = new WeakSet();    // 可視化して翻訳に回し終えたブロック (内部への動的追加は即取り込む)
   let observedShadowRoots = new WeakSet(); // MutationObserver で監視済みの shadow root (内部の動的更新も拾う)
@@ -391,6 +396,17 @@
   function applyTranslations(batch, translations) {
     for (let i = 0; i < batch.length; i++) applyOne(batch[i], translations[i]);
   }
+  // 原文→訳文をメモに登録 (同一原文の再翻訳を API なしでキャッシュ適用するため)。上限超過後は新規登録のみ止める。
+  function rememberTranslations(batch, translations) {
+    for (let i = 0; i < batch.length; i++) {
+      const src = batch[i] && batch[i].text;
+      const t = translations[i];
+      if (typeof src === "string" && src && typeof t === "string" && t && t !== src) {
+        if (translationMemo.size >= MEMO_MAX && !translationMemo.has(src)) continue;
+        translationMemo.set(src, t);
+      }
+    }
+  }
 
   // 翻訳の優先順位を「ページ上から下」にする: enqueue 時に確定した各アイテムの所属ブロック絶対Y(_y)で昇順ソート。
   // 絶対Y(top+scrollY)はスクロール不変なので、flush 時に node 毎の getBoundingClientRect を読み直す必要はない
@@ -420,20 +436,34 @@
       }
     }
     if (pending.length === 0) { flushing = false; maybeAnnounceDone(myRun); return; }
-    sortTopDown(pending);
+    // 同一原文を既に訳済みなら API を呼ばずキャッシュ適用する (SPA 再レンダで Text 実体が変わった同文・
+    // 繰り返し文言・原文書き戻しの「再翻訳」= 無駄な TRANSLATE_BATCH を防ぐ)。残りだけ API へ送る。
+    const toSend = [];
+    for (const x of pending) {
+      const cached = translationMemo.get(x.text);
+      if (cached !== undefined) applyOne(x, cached);
+      else toSend.push(x);
+    }
+    if (toSend.length === 0) {
+      flushing = false;
+      if (myRun === runId && translating && queue.length > 0) scheduleFlush();
+      else maybeAnnounceDone(myRun);
+      return;
+    }
+    sortTopDown(toSend);
     if (!announced) notifyProgress("progress");
 
     // 共有カーソルから「その時点の currentBatchSize」個ずつ取り出す。
     // → BatchTuner が育てたサイズが同一 flush 内のあとのバッチにも即反映される (旧: flush 開始時のサイズで固定)。
     let cursor = 0;
     async function worker() {
-      while (cursor < pending.length) {
+      while (cursor < toSend.length) {
         if (myRun !== runId || fatal || !translating) return;
         // 開始直後の数バッチは小サイズ (TTF 短縮 + 全ワーカーに分散)。以降は自動学習サイズ。
         let size;
         if (warmupLeft > 0) { warmupLeft--; size = WARMUP_BATCH_SIZE; }
         else size = Math.max(1, currentBatchSize);
-        const batch = pending.slice(cursor, cursor + size);
+        const batch = toSend.slice(cursor, cursor + size);
         cursor += batch.length;
         const res = await sendBatchWithRetry(batch, myRun);
         if (myRun !== runId) return;
@@ -441,6 +471,7 @@
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
         if (res && res.ok && Array.isArray(res.translations)) {
           applyTranslations(batch, res.translations);
+          rememberTranslations(batch, res.translations);
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
@@ -468,6 +499,7 @@
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
+          rememberTranslations(batch, res.translations);
         } else if (res && res.error === "incomplete") {
           // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial (nodeValue が訳文へ
           // 書き換わったノード) はそのまま残し、まだ原文のままのノードだけ能動的に queue へ戻す。
@@ -605,9 +637,15 @@
         // サイトが既存テキストノードを書き換えたケース (SPA/チャット等の文言差し替え)。
         const tn = m.target;
         if (translatedNodes.has(tn)) {
-          // 我々が書いた訳文のままなら無視 (自己書き換えでの再発火/ループ防止)。
+          // (a) 我々が書いた訳文のままなら無視 (自己書き換えでの再発火/ループ防止)。必ず最初に判定する。
           if (tn.nodeValue === writtenValue.get(tn)) continue;
-          // ページが別テキストへ書き換えた → 翻訳済みマーク/原文記録を捨てて訳し直す (古い訳の残留や復元時の誤上書きを防ぐ)。
+          // (b) ページが「我々が訳した原文」へ書き戻しただけ (SPA 仮想 DOM の同値再適用) → キャッシュ済みの訳文を
+          //     同期で即書き戻す。delete→ingest→API を踏まず、原文が一瞬見えるちらつきも出さない (再翻訳の主因を断つ)。
+          //     書き戻し後の characterData は (a) で continue するので自己ループしない。
+          const wv = writtenValue.get(tn);
+          if (wv != null && tn.nodeValue === originalMap.get(tn)) { tn.nodeValue = wv; continue; }
+          // (c) 別テキストへの実差し替え (チャット編集/SPA 本文入替) → 翻訳済みマーク/原文記録を捨てて訳し直す
+          //     (古い訳の残留や復元時の誤上書きを防ぐ)。
           translatedNodes.delete(tn);
           originalMap.delete(tn);
           writtenValue.delete(tn);
@@ -763,6 +801,7 @@
       writtenValue.delete(node);
     }
     translatedNodes.clear();
+    translationMemo.clear(); // provider/targetLang 変更での再翻訳時に古い訳をキャッシュ適用しないよう破棄
   }
 
   async function startTranslate(newSettings) {
