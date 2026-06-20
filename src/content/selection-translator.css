@@ -1,10 +1,11 @@
 /* 選択テキストのインライン翻訳バブル (content script で全ページに常駐) */
 /* ページ CSP の影響を受けない拡張リソース。id プレフィックス + all:initial でページ CSS と完全隔離する。 */
 /*                                                                                                   */
-/* デザイン: FAB と同じこのアプリ専用ブランド (生成りの和紙 × 墨 × 朱の「栞」)。                        */
-/*   ・地 = 生成りの和紙 (繊維テクスチャ + 上端の艶)                                                   */
-/*   ・左端 = 朱の墨レール (署名色。loading=淡い朱 / error=濃い朱)                                      */
-/*   ・本文 = 墨色のテキスト。下部に小さなコピーボタン                                                  */
+/* デザイン: フラットデザイン (FAB と同じブランド色 = 生成り × 墨 × 朱)。                              */
+/*   ・地 = 生成りのベタ塗り (グラデ/テクスチャなし)                                                   */
+/*   ・輪郭 = 1px のフラットなボーダー + 左端に太めの朱バー (署名色)                                    */
+/*   ・elevation = ぼかし最小の単一影だけ (多重影・厚み表現はしない)                                    */
+/*   ・本文 = 墨色のテキスト / 失敗 = 朱 / 翻訳中 = 淡い墨                                              */
 
 #__rt_sel_bubble {
   all: initial;
@@ -15,36 +16,29 @@
   z-index: 2147483647;
   max-width: min(380px, 92vw);
 
-  /* --- ブランド配色 (生成り×墨×朱)。fab.css と同系の hex --- */
-  --paper: #f7f4ed;
-  --paper-hi: #fffdf8;
-  --paper-lo: #ece3d2;
-  --rail: #d8462b;
-  --rail-deep: #ab3019;
+  /* --- ブランド配色 (生成り×墨×朱)。ベタ塗りのみ --- */
+  --paper: #f4f1e9;
   --ink: #2b3340;
   --ink-soft: #6b7280;
+  --rail: #d8462b;
+  --line: #d0c9ba;
 
-  padding: 9px 12px 8px;
-  border-radius: 8px;
-  border-left: 3px solid var(--rail);
+  padding: 10px 13px;
+  background: var(--paper);
   color: var(--ink);
-  font-family: "Hiragino Maru Gothic ProN", "Hiragino Maru Gothic Pro",
-    "Yu Gothic UI", "BIZ UDPGothic", "Segoe UI", system-ui, sans-serif;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--rail);
+  border-radius: 4px;
+  /* フラットな elevation: ぼかしを抑えた単一影だけ (浮遊要素の最低限の分離。多重影は使わない) */
+  box-shadow: 0 2px 10px -2px rgba(43, 51, 64, .18);
+
+  font-family: "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Hiragino Sans",
+    "Noto Sans JP", "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   text-align: left;
 
-  background-color: var(--paper);
-  background-image:
-    linear-gradient(180deg, rgba(255, 255, 255, .5) 0%, rgba(255, 255, 255, 0) 36%),
-    repeating-linear-gradient(90deg, rgba(120, 100, 70, .035) 0 1px, transparent 1px 3px),
-    linear-gradient(150deg, var(--paper-hi) 0%, var(--paper) 55%, var(--paper-lo) 100%);
-  box-shadow:
-    0 2px 4px rgba(60, 50, 40, .14),
-    0 16px 32px -12px rgba(60, 50, 40, .4),
-    inset 0 1px 0 rgba(255, 255, 255, .7);
-
-  animation: rt-sel-pop .14s ease-out;
+  animation: rt-sel-fade .12s ease-out;
 }
 #__rt_sel_bubble * { box-sizing: border-box; }
 
@@ -58,63 +52,59 @@
 }
 #__rt_sel_bubble .__rt-sel-text { color: var(--ink); }
 
-/* 翻訳中 = 本文を淡い墨にし、朱レールを淡める */
-#__rt_sel_bubble.__rt-sel-loading { border-left-color: color-mix(in srgb, var(--rail) 55%, var(--paper-lo)); }
+/* 翻訳中 = 本文を淡い墨に、左バーも淡める */
+#__rt_sel_bubble.__rt-sel-loading { border-left-color: var(--ink-soft); }
 #__rt_sel_bubble.__rt-sel-loading .__rt-sel-text {
   color: var(--ink-soft);
   font-style: italic;
 }
 
-/* 失敗 = 朱レールと本文を濃い朱に寄せて一目で示す */
-#__rt_sel_bubble.__rt-sel-error { border-left-color: var(--rail-deep); }
-#__rt_sel_bubble.__rt-sel-error .__rt-sel-text { color: var(--rail-deep); }
+/* 失敗 = 左バーと本文を朱に寄せて一目で示す */
+#__rt_sel_bubble.__rt-sel-error { border-left-color: var(--rail); }
+#__rt_sel_bubble.__rt-sel-error .__rt-sel-text { color: var(--rail); }
 
-/* 下部: コピーボタン (result 時のみ JS が表示) */
+/* 下部: コピーボタン (result 時のみ JS が表示)。フラットなアウトライン → hover でベタ反転 */
 #__rt_sel_bubble .__rt-sel-foot {
   display: flex;
   justify-content: flex-end;
-  margin-top: 7px;
+  margin-top: 8px;
 }
 #__rt_sel_bubble .__rt-sel-copy {
   all: unset;
   cursor: pointer;
   font: inherit;
   font-size: 11.5px;
-  color: var(--rail-deep);
-  padding: 2px 9px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--rail) 36%, transparent);
-  background: color-mix(in srgb, var(--rail) 8%, transparent);
-  transition: background .15s ease, color .15s ease, border-color .15s ease;
+  color: var(--rail);
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--rail);
+  background: transparent;
+  transition: background-color .12s ease, color .12s ease;
 }
 #__rt_sel_bubble .__rt-sel-copy:hover {
-  background: color-mix(in srgb, var(--rail) 16%, transparent);
+  background: var(--rail);
+  color: var(--paper);
 }
 #__rt_sel_bubble .__rt-sel-copy.__rt-sel-copied {
-  color: #fff;
+  color: var(--paper);
   background: var(--rail);
   border-color: var(--rail);
 }
 
-@keyframes rt-sel-pop {
-  from { opacity: 0; transform: translateY(3px); }
+@keyframes rt-sel-fade {
+  from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ── ダークモード (fab.css と同じ切替。生成り→暗いスレート、朱→ダーク朱) ── */
+/* ── ダークモード (生成り→暗いスレート、朱→ダーク朱。フラットのまま) ── */
 @media (prefers-color-scheme: dark) {
   #__rt_sel_bubble {
-    --paper: #262a33;
-    --paper-hi: #323742;
-    --paper-lo: #1b1e25;
-    --rail: #f0795f;
-    --rail-deep: #f59179;
+    --paper: #23272f;
     --ink: #eef0f4;
     --ink-soft: #9aa3b2;
-    box-shadow:
-      0 2px 4px rgba(0, 0, 0, .4),
-      0 16px 32px -12px rgba(0, 0, 0, .6),
-      inset 0 1px 0 rgba(255, 255, 255, .07);
+    --rail: #f0795f;
+    --line: #3a3f4a;
+    box-shadow: 0 2px 10px -2px rgba(0, 0, 0, .5);
   }
 }
 
