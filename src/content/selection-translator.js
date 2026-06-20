@@ -32,6 +32,7 @@
   let listening = false;   // dismiss リスナの登録状態
   let selRaf = 0;          // selectionchange の rAF coalesce
   let posRaf = 0;          // scroll/resize 再配置の rAF coalesce
+  let lastSelRoot = null;  // 直近に選択が見つかった shadow root (scroll 連打での再走査を避けるキャッシュ)
 
   function contextAlive() {
     try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
@@ -54,14 +55,71 @@
     return generic;
   }
 
-  // ---- 選択範囲 ----
-  function selRect(sel) {
-    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  // ---- 選択範囲 (Shadow DOM 対応) ----
+  // window.getSelection() は Chrome/Firefox とも shadow tree 内の選択を貫通せず anchorNode が shadow host に
+  // なる (Reddit のサイドパネル等 Web Components で選択が取れない主因)。通常選択が空なら host の
+  // shadowRoot.getSelection() (Chromium/Firefox がサポート) へ降り、さらに保険で開いた shadow root を辿って探す
+  // (translator.js の collectNodes と同じ "開いた shadowRoot を辿る" 方針)。
+  function selText(sel) {
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return "";
+    return String(sel).trim();
+  }
+  function rectFor(sel) {
     try {
       const r = sel.getRangeAt(0).getBoundingClientRect();
       if (r && (r.width || r.height)) return r;
     } catch (_e) { /* noop */ }
+    // range の rect が空 (一部 shadow 経路の既知の癖) のときは anchorNode 周辺へフォールバック
+    try {
+      const a = sel.anchorNode;
+      const el = a && (a.nodeType === 1 ? a : a.parentElement);
+      const r = el && el.getBoundingClientRect && el.getBoundingClientRect();
+      if (r && (r.width || r.height)) return r;
+    } catch (_e) { /* noop */ }
     return null;
+  }
+  // 開いた shadow root を辿って選択を持つ root を探す (見つけたら lastSelRoot にキャッシュ)。
+  function scanShadowSelection(root, depth) {
+    if (!root || depth > 8) return null;
+    let els;
+    try { els = root.querySelectorAll("*"); } catch (_e) { return null; }
+    for (const el of els) {
+      const sr = el.shadowRoot;
+      if (!sr) continue;
+      if (typeof sr.getSelection === "function") {
+        const s = sr.getSelection();
+        if (selText(s)) { lastSelRoot = sr; return s; }
+      }
+      const nested = scanShadowSelection(sr, depth + 1);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  // いまアクティブな選択 (通常 or shadow 内) を返す。無ければ null。
+  function deepSelection() {
+    const top = window.getSelection();
+    if (selText(top)) { lastSelRoot = null; return top; }
+    // 直近の shadow root を先に試す (scroll/selectionchange 連打での再走査を避ける)
+    if (lastSelRoot && typeof lastSelRoot.getSelection === "function") {
+      const s = lastSelRoot.getSelection();
+      if (selText(s)) return s;
+    }
+    // anchorNode が shadow host のとき中の選択へ降りる (ネスト shadow も辿る)
+    let cur = top, guard = 0;
+    while (cur && guard++ < 12) {
+      const a = cur.anchorNode;
+      const host = a && (a.nodeType === 1 ? a : a.parentElement);
+      const sr = host && host.shadowRoot;
+      if (!sr || typeof sr.getSelection !== "function") break;
+      const inner = sr.getSelection();
+      if (!inner || inner === cur) break;
+      if (selText(inner)) { lastSelRoot = sr; return inner; }
+      cur = inner;
+    }
+    // 保険: 開いた shadow root を全走査 (anchorNode 経路が外れた場合)
+    const found = scanShadowSelection(document, 0);
+    if (!found) lastSelRoot = null;
+    return found;
   }
 
   // ---- バブル ----
@@ -132,7 +190,8 @@
 
   function reposition() {
     if (!bubble) return;
-    const rect = selRect(window.getSelection());
+    const sel = deepSelection();
+    const rect = sel && rectFor(sel);
     if (!rect) { removeBubble(); return; } // 選択が消えたら閉じる
     placeBubble(rect);
   }
@@ -167,9 +226,7 @@
     if (selRaf) return;
     selRaf = window.requestAnimationFrame(() => {
       selRaf = 0;
-      const sel = window.getSelection();
-      const t = sel ? String(sel).trim() : "";
-      if (!t) removeBubble(); // 選択が空になったら閉じる
+      if (!selText(deepSelection())) removeBubble(); // 選択が空になったら閉じる (shadow 内も考慮)
     });
   }
   function onScrollResize() {
@@ -212,10 +269,10 @@
   function trigger() {
     if (dead || !enabled) return;
     if (!contextAlive()) { shutdown(); return; }
-    const sel = window.getSelection();
-    const text = sel ? String(sel).trim() : "";
+    const sel = deepSelection();
+    const text = selText(sel);
     if (!text) { removeBubble(); return; } // 選択が無ければ何もしない (右クリック経路は選択時のみ出る)
-    if (!selRect(sel)) { removeBubble(); return; }
+    if (!rectFor(sel)) { removeBubble(); return; }
     ensureBubble();
     setState("loading", tr("selTranslating", "翻訳中…"));
     const my = ++reqId;
