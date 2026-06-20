@@ -61,7 +61,7 @@ if (typeof importScripts === "function") {
   function contentFlagsOf(s) {
     // imageCapable: 選択中プロバイダが画像翻訳(vision)対応か。content(image-translator) がこれを見て、
     // 非対応プロバイダ選択中はホバーの「訳」ボタンを出さない (クリックしても no_vision になるだけのため)。
-    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider) };
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider), selectionTranslate: s.selectionTranslate };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。
@@ -121,8 +121,8 @@ if (typeof importScripts === "function") {
   // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
   async function ensureContentFlags() {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
-    if (cur && typeof cur.imageCapable === "boolean") return; // 新フィールドまで揃っていれば何もしない
-    // 未作成 / 旧フォーマット (imageCapable 欠落 = 更新前のインストール) は SETTINGS から導出して補完する。
+    if (cur && typeof cur.imageCapable === "boolean" && typeof cur.selectionTranslate === "boolean") return; // 新フィールドまで揃っていれば何もしない
+    // 未作成 / 旧フォーマット (imageCapable / selectionTranslate 欠落 = 更新前のインストール) は SETTINGS から導出して補完する。
     const s = await getSettings();
     await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(s) });
   }
@@ -1039,9 +1039,11 @@ if (typeof importScripts === "function") {
             let settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
-            // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録
+            // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録する。ただし quick
+            // (popup クイック翻訳 / 選択テキスト翻訳) は短い単発で、ページの復元/再翻訳 (abortTab) に
+            // 巻き込んで中断させたくないため abort グループに登録しない (content 側は reqId ガードで stale 応答を捨てる)。
             const controller = new AbortController();
-            const untrack = trackController(tabId, controller);
+            const untrack = msg.quick ? () => {} : trackController(tabId, controller);
             try {
               const texts = msg.texts || [];
               // 廃止モデルの 404 は translateWithHeal が同プロバイダの現行モデルへ自動フォールバック + 1 回再試行する
@@ -1118,13 +1120,38 @@ if (typeof importScripts === "function") {
       chrome.contextMenus.create({
         id: "rt-translate",
         title: (chrome.i18n && chrome.i18n.getMessage("ctxTranslate")) || "Translate this page",
-        contexts: ["page", "selection"],
+        contexts: ["page"], // 選択時は専用の rt-translate-selection を出すため page のみ (二重表示を避ける)
+      });
+      chrome.contextMenus.create({
+        id: "rt-translate-selection",
+        title: (chrome.i18n && chrome.i18n.getMessage("ctxTranslateSelection")) || "Translate selection",
+        contexts: ["selection"],
       });
       chrome.contextMenus.create({
         id: "rt-restore",
         title: (chrome.i18n && chrome.i18n.getMessage("ctxRestore")) || "Restore original",
         contexts: ["page"],
       });
+    });
+  }
+
+  // ホットキー/右クリックで content(selection-translator) に選択テキスト翻訳の起動を合図する。
+  // SW はページの選択を直接読めないため、content 側が window.getSelection() を読みバブルを出す。
+  // selection-translator は manifest content_scripts の常駐だが、Chrome は「拡張の更新/リロード前から
+  // 開いていたタブ」へ content_scripts を遡及注入しない。そのままだと sendMessage が受信端不在で黙殺され、
+  // バブルもエラーも出ず無反応になる。そこで失敗時は injectTranslator と同様にオンデマンド注入してから再送する
+  // (冪等ガード __rtActionsLoaded / __rtSelectionLoaded 済みなので既注入タブへ誤再注入しても無害)。
+  function triggerSelectionTranslate(tabId) {
+    if (tabId == null) return;
+    chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_SELECTION_CS }).catch(async () => {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ["src/lib/actions.js", "src/content/selection-translator.js"],
+        });
+        await chrome.scripting.insertCSS({ target: { tabId }, files: ["src/content/selection-translator.css"] });
+        await chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_SELECTION_CS });
+      } catch (_e) { /* chrome:// / Web Store 等の注入不可ページは無視 */ }
     });
   }
 
@@ -1139,6 +1166,21 @@ if (typeof importScripts === "function") {
       if (!tab || !tab.id) return;
       if (info.menuItemId === "rt-translate") await translatePage(tab.id);
       else if (info.menuItemId === "rt-restore") await restorePage(tab.id);
+      else if (info.menuItemId === "rt-translate-selection") triggerSelectionTranslate(tab.id);
+    });
+  }
+
+  // 割り当て可能なホットキー (manifest commands: translate-selection / 既定 Ctrl+Shift+L)。
+  // ユーザーは chrome://extensions/shortcuts (Firefox は about:addons) で再割り当てできる。
+  if (chrome.commands) {
+    chrome.commands.onCommand.addListener(async (command, tab) => {
+      if (command !== "translate-selection") return;
+      let tabId = tab && tab.id;
+      if (tabId == null) {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        tabId = active && active.id;
+      }
+      triggerSelectionTranslate(tabId);
     });
   }
 })();

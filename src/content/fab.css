@@ -1,131 +1,82 @@
 /* フローティング翻訳ボタン (content script で全ページに常駐) */
 /* ページ CSP の影響を受けない拡張リソース。id プレフィックス + all:initial でページ CSS と完全隔離する。 */
 /*                                                                                                   */
-/* デザイン: このアプリ専用「朱の栞(しおり)」── 翻訳 = 墨を刷る。四角いタブ形状はそのまま、表面を popup と */
-/* 同じブランド (生成りの和紙 × 墨 × 朱) で構成する:                                                    */
-/*   ・地 = 生成りの和紙 (繊維テクスチャ + 上端の艶 + 厚みの影)                                          */
-/*   ・ページに面した左端 = 朱の墨レール (濡れた朱インクが紙の縁ににじむ。状態の署名色)                    */
-/*   ・中央 = 墨色のアイコン (地球儀=翻訳前 / 戻り矢印=翻訳済み。紙に沈んだエンボス)                       */
-/*   ・翻訳前=生成り紙 → 翻訳済み=朱でベタ塗り (判子を捺す/墨を刷る) + 口とアイコンを生成りに反転          */
-/*   ・処理中 = 朱レールを白い艶が上→下へ流れ落ちる (墨が流れる) + 呼吸を速める                           */
-/* ホバーでページ側へ「にょき！」とせり出し、縦ドラッグで移動 (geometry は不変。挙動は fab.js)。          */
+/* デザイン: フラットデザイン (ブランド色 = 生成り × 墨 × 朱 を維持しつつ質感を排する)。              */
+/*   ・地 = 生成りのベタ塗り (グラデ/繊維テクスチャ/厚みの影/エンボスは使わない)                       */
+/*   ・輪郭 = 1px のフラットなボーダーで分離 (立体的な多重影に頼らない)                                */
+/*   ・ページに面した左端 = 朱のフラットなバー (状態の署名色。ベタ・影なし)                            */
+/*   ・中央 = 墨色のフラットなアイコン (地球儀=翻訳前 / 戻り矢印=翻訳済み)                             */
+/*   ・翻訳前 = 生成り地 + 墨アイコン / 翻訳済み = 朱でベタ塗り + 生成りのアイコン・バーに反転          */
+/*   ・処理中 = 朱バーをフラットにパルス / 失敗 = アイコンを朱へ (色だけで状態を示す)                  */
+/* ホバーでページ側へせり出し (幅のみ変化)、縦ドラッグで移動 (geometry/挙動は fab.js)。               */
 
 #__rt_fab {
   all: initial;
   box-sizing: border-box;
   position: fixed;
-  right: 0;                 /* 右端に密着 (タブの口=朱レールはページ側=左) */
+  right: 0;                 /* 右端に密着 (タブの口=朱バーはページ側=左) */
   top: 50%;                 /* 初期は中央。縦位置は JS が ratio から算出して上書き */
   z-index: 2147483646;
 
-  /* --- ブランド配色 (生成り×墨×朱)。状態で上書きする。popup.css と同系の hex --- */
-  --paper: #f7f4ed;         /* 生成りの紙面 */
-  --paper-hi: #fffdf8;      /* 紙の艶ハイライト */
-  --paper-lo: #ece3d2;      /* 紙の陰 */
-  --rail: #d8462b;          /* 朱の墨レール (テーマの朱・アクセント) */
-  --rail-deep: #ab3019;     /* 朱の濃いめ (レールの陰) */
+  /* --- ブランド配色 (生成り×墨×朱)。状態で上書きする。ベタ塗りのみ --- */
+  --paper: #f4f1e9;         /* 生成りの地 */
   --ink: #2b3340;           /* 墨のアイコン色 */
-  --rest: .5;               /* 格納・非ホバー時の存在感 (低め = 目立たない) */
+  --rail: #d8462b;          /* 朱のバー (テーマの朱・アクセント) */
+  --line: #ddd6c8;          /* フラットな輪郭線 (生成りに寄せた淡い境界) */
+  --rest: .72;              /* 格納・非ホバー時の存在感 */
 
   width: 30px;
   height: 32px;
-  border-radius: 2px 0 0 2px; /* 画面端(右)は密着で丸めず、ページ側(左)だけ 2px */
+  border-radius: 3px 0 0 3px; /* 画面端(右)は密着、ページ側(左)だけ角丸 */
+  border: 1px solid var(--line);
+  border-right: 0;            /* 右は画面端に密着するので線を出さない */
+  padding-left: 4px;          /* 左端の朱バー(::after 4px)ぶん中身を右へ寄せ、アイコンを朱バー右の領域で中央にする */
   cursor: grab;
   touch-action: none;
   display: flex;
   align-items: stretch;
   isolation: isolate;
-  font-family: "Hiragino Maru Gothic ProN", "Hiragino Maru Gothic Pro",
-    "Yu Gothic UI", "BIZ UDPGothic", "Segoe UI", system-ui, sans-serif;
-  -webkit-tap-highlight-color: transparent;
   overflow: hidden;
   color: var(--ink);
-
-  /* 生成りの和紙: 上端の艶 + 角の生成りハイライト + 縦の繊維感 + 光源→陰のベースグラデ */
-  background-color: var(--paper);
-  background-image:
-    linear-gradient(180deg, rgba(255, 255, 255, .5) 0%, rgba(255, 255, 255, 0) 38%),
-    radial-gradient(120% 90% at 18% 10%, var(--paper-hi), rgba(255, 255, 255, 0) 60%),
-    repeating-linear-gradient(90deg, rgba(120, 100, 70, .04) 0 1px, transparent 1px 3px),
-    linear-gradient(150deg, var(--paper-hi) 0%, var(--paper) 52%, var(--paper-lo) 100%);
-  /* 厚みのある紙: 接地影 + 浮き影 (popup --shadow-md と同じ暖色の煤) + 内側ベベル */
-  box-shadow:
-    0 1px 1.5px rgba(60, 50, 40, .12),
-    0 8px 20px -8px rgba(60, 50, 40, .32),
-    inset 0 1px 0 rgba(255, 255, 255, .7),
-    inset 0 -1.5px 2px rgba(120, 100, 70, .1),
-    inset 0 0 0 .5px rgba(255, 255, 255, .3);
+  background: var(--paper);   /* ベタ塗り (グラデ・テクスチャなし) */
 
   opacity: var(--rest);
-  /* 引き出しのような横スライド (幅をイージング) + 縦移動と影 */
-  transition: width .32s ease, top .3s ease, opacity .25s ease,
-    box-shadow .25s ease, transform .2s ease, filter .25s ease;
-  /* 静かな呼吸 (主張しすぎない。loading で速める・dragging で止める) */
-  animation: rt-breathe 4.2s ease-in-out infinite;
+  /* フラット: 幅・色・不透明度のみを素直に遷移 (影/フィルタ/呼吸アニメは使わない) */
+  transition: width .22s ease, top .25s ease, opacity .2s ease,
+    background-color .2s ease, color .2s ease, border-color .2s ease;
 }
 #__rt_fab * { box-sizing: border-box; }
 
-/* ── ホバー/フォーカス = 「にょき！」とページ側へせり出す (幅を伸ばすだけ・端は右に固定) ── */
-/* ドラッグ中 (.__rt-dragging) はせり出しを止める = 持ち上げ表現 (scale) と幅変化が競合しないように */
+/* ── ホバー/フォーカス = ページ側へせり出す (幅を伸ばすだけ・端は右に固定) ── */
 #__rt_fab:hover:not(.__rt-dragging),
 #__rt_fab:focus-visible {
   width: 44px;
   opacity: 1;
-  filter: brightness(1.03);
-  box-shadow:
-    0 2px 3px rgba(60, 50, 40, .14),
-    0 16px 28px -10px rgba(60, 50, 40, .34),
-    inset 0 1px 0 rgba(255, 255, 255, .75),
-    inset 0 -1.5px 2px rgba(120, 100, 70, .1),
-    inset 0 0 0 .5px rgba(255, 255, 255, .34);
 }
-#__rt_fab:focus-visible { outline: 2px solid color-mix(in srgb, var(--rail) 70%, #000 12%); outline-offset: 2px; }
-/* ドラッグ中は遷移と呼吸を切り、少し持ち上げる */
+#__rt_fab:focus-visible { outline: 2px solid var(--rail); outline-offset: 2px; }
+/* ドラッグ中はわずかに持ち上げる (影は付けない=フラット) */
 #__rt_fab.__rt-dragging {
-  transition: box-shadow .2s ease, transform .2s ease;
-  animation: none;
   cursor: grabbing;
   opacity: 1;
-  transform: scale(1.04);
+  transform: scale(1.03);
   z-index: 2147483647;
-  box-shadow:
-    0 2px 3px rgba(60, 40, 10, .18),
-    0 18px 30px -10px rgba(60, 40, 10, .5);
+  transition: transform .15s ease;
 }
 
-/* ── 朱の墨レール (ページに面した左端)。濡れた朱インクの艶 → 紙の縁へにじむ ── */
+/* ── 朱のフラットバー (ページに面した左端)。ベタ・グラデ/影なし ── */
 #__rt_fab::after {
   content: "";
   position: absolute;
   pointer-events: none;
   z-index: 2;
   left: 0;
-  top: 1px;
-  bottom: 1px;
+  top: 0;
+  bottom: 0;
   width: 4px;
-  border-radius: 2px;
-  /* 2層: ①上から下へ流れる白い艶 (既定は枠外に退避・loading 時だけ流れる) ②朱インク本体 */
-  background-image:
-    linear-gradient(180deg, transparent 0 30%, rgba(255, 255, 255, .62) 50%, transparent 70% 100%),
-    linear-gradient(to right,
-      rgba(255, 255, 255, .85) 0%,
-      color-mix(in srgb, var(--rail) 92%, #fff) 30%,
-      var(--rail) 60%,
-      var(--rail-deep) 100%);
-  background-size: 100% 240%, 100% 100%;
-  background-position: 0 -130%, 0 0;
-  background-repeat: no-repeat;
-  /* 朱が紙の縁へにじむ柔らかい発色 */
-  box-shadow: 0 0 6px -1px color-mix(in srgb, var(--rail) 55%, transparent);
-  transition: box-shadow .25s ease, filter .25s ease;
-}
-#__rt_fab:hover:not(.__rt-dragging)::after,
-#__rt_fab:focus-visible::after {
-  filter: brightness(1.08) saturate(1.06);
-  box-shadow: 0 0 9px -1px color-mix(in srgb, var(--rail) 65%, transparent);
+  background: var(--rail);
 }
 
-/* ── 背 (spine) = ドラッグ取っ手 + 中央アイコン入れ ── */
+/* ── 背 (spine) = ドラッグ取っ手 + 中央アイコン入れ (無地) ── */
 #__rt_fab .__rt-spine {
   display: flex;
   align-items: center;
@@ -136,93 +87,59 @@
   cursor: grab;
   user-select: none;
   touch-action: none;
-  /* ページ側(左=朱レール)から奥へ、朱のごく淡いウォッシュが紙に染みる */
-  background: linear-gradient(270deg,
-    color-mix(in srgb, var(--rail) 12%, transparent),
-    transparent 72%);
 }
 #__rt_fab.__rt-dragging .__rt-spine { cursor: grabbing; }
 
 /* ── 中央アイコン (文字は描かない。地球儀=翻訳前 / 戻り矢印=翻訳済み) ── */
-/* SVG は stroke=currentColor。spine の color(=--ink=墨) を継承し、出し分けは .__rt-on で行う。 */
+/* SVG は stroke=currentColor。spine の color(=--ink) を継承し、出し分けは .__rt-on で行う (影/エンボスなし)。 */
 #__rt_fab .__rt-ico {
   width: 17px;
   height: 17px;
   display: block;
   color: var(--ink);
-  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, .55)); /* インクが紙に沈んだ微かなエンボス */
 }
 #__rt_fab .__rt-ico-og { display: none; }            /* 翻訳前 = 地球儀のみ */
 #__rt_fab.__rt-on .__rt-ico-tr { display: none; }     /* 翻訳済み = 戻り矢印に切替 */
 #__rt_fab.__rt-on .__rt-ico-og { display: block; }
 
-/* ── 翻訳済み (ON) = 朱でベタ塗り (判子を捺す/墨を刷った) + 口とアイコンを生成りに反転 ── */
+/* ── 翻訳済み (ON) = 朱でベタ塗り + バー/アイコンを生成りに反転 ── */
 #__rt_fab.__rt-on {
   --paper: #d8462b;
-  --paper-hi: #e8674e;
-  --paper-lo: #b3331c;
-  --rail: #fff6f1;          /* 朱地に生成りの口 */
-  --rail-deep: #f2cabd;
-  --ink: #fff6f1;           /* アイコンは生成り */
-  --rest: .62;
+  --ink: #fdf6f1;           /* バー・アイコンは生成り */
+  --line: #b3331c;
+  --rest: .82;
+}
+#__rt_fab.__rt-on::after { background: var(--ink); } /* 朱地には生成りのバー */
+
+/* ── 翻訳失敗 (error) = アイコンを朱へ寄せて「失敗」を一目で示す (色だけ・フラット) ── */
+#__rt_fab.__rt-error { --ink: var(--rail); --rest: .92; }
+
+/* ── 処理中 (loading) = 朱バーをフラットにパルス ── */
+/* pointer-events は殺さない: loading 中もクリックで翻訳を中止できるようにする (中止は fab.js が担当)。 */
+#__rt_fab.__rt-loading { --rest: .95; cursor: pointer; }
+#__rt_fab.__rt-loading::after { animation: rt-fab-pulse 1s ease-in-out infinite; }
+
+@keyframes rt-fab-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
 }
 
-/* ── 翻訳失敗 (error) = 墨(アイコン)を朱に寄せ、レールの発色を強めて「失敗」を一目で示す ── */
-/* off のまま地球儀を出すが、--ink を朱の濃いめ(--rail-deep)へ寄せて朱化する。詳細は title でホバー可読。 */
-/* 既存テーマ変数のみ使うのでダークモードでも自動追従する (--rail-deep がダーク朱になる)。 */
-#__rt_fab.__rt-error { --ink: var(--rail-deep); --rest: .82; }
-#__rt_fab.__rt-error::after { filter: brightness(1.06) saturate(1.12); }
-
-/* ── 処理中 (loading) = 朱レールを白い艶が上→下へ流れ落ちる (墨が流れる) + 呼吸を速める ── */
-/* pointer-events は殺さない: loading 中もホバーでせり出し、クリックで翻訳を中止できるようにする。      */
-/* (autoTranslate で重い/詰まったページだと loading が長く居座り、pointer-events:none だとタブが       */
-/*  「マウスオーバーもクリックも無反応」に見えて中止すらできなくなるため。クリック中止は fab.js が担当)   */
-#__rt_fab.__rt-loading {
-  --rest: .9;
-  cursor: pointer;
-  animation-duration: 1.4s;
-}
-#__rt_fab.__rt-loading::after { animation: rt-inkflow 1.3s linear infinite; }
-
-@keyframes rt-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.035); }
-}
-/* 白い艶を朱レールの上→下へ走らせる (墨が流れる)。本体の朱グラデ(第2層)は 0 0 で固定 */
-@keyframes rt-inkflow {
-  0% { background-position: 0 -130%, 0 0; }
-  100% { background-position: 0 230%, 0 0; }
-}
-
-/* ── ダークモード (popup と同じ切替。生成り→暗いスレート、朱はダーク朱に) ── */
+/* ── ダークモード (生成り→暗いスレート、朱→ダーク朱。フラットのまま) ── */
 @media (prefers-color-scheme: dark) {
   #__rt_fab {
-    --paper: #262a33;
-    --paper-hi: #323742;
-    --paper-lo: #1b1e25;
-    --rail: #f0795f;        /* ダーク朱 */
-    --rail-deep: #bf513b;
-    --ink: #eef0f4;         /* 墨 → 生成り(明) */
-    box-shadow:
-      0 1px 1.5px rgba(0, 0, 0, .4),
-      0 8px 20px -8px rgba(0, 0, 0, .55),
-      inset 0 1px 0 rgba(255, 255, 255, .08),
-      inset 0 -1.5px 2px rgba(0, 0, 0, .3),
-      inset 0 0 0 .5px rgba(255, 255, 255, .06);
+    --paper: #23272f;
+    --ink: #eef0f4;
+    --rail: #f0795f;
+    --line: #3a3f4a;
   }
   #__rt_fab.__rt-on {
     --paper: #f0795f;
-    --paper-hi: #f59179;
-    --paper-lo: #c2533c;
-    --rail: #20242c;
-    --rail-deep: #11141a;
     --ink: #1a1d23;
+    --line: #c2533c;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #__rt_fab { animation: none; transition-duration: .01ms; }
-  /* loading の朱レール流れ (.__rt-loading::after) もここで止める = 通常 ::after より詳細度が高いので個別指定 */
-  #__rt_fab::after,
+  #__rt_fab { transition-duration: .01ms; }
   #__rt_fab.__rt-loading::after { animation: none; }
 }

@@ -47,6 +47,8 @@
 
   "ctxTranslate": { "message": "Translate this page" },
   "ctxRestore": { "message": "Restore original" },
+  "ctxTranslateSelection": { "message": "Translate selection" },
+  "cmdTranslateSelection": { "message": "Translate selected text" },
 
   "optionsTitle": { "message": "Replace AI Translator API — Settings" },
   "optionsLead": { "message": "Enter your own API key for each provider. Keys are stored locally in this browser and are sent only to that provider's API when translating." },
@@ -57,6 +59,12 @@
   "optMyMemoryNote": { "message": "No key needed. Add an email to raise the free daily limit (anonymous 5k / with email 50k chars/day). NMT engine, max 500 bytes per text." },
   "optShowFab": { "message": "Floating button" },
   "optShowFabDesc": { "message": "Show the floating translate button at the bottom-right of pages. When off, you can still translate from this popup or the context menu." },
+  "optSelectionTranslate": { "message": "Selection translation" },
+  "optSelectionTranslateDesc": { "message": "Select text and press Ctrl+Shift+L (or right-click) to pop up the translation in place." },
+  "optSelShortcut": { "message": "Change shortcut" },
+  "selTranslating": { "message": "Translating…" },
+  "selCopy": { "message": "Copy" },
+  "selCopied": { "message": "✓ Copied" },
   "imgBtn": { "message": "Translate text in image" },
   "imgRevert": { "message": "Remove image translation" },
   "imgNoText": { "message": "No translatable text found" },

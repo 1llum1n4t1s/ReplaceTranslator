@@ -73,6 +73,17 @@ test("normalize defaults showFab to true when missing (existing installs keep th
   assert.equal(SettingsSchema.normalize({ showFab: true }).showFab, true);
 });
 
+test("normalize defaults selectionTranslate to true when missing (existing installs keep selection translate)", () => {
+  assert.equal(SettingsSchema.normalize({}).selectionTranslate, true);          // 欠損設定でも選択翻訳は有効
+  assert.equal(SettingsSchema.normalize({ selectionTranslate: false }).selectionTranslate, false);
+  assert.equal(SettingsSchema.normalize({ selectionTranslate: true }).selectionTranslate, true);
+  assert.equal(SettingsSchema.normalize({ selectionTranslate: "x" }).selectionTranslate, true); // 厳密に false のときだけ無効 (showFab と同形)
+});
+
+test("Actions exposes the selection-translate trigger", () => {
+  assert.equal(g.Actions.TRANSLATE_SELECTION_CS, "TRANSLATE_SELECTION_CS");
+});
+
 // ---- TokenUsage ----
 
 test("currentMonthKey formats YYYY-MM", () => {
