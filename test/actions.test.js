@@ -101,7 +101,7 @@ test("pruneUsage keeps only the latest N months", () => {
 // ---- Providers ----
 
 test("Providers expose ids and get()", () => {
-  assert.deepEqual(Providers.ids, ["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "mymemory"]);
+  assert.deepEqual(Providers.ids, ["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "fugu", "mymemory"]);
   assert.equal(Providers.get("openai").label, "OpenAI");
   assert.equal(Providers.get("gemini").defaultModel, "gemini-2.5-flash");
   assert.equal(Providers.get("nope"), null);
@@ -112,7 +112,7 @@ test("Providers.supportsImage reflects visionModel presence (画像翻訳ボタ�
   for (const id of ["openai", "anthropic", "gemini", "openrouter", "groq"]) {
     assert.equal(Providers.supportsImage(id), true, `${id} は vision 対応のはず`);
   }
-  for (const id of ["xai", "deepseek", "mymemory"]) {
+  for (const id of ["xai", "deepseek", "fugu", "mymemory"]) {
     assert.equal(Providers.supportsImage(id), false, `${id} は vision 非対応のはず`);
   }
   assert.equal(Providers.supportsImage("nope"), false); // 未知 ID は false

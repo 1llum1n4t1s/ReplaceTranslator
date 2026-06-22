@@ -77,9 +77,9 @@ test("buildRequest falls back to provider default model", () => {
   assert.equal(r.body.model, g.Providers.openai.defaultModel);
 });
 
-test("OpenAI 互換プロバイダ(openrouter/deepseek/groq)は chat/completions 形状を共有する", () => {
+test("OpenAI 互換プロバイダ(openrouter/deepseek/groq/fugu)は chat/completions 形状を共有する", () => {
   // OpenAI と同形 (Bearer 認証・chat/completions・json_object・max_tokens) を新 3 社で確認。
-  ["openrouter", "deepseek", "groq"].forEach((id) => {
+  ["openrouter", "deepseek", "groq", "fugu"].forEach((id) => {
     const provider = g.Providers.get(id);
     const r = ProviderApi.buildRequest(id, { texts: ["Hello"], sourceLang: "auto", targetLang: "ja", apiKey: "k-" + id });
     assert.equal(r.url, provider.endpoint, `${id} endpoint`);
@@ -98,7 +98,7 @@ test("OpenAI 互換プロバイダ(openrouter/deepseek/groq)は chat/completions
 });
 
 test("OpenAI 互換プロバイダは parseResponse / streamDelta も openai と同じ経路に乗る", () => {
-  ["openrouter", "deepseek", "groq"].forEach((id) => {
+  ["openrouter", "deepseek", "groq", "fugu"].forEach((id) => {
     const json = { choices: [{ message: { content: '{"translations":["やあ"]}' } }] };
     assert.deepEqual(ProviderApi.parseResponse(id, json), ["やあ"], `${id} parseResponse`);
     assert.equal(ProviderApi.streamDelta(id, { choices: [{ delta: { content: "あ" } }] }), "あ", `${id} streamDelta`);
@@ -260,6 +260,29 @@ test("parseResponse / parseUsage xai (OpenAI-compatible shape)", () => {
   };
   assert.deepEqual(ProviderApi.parseResponse("xai", json), ["やあ"]);
   assert.deepEqual(ProviderApi.parseUsage("xai", json), { input: 4, output: 3 });
+});
+
+// ---- Sakana Fugu は OpenAI 互換 ----
+
+test("buildRequest fugu (Sakana) is OpenAI-compatible (Bearer + chat completions)", () => {
+  const r = ProviderApi.buildRequest("fugu", {
+    texts: ["Hi"], targetLang: "ja", model: "fugu", apiKey: "sakana-key",
+  });
+  assert.equal(r.url, "https://api.sakana.ai/v1/chat/completions");
+  assert.equal(r.headers.Authorization, "Bearer sakana-key");
+  assert.equal(r.body.model, "fugu");
+  assert.equal(r.body.response_format.type, "json_object");
+  // OpenAI/xAI/Groq の reasoning 分岐に当たらないので temperature:0 パススルー
+  assert.equal(r.body.temperature, 0);
+  assert.ok(!("reasoning_effort" in r.body));
+  assert.ok(r.body.max_tokens > 0);                 // max_completion_tokens ではなく max_tokens
+  assert.ok(!("max_completion_tokens" in r.body));
+});
+
+test("buildModelsRequest fugu → GET /models with Bearer (endpoint の /chat/completions を /models に置換)", () => {
+  const r = ProviderApi.buildModelsRequest("fugu", "sakana-key");
+  assert.equal(r.url, "https://api.sakana.ai/v1/models");
+  assert.equal(r.headers.Authorization, "Bearer sakana-key");
 });
 
 // ---- MyMemory (無料 NMT・GET・1テキスト/リクエスト) ----

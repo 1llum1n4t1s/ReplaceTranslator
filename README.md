@@ -25,6 +25,7 @@ API キーは以下から取得できます:
 | OpenAI | https://platform.openai.com/api-keys | 従量課金 |
 | Anthropic (Claude) | https://console.anthropic.com/settings/keys | 従量課金 |
 | xAI (Grok) | https://console.x.ai/ | 従量課金（OpenAI 互換 API） |
+| Sakana AI (Fugu) | https://console.sakana.ai/ | 従量課金（OpenAI 互換 API・複数モデルを自動ルーティング） |
 | MyMemory | **キー不要** | 無料 NMT・登録なしで即試せる（短文向け・1日 5千〜5万字・混在翻訳は非対応） |
 
 > まず試すなら、無料枠のある **Google Gemini** がおすすめです。
