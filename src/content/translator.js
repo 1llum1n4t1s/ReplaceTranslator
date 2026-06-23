@@ -131,9 +131,12 @@
     "SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "CODE", "PRE", "KBD", "SAMP", "VAR", "TT",
   ]);
   // 祖先のどこかにこれらがあれば subtree ごと翻訳しない (コード/数式/編集中/明示的な翻訳除外)。
-  // 末尾は拡張自身の UI (FAB / 画像ホバーボタン / 画像オーバーレイ層)。これらは fab.js / image-translator.js が
-  // 描画・管理するので、collectNodes がラベルや訳文オーバーレイを訳し直したり、復元時に stale なラベルへ戻すのを防ぐ。
-  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, .__rt-img-btn, .__rt-img-layer";
+  // 末尾は拡張自身の UI (FAB / 画像ホバーボタン / 画像オーバーレイ層 / 選択翻訳バブル)。これらは fab.js /
+  // image-translator.js / selection-translator.js が描画・管理するので、collectNodes が訳文や「翻訳中…」を
+  // 訳し直したり、復元時に stale な訳語へ戻すのを防ぐ。特に自動翻訳 ON で選択翻訳バブルが拾われると、
+  // 「翻訳中…」自体が翻訳バッチに乗り、その応答が選択翻訳の TRANSLATE_BATCH と競合して
+  // parse/incomplete エラーに化けることがある (= ユーザーから見た「解析エラー」の主因)。
+  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, #__rt_sel_bubble, .__rt-img-btn, .__rt-img-layer";
 
   // 可視性に影響する属性。これらが変わったら display:none→表示になったドロップダウン/モーダル/タブ/
   // アコーディオン等の中身を取り込み直す (IO は display 切替を取りこぼすことがあるため属性駆動で補う)。

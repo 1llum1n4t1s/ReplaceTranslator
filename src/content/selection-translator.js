@@ -42,17 +42,35 @@
   }
 
   // 翻訳失敗の理由を i18n に展開する (popup の errorText / fab の errSummary と同じキーを再利用)。
+  // 全 SW error 種別を網羅する: 漏れがあると generic「エラー」に倒れて原因が分からなくなる
+  // (parse/incomplete/build/empty などは LLM 応答が JSON 崩れ・要素数不一致のときの SW 自己診断種別)。
   function selErrorText(res) {
     const generic = tr("statusError", "エラー");
     if (!res || typeof res !== "object") return generic;
-    if (res.error === "no_api_key") return tr("statusNoKey", "API キーが未設定です");
-    if (res.error === "network" || res.error === "runtime" || res.error === "context") return tr("statusNetwork", "ネットワークエラー");
-    if (res.error === "http") {
+    const e = res.error;
+    if (e === "no_api_key") return tr("statusNoKey", "API キーが未設定です");
+    if (e === "network" || e === "runtime" || e === "context") return tr("statusNetwork", "ネットワークエラー");
+    if (e === "http") {
       if (res.status === 401 || res.status === 403) return tr("statusBadKey", "API キーが無効か権限がありません");
       if (res.status === 429) return tr("statusQuotaDaily", "API の利用上限に達しました");
       return `HTTP ${res.status || ""}`.trim();
     }
+    // MyMemory 共有キーの quota 枯渇 (本文 200 でも responseStatus に 403/429 が入る) は http 429 と同じ表現に倒す。
+    if (e === "quota") return tr("statusQuotaDaily", "API の利用上限に達しました");
+    // バッチ非対応プロバイダで 1 テキストが上限超過。クイック翻訳と同じ文言で長さ起因と明示する。
+    if (e === "too_long") return tr("qtLimit", "このサービスには長すぎます（短くするか LLM プロバイダを選んでください）");
     return generic;
+  }
+
+  // bubble.title に出すデバッグ詳細 (どの error 種別/HTTP status か)。本文文字列だけでは parse/incomplete/build を
+  // 区別できず原因特定が遅れるため、ホバー tooltip で読めるようにする (fab.js の errText と同方針)。
+  function selErrorDetail(res) {
+    if (!res || typeof res !== "object") return "";
+    const e = res.error || "unknown";
+    const parts = [e];
+    if (res.status) parts.push(`HTTP ${res.status}`);
+    if (res.message) parts.push(String(res.message).slice(0, 200));
+    return parts.join(" — ");
   }
 
   // ---- 選択範囲 (Shadow DOM 対応) ----
@@ -160,12 +178,14 @@
     bubble = null; textEl = null; copyBtn = null;
   }
 
-  // kind: "loading" | "result" | "error"
-  function setState(kind, text) {
+  // kind: "loading" | "result" | "error"。hint はエラー時に bubble.title へ載せるデバッグ詳細 (任意)。
+  function setState(kind, text, hint) {
     if (!bubble) return;
     bubble.classList.remove("__rt-sel-loading", "__rt-sel-result", "__rt-sel-error");
     bubble.classList.add(kind === "error" ? "__rt-sel-error" : (kind === "result" ? "__rt-sel-result" : "__rt-sel-loading"));
     if (textEl) textEl.textContent = text || "";
+    // エラー時のみ tooltip に原因を載せる (parse/incomplete/build を generic「エラー」表示と区別する)。
+    bubble.title = (kind === "error" && hint) ? hint : "";
     if (copyBtn) {
       copyBtn.style.display = (kind === "result" && text) ? "" : "none";
       copyBtn.textContent = tr("selCopy", "コピー");
@@ -281,7 +301,7 @@
       if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) {
         setState("result", res.translations[0]);
       } else {
-        setState("error", selErrorText(res));
+        setState("error", selErrorText(res), selErrorDetail(res));
       }
     });
   }
