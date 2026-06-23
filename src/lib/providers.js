@@ -26,7 +26,7 @@
   // OpenAI 互換プロバイダ集合 (chat/completions・Bearer・usage 同形・/models 一覧・OpenAI 画像形式を共有)。
   // 新しい OpenAI 互換サービスはここに id を足すだけで buildRequest/extractContent/streamDelta/parseUsage/
   // buildModelsRequest/parseModels/buildImageRequest の全分岐に乗る (各所の条件分岐を二重管理しないため)。
-  const OPENAI_COMPAT = ["openai", "xai", "openrouter", "deepseek", "groq"];
+  const OPENAI_COMPAT = ["openai", "xai", "openrouter", "deepseek", "groq", "fugu"];
   function isOpenAICompat(id) { return OPENAI_COMPAT.indexOf(id) !== -1; }
 
   // 出力上限パラメータ。OpenAI の gpt-5/o 系は max_tokens 非対応のため max_completion_tokens、

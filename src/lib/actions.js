@@ -119,6 +119,17 @@
       models: Object.freeze(["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct"]),
       keyUrl: "https://console.groq.com/keys",
     }),
+    fugu: Object.freeze({
+      id: "fugu",
+      label: "Sakana AI (Fugu)",
+      // Sakana Fugu は OpenAI 互換 (chat/completions・Bearer・/models・usage 同形)。
+      // fugu = 既定ルーティングモデル (タスクに応じ最適な下位モデルへ自動振り分け)、fugu-ultra = 上位固定モデル。
+      // vision は未対応 (visionModel なし → 画像翻訳「訳」ボタンは出さない)。
+      endpoint: "https://api.sakana.ai/v1/chat/completions",
+      defaultModel: "fugu",
+      models: Object.freeze(["fugu", "fugu-ultra"]),
+      keyUrl: "https://console.sakana.ai/",
+    }),
     mymemory: Object.freeze({
       id: "mymemory",
       label: "MyMemory (free / no key)",
@@ -134,7 +145,7 @@
   };
   // ids / get は列挙不可で持たせる (Object.keys(Providers) にプロバイダ ID だけが並ぶようにする)
   Object.defineProperty(Providers, "ids", {
-    value: Object.freeze(["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "mymemory"]),
+    value: Object.freeze(["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "fugu", "mymemory"]),
     enumerable: false,
   });
   Object.defineProperty(Providers, "get", {
@@ -156,7 +167,7 @@
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
     sourceLang: "auto",          // auto = ページの主要言語を検出して翻訳元にする (検出不能時は target 以外を翻訳)
     targetLang: "ja",
-    apiKeys: Object.freeze({ openai: "", anthropic: "", gemini: "", xai: "", openrouter: "", deepseek: "", groq: "", mymemory: "" }),
+    apiKeys: Object.freeze({ openai: "", anthropic: "", gemini: "", xai: "", openrouter: "", deepseek: "", groq: "", fugu: "", mymemory: "" }),
     models: Object.freeze({
       openai: "gpt-5.4-mini",
       anthropic: "claude-haiku-4-5",
@@ -165,6 +176,7 @@
       openrouter: "google/gemini-2.5-flash",
       deepseek: "deepseek-chat",
       groq: "llama-3.3-70b-versatile",
+      fugu: "fugu",
       mymemory: null,
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
