@@ -41,8 +41,12 @@
   background: var(--paper);   /* ベタ塗り (グラデ・テクスチャなし) */
 
   opacity: var(--rest);
-  /* フラット: 幅・色・不透明度のみを素直に遷移 (影/フィルタ/呼吸アニメは使わない) */
-  transition: width .22s ease, top .25s ease, opacity .2s ease,
+  /* フラット: 幅・色・不透明度のみを素直に遷移 (影/フィルタ/呼吸アニメは使わない)。
+     top は遷移対象にしない: ページ遷移ごとに content script が再注入され、JS が初回配置で
+     top:50%(CSS既定) の FAB に offsetHeight を読んで(強制リフロー)から保存位置の px を設定するため、
+     top に transition があると「中央から保存位置へ滑り込む」アニメが毎回発火して目障りになる。
+     ドラッグ追従(.__rt-dragging で transform に切替)・リサイズ追従とも top は即時反映が望ましい。 */
+  transition: width .22s ease, opacity .2s ease,
     background-color .2s ease, color .2s ease, border-color .2s ease;
 }
 #__rt_fab * { box-sizing: border-box; }
