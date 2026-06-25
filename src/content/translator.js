@@ -131,12 +131,20 @@
     "SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "CODE", "PRE", "KBD", "SAMP", "VAR", "TT",
   ]);
   // 祖先のどこかにこれらがあれば subtree ごと翻訳しない (コード/数式/編集中/明示的な翻訳除外)。
+  // relative-time/time-ago/local-time/time-until/time-since は「自己更新する時刻カスタム要素」
+  // (GitHub/Catalyst の @github/relative-time-element 等)。ティッカーで textContent を定期的に元表記へ
+  // 書き戻し続けるので、訳すと『我々の書き込み → 要素の書き戻し(textContent= で新 Text ノード生成=childList) →
+  // 新ノードを再 ingest → 再翻訳』が延々ループする (= GitHub issue ページの「4 days ago / 11 minutes ago が
+  // 無限に翻訳を繰り返す」)。これらは要素自身が表示ロケールに追従する前提なので翻訳対象から外し、要素の
+  // 出力をそのまま見せる (plain <time> は INLINE_TAGS として周囲の本文と一緒に訳すので対象外にしない)。
   // 末尾は拡張自身の UI (FAB / 画像ホバーボタン / 画像オーバーレイ層 / 選択翻訳バブル)。これらは fab.js /
   // image-translator.js / selection-translator.js が描画・管理するので、collectNodes が訳文や「翻訳中…」を
   // 訳し直したり、復元時に stale な訳語へ戻すのを防ぐ。特に自動翻訳 ON で選択翻訳バブルが拾われると、
   // 「翻訳中…」自体が翻訳バッチに乗り、その応答が選択翻訳の TRANSLATE_BATCH と競合して
   // parse/incomplete エラーに化けることがある (= ユーザーから見た「解析エラー」の主因)。
-  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, #__rt_sel_bubble, .__rt-img-btn, .__rt-img-layer";
+  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, " +
+    "relative-time, time-ago, local-time, time-until, time-since, " +
+    "#__rt_fab, #__rt_sel_bubble, .__rt-img-btn, .__rt-img-layer";
 
   // 可視性に影響する属性。これらが変わったら display:none→表示になったドロップダウン/モーダル/タブ/
   // アコーディオン等の中身を取り込み直す (IO は display 切替を取りこぼすことがあるため属性駆動で補う)。
