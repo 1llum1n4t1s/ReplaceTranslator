@@ -327,6 +327,12 @@ body {
 .switch-text { flex: 1; }
 .switch-desc { font-size: 11px; color: var(--ink-soft); margin-top: 3px; line-height: 1.45; }
 
+/* 選択翻訳の表示方法セレクタ (switch-text 内のサブ行)。選択翻訳 OFF のとき select は disabled で淡くなる。 */
+.sub-field { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.sub-label { font-size: 11px; font-weight: 700; color: var(--ink-soft); }
+.sel-sm { width: auto; flex: 1; padding: 6px 9px; font-size: 12px; border-radius: 8px; box-shadow: none; }
+.sel-sm:disabled { opacity: .5; cursor: default; }
+
 /* ---- クイック翻訳 (翻訳タブ末尾・常時表示) ---- */
 .qt { border-top: 1px dashed var(--rule); margin-top: 4px; padding-top: 13px; }
 .qt-head { display: flex; align-items: center; gap: 8px; color: var(--ink); padding: 2px 2px 0; }

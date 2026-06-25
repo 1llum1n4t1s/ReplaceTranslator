@@ -240,7 +240,10 @@
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("show-fab").checked = state.settings.showFab !== false;
-    $("sel-translate").checked = state.settings.selectionTranslate !== false;
+    const selOn = state.settings.selectionTranslate !== false;
+    $("sel-translate").checked = selOn;
+    $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
+    $("sel-mode").disabled = !selOn; // 選択翻訳 OFF のときは表示方法を選べないよう淡くする
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -438,7 +441,8 @@
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
     $("show-fab").addEventListener("change", (e) => save({ showFab: e.target.checked }));
-    $("sel-translate").addEventListener("change", (e) => save({ selectionTranslate: e.target.checked }));
+    $("sel-translate").addEventListener("change", (e) => { save({ selectionTranslate: e.target.checked }); $("sel-mode").disabled = !e.target.checked; });
+    $("sel-mode").addEventListener("change", (e) => save({ selectionMode: e.target.value }));
     // ショートカット変更: ブラウザのコマンド設定ページを開く (Chrome=extensions/shortcuts / Firefox=about:addons)
     $("sel-shortcut").addEventListener("click", () => {
       const ff = typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent || "");

@@ -111,3 +111,60 @@
 @media (prefers-reduced-motion: reduce) {
   #__rt_sel_bubble { animation: none; }
 }
+
+/* ── インライン対訳 (選択ブロックの直後に差し込む。墨色本文 + 左に朱の縦線 = ブロック引用風) ── */
+/* 複数挿入され累積保持されるため id でなくクラスで隔離する (all:initial で page CSS の影響を断つ)。           */
+/* 本文色は color:inherit = 原文と同じ色に追従させる (ライト/ダークどちらのページでも読める)。区別は朱の縦線。 */
+.__rt-sel-inline {
+  all: initial;
+  display: block;
+  box-sizing: border-box;
+  position: relative;
+  margin: 6px 0 10px;
+  padding: 6px 30px 6px 12px;          /* 右は × ボタンぶん空ける */
+  border-left: 3px solid #d8462b;      /* 朱の縦線 (署名色) */
+  background: rgba(216, 70, 43, .06);  /* ごく淡い朱の地で原文ブロックと区別 (ライト/ダーク両方で控えめ) */
+  border-radius: 0 3px 3px 0;
+  color: inherit;                      /* 本文と同じ墨色に追従 (ページのテキスト色を継承) */
+  font-family: "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Hiragino Sans",
+    "Noto Sans JP", "Segoe UI", system-ui, sans-serif;
+  font-size: 0.95em;                   /* 原文サイズに寄せる (em = 親=原文ブロックの font-size 基準) */
+  line-height: 1.6;
+  white-space: pre-wrap;               /* 複数段落選択の改行を保つ */
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  animation: rt-sel-fade .12s ease-out;
+}
+.__rt-sel-inline * { box-sizing: border-box; }
+.__rt-sel-inline .__rt-sel-inline-text { color: inherit; }
+
+/* 翻訳中 = 淡く + イタリック、縦線も淡める */
+.__rt-sel-inline.__rt-sel-inline-loading { border-left-color: #9aa3b2; }
+.__rt-sel-inline.__rt-sel-inline-loading .__rt-sel-inline-text { opacity: .6; font-style: italic; }
+
+/* 失敗 = 縦線と本文を朱に寄せて一目で示す */
+.__rt-sel-inline.__rt-sel-inline-error { border-left-color: #d8462b; }
+.__rt-sel-inline.__rt-sel-inline-error .__rt-sel-inline-text { color: #d8462b; }
+
+/* × (個別に消す)。通常は淡く、ブロック hover で出す */
+.__rt-sel-inline .__rt-sel-inline-x {
+  all: unset;
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: #9aa3b2;
+  padding: 2px 4px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .12s ease, color .12s ease, background-color .12s ease;
+}
+.__rt-sel-inline:hover .__rt-sel-inline-x,
+.__rt-sel-inline .__rt-sel-inline-x:focus-visible { opacity: 1; }
+.__rt-sel-inline .__rt-sel-inline-x:hover { color: #d8462b; background: rgba(216, 70, 43, .12); }
+
+@media (prefers-reduced-motion: reduce) {
+  .__rt-sel-inline { animation: none; }
+}
