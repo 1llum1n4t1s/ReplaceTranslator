@@ -312,9 +312,11 @@
   // 対訳ブロックを挿入するとユーザーの編集内容を壊すため、インライン挿入を避けてバブルへフォールバックする判定に使う。
   function isEditableSelection(sel) {
     try {
-      const a = sel && sel.anchorNode;
-      const el = a && (a.nodeType === 1 ? a : a.parentElement);
-      return Boolean(el && el.isContentEditable);
+      if (!sel) return false;
+      const editable = (n) => { const el = n && (n.nodeType === 1 ? n : n.parentElement); return Boolean(el && el.isContentEditable); };
+      // 始点(anchor)と終点(focus)の両方を見る: 通常テキストから contenteditable へドラッグした選択でも、
+      // insertInline は range 終端側へ挿入するため、片側でも編集領域なら inline 挿入を避けてバブルへ倒す (草稿破壊の防止)。
+      return editable(sel.anchorNode) || editable(sel.focusNode);
     } catch (_e) { return false; }
   }
 
@@ -326,10 +328,28 @@
     const block = blockAncestorEl(range.endContainer);
     if (!block || !block.parentNode) return null;
     const host = buildInlineHost();
-    try { block.parentNode.insertBefore(host, block.nextSibling); } catch (_e) { return null; }
+    // 配置と色を決めるため block(と親)の実効スタイルを読む。
+    let inside = false, blockColor = "";
+    try {
+      const bs = getComputedStyle(block);
+      blockColor = bs.color;
+      let pd = "";
+      try { pd = getComputedStyle(block.parentNode).display; } catch (_e2) { /* parentNode が document 等で取れない場合は sibling 挿入 */ }
+      // 既定は block の直後(sibling)。ただし下記はコンテナ構造/レイアウトを壊すので block の内側(末尾)へ入れる:
+      //  - block が list-item: <ul>/<ol> の直子に非 li の div を作らない (記号/間隔が崩れない)
+      //  - block の親が flex/grid: host が新たな flex/grid item になって隣の列/セルへ流れない
+      inside = bs.display === "list-item" || /flex|grid/.test(pd);
+    } catch (_e) { /* noop */ }
+    try {
+      if (inside) block.appendChild(host);
+      else block.parentNode.insertBefore(host, block.nextSibling);
+    } catch (_e) { return null; }
     // shadow 内へ入った場合は CSS が効かないので inline style フォールバックを当てる (light DOM なら CSS クラスに任せる)。
     const root = host.getRootNode ? host.getRootNode() : document;
     if (root && root !== document) applyShadowFallbackStyle(host, host.__rtText, host.querySelector(".__rt-sel-inline-x"));
+    // 選択ブロックの実効文字色をコピーする。sibling 挿入では color:inherit が挿入先の親から継承するため、
+    // 白文字 on 暗色カード等で訳文が読めなくなる。原文と同じ色で出す ("本文と同じ色に追従" の意図に忠実)。
+    if (blockColor) { try { host.style.color = blockColor; } catch (_e) { /* noop */ } }
     inlineEls = inlineEls.filter((el) => el.isConnected); // SPA がページごと旧 host を外したら参照を掃除 (累積配列のリーク防止)
     inlineEls.push(host);
     return host;
