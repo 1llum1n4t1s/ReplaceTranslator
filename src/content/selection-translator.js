@@ -240,7 +240,9 @@
   // 部分選択 (段落内の数語) でも段落の直後に差し込む = Immersive の選択インラインと同方針。
   function blockAncestorEl(node) {
     let el = node && (node.nodeType === 1 ? node : node.parentElement);
-    const blockish = (d) => d === "block" || d === "flex" || d === "grid" || d === "list-item" || (typeof d === "string" && d.indexOf("table") === 0);
+    // table と inline-table のみブロック扱い。table-cell/table-row/table-row-group 等まで拾うと <td>/<tr> を返してしまい、
+    // その直後 (= <tr>/<tbody> 直下) に div を挿入して不正な表構造になる → セル選択時は上位の <table> 直後へ挿入させる。
+    const blockish = (d) => d === "block" || d === "flex" || d === "grid" || d === "list-item" || d === "table" || d === "inline-table";
     while (el && el.parentElement && el !== document.body && el !== document.documentElement) {
       let d = "";
       try { d = getComputedStyle(el).display; } catch (_e) { /* noop */ }
@@ -256,7 +258,7 @@
     host.__rtShadow = true;
     host.style.cssText = "all:initial;display:block;box-sizing:border-box;position:relative;margin:6px 0 10px;" +
       "padding:6px 30px 6px 12px;border-left:3px solid #d8462b;background:rgba(216,70,43,.06);color:inherit;" +
-      "font:inherit;font-size:0.95em;line-height:1.6;white-space:pre-wrap;word-break:break-word;border-radius:0 3px 3px 0;";
+      "font:inherit;font-size:0.95em;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:0 3px 3px 0;";
     if (textEl) textEl.style.cssText = "color:inherit;font-style:italic;opacity:.65;";
     if (xBtn) xBtn.style.cssText = "all:unset;position:absolute;top:4px;right:6px;cursor:pointer;font-size:14px;line-height:1;color:#9aa3b2;padding:2px 4px;";
   }
@@ -328,6 +330,7 @@
     // shadow 内へ入った場合は CSS が効かないので inline style フォールバックを当てる (light DOM なら CSS クラスに任せる)。
     const root = host.getRootNode ? host.getRootNode() : document;
     if (root && root !== document) applyShadowFallbackStyle(host, host.__rtText, host.querySelector(".__rt-sel-inline-x"));
+    inlineEls = inlineEls.filter((el) => el.isConnected); // SPA がページごと旧 host を外したら参照を掃除 (累積配列のリーク防止)
     inlineEls.push(host);
     return host;
   }

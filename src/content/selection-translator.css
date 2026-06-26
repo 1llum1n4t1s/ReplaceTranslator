@@ -131,8 +131,7 @@
   font-size: 0.95em;                   /* 原文サイズに寄せる (em = 親=原文ブロックの font-size 基準) */
   line-height: 1.6;
   white-space: pre-wrap;               /* 複数段落選択の改行を保つ */
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  overflow-wrap: anywhere;             /* 長い URL/連続文字を折り返す (非推奨の word-break:break-word は使わない) */
   animation: rt-sel-fade .12s ease-out;
 }
 .__rt-sel-inline * { box-sizing: border-box; }
