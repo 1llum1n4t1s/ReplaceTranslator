@@ -24,6 +24,8 @@
   if (!A) return;
 
   let enabled = true;      // selectionTranslate フラグ (CONTENT_FLAGS から読む。OFF なら起動しない)
+  let mode = "bubble";     // 表示方法 "bubble"=浮遊バブル / "inline"=選択ブロック直後に対訳差し込み (CONTENT_FLAGS から読む)
+  let inlineEls = [];      // 挿入済みインライン対訳要素 (累積保持。各 × / 原文復元 / リロードで除去)
   let dead = false;        // shutdown 済み
   let reqId = 0;           // 進行中翻訳の世代。新トリガー/消去で進めて stale 応答を捨てる
   let bubble = null;       // バブル要素 (1 つだけ)
@@ -231,6 +233,142 @@
     }, 1300);
   }
 
+  // ---- インライン対訳 (選択ブロックの直後に訳文を差し込む。墨色本文 + 左に朱の縦線で原文と区別) ----
+  // バブルと違い「選択しただけ」では出さず、明示トリガー時に挿入する。累積保持し、各 × / 原文復元 / リロードで消える。
+
+  // テキストノード/要素から、ブロックレベルの祖先要素を返す (対訳をその直後＝原文の下に置くため)。
+  // 部分選択 (段落内の数語) でも段落の直後に差し込む = Immersive の選択インラインと同方針。
+  function blockAncestorEl(node) {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    // table と inline-table のみブロック扱い。table-cell/table-row/table-row-group 等まで拾うと <td>/<tr> を返してしまい、
+    // その直後 (= <tr>/<tbody> 直下) に div を挿入して不正な表構造になる → セル選択時は上位の <table> 直後へ挿入させる。
+    const blockish = (d) => d === "block" || d === "flex" || d === "grid" || d === "list-item" || d === "table" || d === "inline-table";
+    while (el && el.parentElement && el !== document.body && el !== document.documentElement) {
+      let d = "";
+      try { d = getComputedStyle(el).display; } catch (_e) { /* noop */ }
+      if (blockish(d)) return el;
+      el = el.parentElement;
+    }
+    return el || document.body || document.documentElement;
+  }
+
+  // CSS クラス (.__rt-sel-inline) は light DOM でしか効かない。shadow 内へ挿入したときは selection-translator.css が
+  // 届かないので、最低限の見た目を inline style で当てる (色は本文と同じ inherit + 朱の左縦線で区別)。
+  function applyShadowFallbackStyle(host, textEl, xBtn) {
+    host.__rtShadow = true;
+    host.style.cssText = "all:initial;display:block;box-sizing:border-box;position:relative;margin:6px 0 10px;" +
+      "padding:6px 30px 6px 12px;border-left:3px solid #d8462b;background:rgba(216,70,43,.06);color:inherit;" +
+      "font:inherit;font-size:0.95em;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:0 3px 3px 0;";
+    if (textEl) textEl.style.cssText = "color:inherit;font-style:italic;opacity:.65;";
+    if (xBtn) xBtn.style.cssText = "all:unset;position:absolute;top:4px;right:6px;cursor:pointer;font-size:14px;line-height:1;color:#9aa3b2;padding:2px 4px;";
+  }
+
+  function buildInlineHost() {
+    const host = document.createElement("div");
+    host.className = "__rt-sel-inline __rt-sel-inline-loading";
+    const textEl = document.createElement("span");
+    textEl.className = "__rt-sel-inline-text";
+    const xBtn = document.createElement("button");
+    xBtn.type = "button";
+    xBtn.className = "__rt-sel-inline-x";
+    xBtn.textContent = "×"; // ×
+    xBtn.setAttribute("aria-label", tr("selClose", "閉じる"));
+    xBtn.title = tr("selClose", "閉じる");
+    xBtn.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); closeInline(host); });
+    host.append(textEl, xBtn);
+    host.__rtText = textEl;
+    return host;
+  }
+
+  // kind: "loading" | "result" | "error"。hint はエラー時に host.title へ載せるデバッグ詳細 (任意)。
+  function setInlineState(host, kind, text, hint) {
+    if (!host) return;
+    host.classList.remove("__rt-sel-inline-loading", "__rt-sel-inline-result", "__rt-sel-inline-error");
+    host.classList.add(kind === "error" ? "__rt-sel-inline-error" : (kind === "result" ? "__rt-sel-inline-result" : "__rt-sel-inline-loading"));
+    if (host.__rtText) host.__rtText.textContent = text || "";
+    host.title = (kind === "error" && hint) ? hint : "";
+    // shadow フォールバック時は CSS クラスが効かないので状態色を inline style で反映する。
+    if (host.__rtShadow && host.__rtText) {
+      host.__rtText.style.color = kind === "error" ? "#d8462b" : "inherit";
+      host.__rtText.style.fontStyle = kind === "loading" ? "italic" : "normal";
+      host.__rtText.style.opacity = kind === "loading" ? ".65" : "1";
+    }
+  }
+
+  function closeInline(host) {
+    const i = inlineEls.indexOf(host);
+    if (i >= 0) inlineEls.splice(i, 1);
+    try { host.remove(); } catch (_e) { /* noop */ }
+  }
+
+  // 全インライン対訳を撤去 (原文復元 APPLY_RESTORE_CS で呼ぶ = FAB/popup の「原文に戻す」と連動)。
+  function clearAllInline() {
+    for (const el of inlineEls.splice(0, inlineEls.length)) {
+      try { el.remove(); } catch (_e) { /* noop */ }
+    }
+  }
+
+  // 選択が編集領域 (contentEditable) 内か。リッチエディタ (Gmail 作成 / GitHub コメント欄等) の選択へ
+  // 対訳ブロックを挿入するとユーザーの編集内容を壊すため、インライン挿入を避けてバブルへフォールバックする判定に使う。
+  function isEditableSelection(sel) {
+    try {
+      if (!sel) return false;
+      const editable = (n) => { const el = n && (n.nodeType === 1 ? n : n.parentElement); return Boolean(el && el.isContentEditable); };
+      // 始点(anchor)と終点(focus)の両方を見る: 通常テキストから contenteditable へドラッグした選択でも、
+      // insertInline は range 終端側へ挿入するため、片側でも編集領域なら inline 挿入を避けてバブルへ倒す (草稿破壊の防止)。
+      return editable(sel.anchorNode) || editable(sel.focusNode);
+    } catch (_e) { return false; }
+  }
+
+  // 選択ブロックの直後に loading 状態の対訳を挿入し、host を返す (失敗時 null)。
+  function insertInline(sel) {
+    let range;
+    try { range = sel.getRangeAt(sel.rangeCount - 1); } catch (_e) { return null; }
+    if (!range) return null;
+    const block = blockAncestorEl(range.endContainer);
+    if (!block || !block.parentNode) return null;
+    const host = buildInlineHost();
+    // 配置と色を決めるため block(と親)の実効スタイルを読む。
+    let inside = false, blockColor = "";
+    try {
+      const bs = getComputedStyle(block);
+      blockColor = bs.color;
+      let pd = "";
+      try { pd = getComputedStyle(block.parentNode).display; } catch (_e2) { /* parentNode が document 等で取れない場合は sibling 挿入 */ }
+      // 既定は block の直後(sibling)。ただし下記はコンテナ構造/レイアウトを壊すので block の内側(末尾)へ入れる:
+      //  - block が list-item: <ul>/<ol> の直子に非 li の div を作らない (記号/間隔が崩れない)
+      //  - block の親が flex/grid: host が新たな flex/grid item になって隣の列/セルへ流れない
+      inside = bs.display === "list-item" || /flex|grid/.test(pd);
+    } catch (_e) { /* noop */ }
+    try {
+      if (inside) block.appendChild(host);
+      else block.parentNode.insertBefore(host, block.nextSibling);
+    } catch (_e) { return null; }
+    // shadow 内へ入った場合は CSS が効かないので inline style フォールバックを当てる (light DOM なら CSS クラスに任せる)。
+    const root = host.getRootNode ? host.getRootNode() : document;
+    if (root && root !== document) applyShadowFallbackStyle(host, host.__rtText, host.querySelector(".__rt-sel-inline-x"));
+    // 選択ブロックの実効文字色をコピーする。sibling 挿入では color:inherit が挿入先の親から継承するため、
+    // 白文字 on 暗色カード等で訳文が読めなくなる。原文と同じ色で出す ("本文と同じ色に追従" の意図に忠実)。
+    if (blockColor) { try { host.style.color = blockColor; } catch (_e) { /* noop */ } }
+    inlineEls = inlineEls.filter((el) => el.isConnected); // SPA がページごと旧 host を外したら参照を掃除 (累積配列のリーク防止)
+    inlineEls.push(host);
+    return host;
+  }
+
+  function triggerInline(text, sel) {
+    const host = insertInline(sel);
+    if (!host) return;
+    setInlineState(host, "loading", tr("selTranslating", "翻訳中…"));
+    sendBatch(text, (res) => {
+      if (dead || !host.isConnected) return; // 待つ間に × / 復元 / リロードで消えたら破棄
+      if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) {
+        setInlineState(host, "result", res.translations[0]);
+      } else {
+        setInlineState(host, "error", selErrorText(res), selErrorDetail(res));
+      }
+    });
+  }
+
   // ---- dismiss (バブル外クリック / Esc / 選択解除 / スクロール) ----
   function onDocPointerDown(e) {
     if (bubble && e.target && bubble.contains(e.target)) {
@@ -291,6 +429,9 @@
     if (!contextAlive()) { shutdown(); return; }
     const sel = deepSelection();
     const text = selText(sel);
+    // インラインモード: 選択ブロックの直後に対訳を差し込む (rect は不要。累積保持なので選択解除でも消さない)。
+    // ただし編集領域 (contentEditable) 内の選択はページの編集内容を壊すので挿入せず、下のバブル表示へフォールバックする。
+    if (mode === "inline" && text && !isEditableSelection(sel)) { triggerInline(text, sel); return; }
     if (!text) { removeBubble(); return; } // 選択が無ければ何もしない (右クリック経路は選択時のみ出る)
     if (!rectFor(sel)) { removeBubble(); return; }
     ensureBubble();
@@ -307,8 +448,10 @@
   }
 
   function onRuntimeMessage(m) {
-    if (!m || m.action !== A.TRANSLATE_SELECTION_CS) return;
-    trigger();
+    if (!m) return;
+    if (m.action === A.TRANSLATE_SELECTION_CS) { trigger(); return; }
+    // FAB/popup の「原文に戻す」(RESTORE_PAGE→APPLY_RESTORE_CS) で、ページ翻訳と一緒にインライン対訳も撤去する。
+    if (m.action === A.APPLY_RESTORE_CS) { clearAllInline(); return; }
   }
 
   function shutdown() {
@@ -326,6 +469,7 @@
     chrome.storage.local.get(CFLAGS_KEY, (d) => {
       const f = d && d[CFLAGS_KEY];
       if (f && typeof f.selectionTranslate === "boolean") enabled = f.selectionTranslate;
+      if (f && typeof f.selectionMode === "string") mode = f.selectionMode === "inline" ? "inline" : "bubble";
     });
   } catch (_e) { /* noop */ }
   try {
@@ -334,7 +478,11 @@
       const v = changes[CFLAGS_KEY].newValue;
       if (v && typeof v.selectionTranslate === "boolean") {
         enabled = v.selectionTranslate;
-        if (!enabled) removeBubble(); // OFF にしたら開いているバブルを閉じる
+        if (!enabled) removeBubble(); // OFF にしたら開いているバブルを閉じる (挿入済みインライン対訳は累積保持で残す)
+      }
+      if (v && typeof v.selectionMode === "string") {
+        mode = v.selectionMode === "inline" ? "inline" : "bubble";
+        if (mode === "inline") removeBubble(); // インラインへ切替えたら開いているバブルを閉じる
       }
     });
   } catch (_e) { /* noop */ }

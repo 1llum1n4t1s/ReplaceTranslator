@@ -61,7 +61,8 @@ if (typeof importScripts === "function") {
   function contentFlagsOf(s) {
     // imageCapable: 選択中プロバイダが画像翻訳(vision)対応か。content(image-translator) がこれを見て、
     // 非対応プロバイダ選択中はホバーの「訳」ボタンを出さない (クリックしても no_vision になるだけのため)。
-    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider), selectionTranslate: s.selectionTranslate };
+    // selectionMode: 選択翻訳の表示方法 (bubble=浮遊バブル / inline=対訳差し込み)。content(selection-translator) が読む。
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider), selectionTranslate: s.selectionTranslate, selectionMode: s.selectionMode };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。
@@ -121,8 +122,12 @@ if (typeof importScripts === "function") {
   // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
   async function ensureContentFlags() {
     const cur = (await chrome.storage.local.get(StorageKeys.CONTENT_FLAGS))[StorageKeys.CONTENT_FLAGS];
-    if (cur && typeof cur.imageCapable === "boolean" && typeof cur.selectionTranslate === "boolean") return; // 新フィールドまで揃っていれば何もしない
-    // 未作成 / 旧フォーマット (imageCapable / selectionTranslate 欠落 = 更新前のインストール) は SETTINGS から導出して補完する。
+    // contentFlagsOf の返すキー集合を「揃っているべきフラグ」の単一の真実とする (フラグを足すたびに
+    // ここの条件を手で増やさずに済む。列挙漏れ = 旧フォーマットが補完されず content がデフォルト動作に
+    // 黙って固着する、を防ぐ)。キー集合は値に依存しないので空オブジェクトから導く (storage の追加読みは不要)。
+    const keys = Object.keys(contentFlagsOf({}));
+    if (cur && keys.every((k) => k in cur)) return; // 全フラグが揃っていれば既存値を保つ
+    // 未作成 / 旧フォーマット (新フラグ欠落 = 更新前のインストール) は SETTINGS から導出して補完する。
     const s = await getSettings();
     await chrome.storage.local.set({ [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(s) });
   }

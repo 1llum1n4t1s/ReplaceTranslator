@@ -136,7 +136,7 @@
   // 訳し直したり、復元時に stale な訳語へ戻すのを防ぐ。特に自動翻訳 ON で選択翻訳バブルが拾われると、
   // 「翻訳中…」自体が翻訳バッチに乗り、その応答が選択翻訳の TRANSLATE_BATCH と競合して
   // parse/incomplete エラーに化けることがある (= ユーザーから見た「解析エラー」の主因)。
-  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, #__rt_sel_bubble, .__rt-img-btn, .__rt-img-layer";
+  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, #__rt_sel_bubble, .__rt-sel-inline, .__rt-img-btn, .__rt-img-layer";
 
   // 可視性に影響する属性。これらが変わったら display:none→表示になったドロップダウン/モーダル/タブ/
   // アコーディオン等の中身を取り込み直す (IO は display 切替を取りこぼすことがあるため属性駆動で補う)。
