@@ -48,7 +48,10 @@
   // 外れて同一原文を再翻訳してしまう (= autoTranslate で「翻訳済みを何度も再翻訳」)。同じ原文を既に訳して
   // いれば API を呼ばずキャッシュ適用する。provider/targetLang が変わると訳が変わるので revert で clear する。
   const translationMemo = new Map();
-  const MEMO_MAX = 4000;                // メモの上限 (巨大ページでの無制限増加を防ぐ。超過後は新規登録のみ停止)
+  // メモの上限 (巨大ページでの無制限増加を防ぐ。超過後は新規登録のみ停止＝先勝ちで hot text を保持)。
+  // 訳文=原文 (固有名詞等) もキャッシュする分エントリが増えるため、無限スクロール (YouTube コメント等) で
+  // 一度訳した原文が evict されて再送信されないよう、容量を厚めに取る (原文+訳文の文字列ペアで ~数百KB/千件)。
+  const MEMO_MAX = 8000;
   let observedBlocks = new WeakSet();   // io.observe 済みのブロック要素
   let flushedBlocks = new WeakSet();    // 可視化して翻訳に回し終えたブロック (内部への動的追加は即取り込む)
   let observedShadowRoots = new WeakSet(); // MutationObserver で監視済みの shadow root (内部の動的更新も拾う)
@@ -144,7 +147,7 @@
   const ATTR_FILTER = ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded", "data-state"];
   // MutationObserver の監視設定 (本体 / shadow root で共通)。childList+characterData で動的追加・文言差し替えを、
   // attributes(ATTR_FILTER) で表示トグルを拾う。我々は属性を書き換えないので自己再発火は起きない。
-  const MO_OPTS = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR_FILTER };
+  const MO_OPTS = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR_FILTER, attributeOldValue: true };
 
   function shouldTranslateText(s) {
     if (!s) return false;
@@ -409,14 +412,20 @@
     for (let i = 0; i < batch.length; i++) applyOne(batch[i], translations[i]);
   }
   // 原文→訳文をメモに登録 (同一原文の再翻訳を API なしでキャッシュ適用するため)。上限超過後は新規登録のみ止める。
-  function rememberTranslations(batch, translations) {
+  // バッチ応答を原文→訳文メモに登録する。SPA 再レンダで Text ノード実体が差し替わっても、同一原文を
+  // API に再送せずキャッシュ適用するためのもの。full=true は「完全な正常応答 (res.ok)」を表す。
+  // full のとき訳文=原文 (LLM が『既に target 言語』等で原文を返した・固有名詞/記号で変化なし) でも登録する。
+  // これをしないと「訳しても変わらないテキスト」がメモに残らず、ノード差し替えのたびに毎回再送信され
+  // (= 静止ページでも自動翻訳 ON でトークンを食い続ける)。一方 full=false (部分失敗で原文のまま返った可能性が
+  // ある) のときは訳文=原文を登録しない (失敗を『訳不要』と誤キャッシュして永久に未訳化するのを防ぐ)。
+  function rememberTranslations(batch, translations, full) {
     for (let i = 0; i < batch.length; i++) {
       const src = batch[i] && batch[i].text;
       const t = translations[i];
-      if (typeof src === "string" && src && typeof t === "string" && t && t !== src) {
-        if (translationMemo.size >= MEMO_MAX && !translationMemo.has(src)) continue;
-        translationMemo.set(src, t);
-      }
+      if (typeof src !== "string" || !src || typeof t !== "string" || !t) continue;
+      if (t === src && !full) continue; // 部分失敗の原文返しはキャッシュしない (後で訳し直せるよう残す)
+      if (translationMemo.size >= MEMO_MAX && !translationMemo.has(src)) continue;
+      translationMemo.set(src, t);
     }
   }
 
@@ -483,7 +492,7 @@
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
         if (res && res.ok && Array.isArray(res.translations)) {
           applyTranslations(batch, res.translations);
-          rememberTranslations(batch, res.translations);
+          rememberTranslations(batch, res.translations, true); // 正常応答 → 訳文=原文 (変化なし) もキャッシュし再送信を断つ
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
@@ -511,7 +520,7 @@
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
-          rememberTranslations(batch, res.translations);
+          rememberTranslations(batch, res.translations, false); // 部分成功 → 原文返しは失敗かもしれずキャッシュしない
         } else if (res && res.error === "incomplete") {
           // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial (nodeValue が訳文へ
           // 書き換わったノード) はそのまま残し、まだ原文のままのノードだけ能動的に queue へ戻す。
@@ -637,6 +646,16 @@
   }
 
   // ---- MutationObserver: 動的追加 (無限スクロール / SPA) を取り込む ----
+  // style 属性の変化が「display:none との間の遷移」を含むときだけ true。動画のシークバー/プログレスバー等は
+  // 再生中ずっと width/left/transform 等の style を高頻度に書き換え続けるが、それらは可視性とは無関係。
+  // ATTR_FILTER に style を含めた本来の意図 (display:none→表示の検知) に絞り込み、可視性と無関係な style 連打で
+  // scheduleAttrReingest/ingest が回り続けてメインスレッドを食う (= 動画プレイヤー側の描画が乱れる一因) のを防ぐ。
+  function styleVisibilityChanged(oldVal, newVal) {
+    const wasHidden = /display\s*:\s*none/i.test(oldVal || "");
+    const isHidden = /display\s*:\s*none/i.test(newVal || "");
+    return wasHidden !== isHidden;
+  }
+
   function onMutate(mutations) {
     if (!translating) return;
     if (location.href !== lastHref) {   // SPA ナビゲーション(pushState 等)で URL が変わった → 新ページを取り込み直す
@@ -666,6 +685,12 @@
         continue;
       }
       if (m.type === "attributes") {
+        const newAttrVal = m.target.getAttribute(m.attributeName);
+        // 値が実質変化していない書き戻し (同値の再設定) は無視。class 連打 (動画プレイヤーの自動非表示制御等) で
+        // 多いパターンを安価に弾く (文字列1回比較のみ・reflow なし)。
+        if (m.oldValue === newAttrVal) continue;
+        // style 連打 (動画シークバー等) は可視性遷移があったときだけ通す (詳細は styleVisibilityChanged 参照)。
+        if (m.attributeName === "style" && !styleVisibilityChanged(m.oldValue, newAttrVal)) continue;
         // class/style/hidden/aria 等の変化で display:none→表示になったドロップダウン/モーダル/タブ/
         // アコーディオンの中身を取り込む。属性は高頻度で変わる(ホバー/アニメ)ので個別 ingest せず、
         // 対象をためてデバウンス再 ingest する (collectNodes は既訳/監視中ブロックを skip するので冪等)。
