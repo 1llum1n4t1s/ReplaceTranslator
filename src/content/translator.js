@@ -646,11 +646,16 @@
   }
 
   // ---- MutationObserver: 動的追加 (無限スクロール / SPA) を取り込む ----
-  // style 属性の "display" プロパティの値 (無ければ null) を取り出す。none/block 等の具体値だけでなく、
-  // プロパティ自体の有無 (インライン未設定 → 設定) も比較できるよう文字列のまま返す。
+  // style 属性文字列を DOM(CSSOM) に解釈させ "display" 宣言の実値 (無ければ null) だけを取り出す使い捨て要素。
+  // 正規表現での文字列走査だと content:"display: grid" や background:url(...display:none...)、
+  // カスタムプロパティ (--x: display:none) 等、他プロパティの値中に現れる "display:" を誤検知しうるため、
+  // ブラウザ標準の CSSStyleDeclaration パーサに解釈させて実際の宣言だけを安全に得る。document に接続しない
+  // ため layout/paint は発生しない (cssText 代入は純粋な CSSOM 文字列パース)。
+  const displayProbe = document.createElement("div");
   function extractDisplayValue(styleStr) {
-    const m = /display\s*:\s*([^;]+)/i.exec(styleStr || "");
-    return m ? m[1].trim().toLowerCase() : null;
+    displayProbe.style.cssText = styleStr || "";
+    const v = displayProbe.style.display;
+    return v ? v.trim().toLowerCase() : null;
   }
   // style 属性の変化が display プロパティに触れているときだけ true。動画のシークバー/プログレスバー等は
   // 再生中ずっと width/left/transform 等の style を高頻度に書き換え続けるが、それらは可視性とは無関係。
