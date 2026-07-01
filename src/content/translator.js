@@ -646,14 +646,20 @@
   }
 
   // ---- MutationObserver: 動的追加 (無限スクロール / SPA) を取り込む ----
-  // style 属性の変化が「display:none との間の遷移」を含むときだけ true。動画のシークバー/プログレスバー等は
+  // style 属性の "display" プロパティの値 (無ければ null) を取り出す。none/block 等の具体値だけでなく、
+  // プロパティ自体の有無 (インライン未設定 → 設定) も比較できるよう文字列のまま返す。
+  function extractDisplayValue(styleStr) {
+    const m = /display\s*:\s*([^;]+)/i.exec(styleStr || "");
+    return m ? m[1].trim().toLowerCase() : null;
+  }
+  // style 属性の変化が display プロパティに触れているときだけ true。動画のシークバー/プログレスバー等は
   // 再生中ずっと width/left/transform 等の style を高頻度に書き換え続けるが、それらは可視性とは無関係。
-  // ATTR_FILTER に style を含めた本来の意図 (display:none→表示の検知) に絞り込み、可視性と無関係な style 連打で
+  // ATTR_FILTER に style を含めた本来の意図 (表示トグルの検知) に絞り込み、可視性と無関係な style 連打で
   // scheduleAttrReingest/ingest が回り続けてメインスレッドを食う (= 動画プレイヤー側の描画が乱れる一因) のを防ぐ。
+  // display:none との単純な往復だけでなく、CSSクラス/スタイルシートで隠されていた要素にインラインで
+  // display が新規追加/変更/削除される (= オーバーライドで可視化/非表示化しうる) ケースも値の変化として拾う。
   function styleVisibilityChanged(oldVal, newVal) {
-    const wasHidden = /display\s*:\s*none/i.test(oldVal || "");
-    const isHidden = /display\s*:\s*none/i.test(newVal || "");
-    return wasHidden !== isHidden;
+    return extractDisplayValue(oldVal) !== extractDisplayValue(newVal);
   }
 
   function onMutate(mutations) {
