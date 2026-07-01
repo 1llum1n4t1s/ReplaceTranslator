@@ -48,7 +48,10 @@
   // 外れて同一原文を再翻訳してしまう (= autoTranslate で「翻訳済みを何度も再翻訳」)。同じ原文を既に訳して
   // いれば API を呼ばずキャッシュ適用する。provider/targetLang が変わると訳が変わるので revert で clear する。
   const translationMemo = new Map();
-  const MEMO_MAX = 4000;                // メモの上限 (巨大ページでの無制限増加を防ぐ。超過後は新規登録のみ停止)
+  // メモの上限 (巨大ページでの無制限増加を防ぐ。超過後は新規登録のみ停止＝先勝ちで hot text を保持)。
+  // 訳文=原文 (固有名詞等) もキャッシュする分エントリが増えるため、無限スクロール (YouTube コメント等) で
+  // 一度訳した原文が evict されて再送信されないよう、容量を厚めに取る (原文+訳文の文字列ペアで ~数百KB/千件)。
+  const MEMO_MAX = 8000;
   let observedBlocks = new WeakSet();   // io.observe 済みのブロック要素
   let flushedBlocks = new WeakSet();    // 可視化して翻訳に回し終えたブロック (内部への動的追加は即取り込む)
   let observedShadowRoots = new WeakSet(); // MutationObserver で監視済みの shadow root (内部の動的更新も拾う)
@@ -87,6 +90,12 @@
   // ResizeObserver で同時追跡する 0×0 block の上限。仮想化リスト等で 0×0 placeholder が大量生成されても
   // RO 監視(と強参照)が無制限に増えないようにする保険。超過分は io.observe + スクロールの IO 発火に委ねる。
   const ZEROSIZE_CAP = 400;
+  // ページ言語=翻訳先のとき、非翻訳先の言語がこの割合(%)以上混在していれば skip せず訳す閾値。
+  // 日本語UIに囲まれた英語本文記事のような「単一トピックページに異言語コンテンツが1つ埋まる」ケースを想定した
+  // 閾値だが、X(Twitter)等の投稿ごとに言語がバラバラな SNS フィードでは、UI 自体は完全に日本語でも
+  // タイムライン中の少数の外国語投稿だけで平均 20〜30% 程度に達してしまい、意図せず毎回「混在ページ」判定
+  // されて発動していた。50 に引き上げ、フィードの過半数が非翻訳先言語のときだけ混在ページ扱いにする。
+  const MIXED_LANG_THRESHOLD = 50;
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
   const PREFETCH_PX = 1200;
   const PREFETCH_MARGIN = `${PREFETCH_PX}px`;
@@ -144,7 +153,7 @@
   const ATTR_FILTER = ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded", "data-state"];
   // MutationObserver の監視設定 (本体 / shadow root で共通)。childList+characterData で動的追加・文言差し替えを、
   // attributes(ATTR_FILTER) で表示トグルを拾う。我々は属性を書き換えないので自己再発火は起きない。
-  const MO_OPTS = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR_FILTER };
+  const MO_OPTS = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR_FILTER, attributeOldValue: true };
 
   function shouldTranslateText(s) {
     if (!s) return false;
@@ -238,7 +247,7 @@
   //   可視(+先読み)ブロック → IO の初期通知を待たず即キュー (初期表示を確実に翻訳)
   //   画面外ブロック       → IntersectionObserver に登録 (スクロールで可視化されたら翻訳)
   //   可視化済みブロック内への追加 → 即キュー (動的追加の追従)
-  function ingest(root) {
+  function ingest(root, fullRecheck) {
     if (!io) return;
     const toObserve = new Set();
     const metaCache = new Map(); // block→{near,y}: 同一ブロックの getBoundingClientRect 重複読みを避ける
@@ -263,10 +272,17 @@
       const block = blockAncestor(node);
       if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; dc.flushedHit++; continue; }
       if (observedBlocks.has(block)) {
-        // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外: 初回 0×0 で observe した block だけは
-        // 高さが付いて near 化したか再評価し、near なら IO 発火を待たず即翻訳へ promote する(0×0→サイズ付与の
-        // in-viewport 遷移は IO が発火しないことがあるため)。promoteSizedBlock がその block の全ノードを enqueue する。
-        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block, metaOf(block))) { immediate = true; dc.promoted++; }
+        // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外1: 初回 0×0 で observe した block は
+        // 高さが付いて near 化したか毎回再評価する(0×0→サイズ付与の in-viewport 遷移は IO が発火しないことが
+        // あるため)。例外2: fullRecheck (scheduleReingest の定期再走査・350〜12000ms に最大6回) 時は、
+        // 0×0 でなかった block も含め near 化したか再評価する。初回計測時に非 0×0 でも「近傍の要素がまだ描画/
+        // 確定していない一時的なレイアウト」のせいで最終位置より下に見え near=false と判定されることがあり
+        // (例: 上にあるローディングプレースホルダが後で縮む)、この class の block は zeroSizedBlocks に入らず
+        // ResizeObserver の恩恵を受けないため、IO の自然な再発火 (実質スクロール待ち) に取り残されてしまう
+        // (「DOM は読み込み済みなのにスクロールしないと翻訳が始まらない」の主因)。定期再走査に限定して
+        // 再評価することで、高頻度な MutationObserver 起因の ingest は従来どおり rect を読まず性能を維持しつつ
+        // この取りこぼしを解消する。promoteSizedBlock がその block の全ノードを enqueue する。
+        if ((zeroSizedBlocks.has(block) || fullRecheck) && promoteSizedBlock(block, metaOf(block))) { immediate = true; dc.promoted++; }
         continue;
       }
       const meta = metaOf(block);
@@ -409,14 +425,20 @@
     for (let i = 0; i < batch.length; i++) applyOne(batch[i], translations[i]);
   }
   // 原文→訳文をメモに登録 (同一原文の再翻訳を API なしでキャッシュ適用するため)。上限超過後は新規登録のみ止める。
-  function rememberTranslations(batch, translations) {
+  // バッチ応答を原文→訳文メモに登録する。SPA 再レンダで Text ノード実体が差し替わっても、同一原文を
+  // API に再送せずキャッシュ適用するためのもの。full=true は「完全な正常応答 (res.ok)」を表す。
+  // full のとき訳文=原文 (LLM が『既に target 言語』等で原文を返した・固有名詞/記号で変化なし) でも登録する。
+  // これをしないと「訳しても変わらないテキスト」がメモに残らず、ノード差し替えのたびに毎回再送信され
+  // (= 静止ページでも自動翻訳 ON でトークンを食い続ける)。一方 full=false (部分失敗で原文のまま返った可能性が
+  // ある) のときは訳文=原文を登録しない (失敗を『訳不要』と誤キャッシュして永久に未訳化するのを防ぐ)。
+  function rememberTranslations(batch, translations, full) {
     for (let i = 0; i < batch.length; i++) {
       const src = batch[i] && batch[i].text;
       const t = translations[i];
-      if (typeof src === "string" && src && typeof t === "string" && t && t !== src) {
-        if (translationMemo.size >= MEMO_MAX && !translationMemo.has(src)) continue;
-        translationMemo.set(src, t);
-      }
+      if (typeof src !== "string" || !src || typeof t !== "string" || !t) continue;
+      if (t === src && !full) continue; // 部分失敗の原文返しはキャッシュしない (後で訳し直せるよう残す)
+      if (translationMemo.size >= MEMO_MAX && !translationMemo.has(src)) continue;
+      translationMemo.set(src, t);
     }
   }
 
@@ -483,7 +505,7 @@
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
         if (res && res.ok && Array.isArray(res.translations)) {
           applyTranslations(batch, res.translations);
-          rememberTranslations(batch, res.translations);
+          rememberTranslations(batch, res.translations, true); // 正常応答 → 訳文=原文 (変化なし) もキャッシュし再送信を断つ
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
@@ -511,7 +533,7 @@
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
-          rememberTranslations(batch, res.translations);
+          rememberTranslations(batch, res.translations, false); // 部分成功 → 原文返しは失敗かもしれずキャッシュしない
         } else if (res && res.error === "incomplete") {
           // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial (nodeValue が訳文へ
           // 書き換わったノード) はそのまま残し、まだ原文のままのノードだけ能動的に queue へ戻す。
@@ -637,6 +659,27 @@
   }
 
   // ---- MutationObserver: 動的追加 (無限スクロール / SPA) を取り込む ----
+  // style 属性文字列を DOM(CSSOM) に解釈させ "display" 宣言の実値 (無ければ null) だけを取り出す使い捨て要素。
+  // 正規表現での文字列走査だと content:"display: grid" や background:url(...display:none...)、
+  // カスタムプロパティ (--x: display:none) 等、他プロパティの値中に現れる "display:" を誤検知しうるため、
+  // ブラウザ標準の CSSStyleDeclaration パーサに解釈させて実際の宣言だけを安全に得る。document に接続しない
+  // ため layout/paint は発生しない (cssText 代入は純粋な CSSOM 文字列パース)。
+  const displayProbe = document.createElement("div");
+  function extractDisplayValue(styleStr) {
+    displayProbe.style.cssText = styleStr || "";
+    const v = displayProbe.style.display;
+    return v ? v.trim().toLowerCase() : null;
+  }
+  // style 属性の変化が display プロパティに触れているときだけ true。動画のシークバー/プログレスバー等は
+  // 再生中ずっと width/left/transform 等の style を高頻度に書き換え続けるが、それらは可視性とは無関係。
+  // ATTR_FILTER に style を含めた本来の意図 (表示トグルの検知) に絞り込み、可視性と無関係な style 連打で
+  // scheduleAttrReingest/ingest が回り続けてメインスレッドを食う (= 動画プレイヤー側の描画が乱れる一因) のを防ぐ。
+  // display:none との単純な往復だけでなく、CSSクラス/スタイルシートで隠されていた要素にインラインで
+  // display が新規追加/変更/削除される (= オーバーライドで可視化/非表示化しうる) ケースも値の変化として拾う。
+  function styleVisibilityChanged(oldVal, newVal) {
+    return extractDisplayValue(oldVal) !== extractDisplayValue(newVal);
+  }
+
   function onMutate(mutations) {
     if (!translating) return;
     if (location.href !== lastHref) {   // SPA ナビゲーション(pushState 等)で URL が変わった → 新ページを取り込み直す
@@ -666,6 +709,12 @@
         continue;
       }
       if (m.type === "attributes") {
+        const newAttrVal = m.target.getAttribute(m.attributeName);
+        // 値が実質変化していない書き戻し (同値の再設定) は無視。class 連打 (動画プレイヤーの自動非表示制御等) で
+        // 多いパターンを安価に弾く (文字列1回比較のみ・reflow なし)。
+        if (m.oldValue === newAttrVal) continue;
+        // style 連打 (動画シークバー等) は可視性遷移があったときだけ通す (詳細は styleVisibilityChanged 参照)。
+        if (m.attributeName === "style" && !styleVisibilityChanged(m.oldValue, newAttrVal)) continue;
         // class/style/hidden/aria 等の変化で display:none→表示になったドロップダウン/モーダル/タブ/
         // アコーディオンの中身を取り込む。属性は高頻度で変わる(ホバー/アニメ)ので個別 ingest せず、
         // 対象をためてデバウンス再 ingest する (collectNodes は既訳/監視中ブロックを skip するので冪等)。
@@ -704,7 +753,7 @@
       window.setTimeout(() => {
         if (!translating || !contextAlive()) return;
         sweepZeroSized(); // DOM から外れた 0×0 block の RO 監視を回収(リーク上限)
-        ingest(document.body || document.documentElement);
+        ingest(document.body || document.documentElement, true); // fullRecheck: 非 0×0 だが near 化した block も拾う
       }, delay)
     );
   }
@@ -845,7 +894,7 @@
       // ページ主要言語が翻訳先でも、非翻訳先の言語が一定量混在していれば訳す
       // (日本語UI に囲まれた英語本文記事のような混在ページで、本文を skip で取り残さないため)。
       const otherPct = detected.langs.filter((l) => l.code !== settings.targetLang).reduce((a, l) => a + l.pct, 0);
-      const mixedOther = otherPct >= 20; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
+      const mixedOther = otherPct >= MIXED_LANG_THRESHOLD; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
       dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther);
       if (pageLang && pageLang === settings.targetLang && !mixedOther) {
         // 実質ページ全体が翻訳先言語 → 訳すものが無い
