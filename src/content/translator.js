@@ -90,6 +90,12 @@
   // ResizeObserver で同時追跡する 0×0 block の上限。仮想化リスト等で 0×0 placeholder が大量生成されても
   // RO 監視(と強参照)が無制限に増えないようにする保険。超過分は io.observe + スクロールの IO 発火に委ねる。
   const ZEROSIZE_CAP = 400;
+  // ページ言語=翻訳先のとき、非翻訳先の言語がこの割合(%)以上混在していれば skip せず訳す閾値。
+  // 日本語UIに囲まれた英語本文記事のような「単一トピックページに異言語コンテンツが1つ埋まる」ケースを想定した
+  // 閾値だが、X(Twitter)等の投稿ごとに言語がバラバラな SNS フィードでは、UI 自体は完全に日本語でも
+  // タイムライン中の少数の外国語投稿だけで平均 20〜30% 程度に達してしまい、意図せず毎回「混在ページ」判定
+  // されて発動していた。50 に引き上げ、フィードの過半数が非翻訳先言語のときだけ混在ページ扱いにする。
+  const MIXED_LANG_THRESHOLD = 50;
   // ビューポートの先読みマージン(px)。見えている所＋上下これだけ先まで翻訳しておく。
   const PREFETCH_PX = 1200;
   const PREFETCH_MARGIN = `${PREFETCH_PX}px`;
@@ -888,7 +894,7 @@
       // ページ主要言語が翻訳先でも、非翻訳先の言語が一定量混在していれば訳す
       // (日本語UI に囲まれた英語本文記事のような混在ページで、本文を skip で取り残さないため)。
       const otherPct = detected.langs.filter((l) => l.code !== settings.targetLang).reduce((a, l) => a + l.pct, 0);
-      const mixedOther = otherPct >= 20; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
+      const mixedOther = otherPct >= MIXED_LANG_THRESHOLD; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
       dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther);
       if (pageLang && pageLang === settings.targetLang && !mixedOther) {
         // 実質ページ全体が翻訳先言語 → 訳すものが無い
