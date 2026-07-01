@@ -241,7 +241,7 @@
   //   可視(+先読み)ブロック → IO の初期通知を待たず即キュー (初期表示を確実に翻訳)
   //   画面外ブロック       → IntersectionObserver に登録 (スクロールで可視化されたら翻訳)
   //   可視化済みブロック内への追加 → 即キュー (動的追加の追従)
-  function ingest(root) {
+  function ingest(root, fullRecheck) {
     if (!io) return;
     const toObserve = new Set();
     const metaCache = new Map(); // block→{near,y}: 同一ブロックの getBoundingClientRect 重複読みを避ける
@@ -266,10 +266,17 @@
       const block = blockAncestor(node);
       if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; dc.flushedHit++; continue; }
       if (observedBlocks.has(block)) {
-        // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外: 初回 0×0 で observe した block だけは
-        // 高さが付いて near 化したか再評価し、near なら IO 発火を待たず即翻訳へ promote する(0×0→サイズ付与の
-        // in-viewport 遷移は IO が発火しないことがあるため)。promoteSizedBlock がその block の全ノードを enqueue する。
-        if (zeroSizedBlocks.has(block) && promoteSizedBlock(block, metaOf(block))) { immediate = true; dc.promoted++; }
+        // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外1: 初回 0×0 で observe した block は
+        // 高さが付いて near 化したか毎回再評価する(0×0→サイズ付与の in-viewport 遷移は IO が発火しないことが
+        // あるため)。例外2: fullRecheck (scheduleReingest の定期再走査・350〜12000ms に最大6回) 時は、
+        // 0×0 でなかった block も含め near 化したか再評価する。初回計測時に非 0×0 でも「近傍の要素がまだ描画/
+        // 確定していない一時的なレイアウト」のせいで最終位置より下に見え near=false と判定されることがあり
+        // (例: 上にあるローディングプレースホルダが後で縮む)、この class の block は zeroSizedBlocks に入らず
+        // ResizeObserver の恩恵を受けないため、IO の自然な再発火 (実質スクロール待ち) に取り残されてしまう
+        // (「DOM は読み込み済みなのにスクロールしないと翻訳が始まらない」の主因)。定期再走査に限定して
+        // 再評価することで、高頻度な MutationObserver 起因の ingest は従来どおり rect を読まず性能を維持しつつ
+        // この取りこぼしを解消する。promoteSizedBlock がその block の全ノードを enqueue する。
+        if ((zeroSizedBlocks.has(block) || fullRecheck) && promoteSizedBlock(block, metaOf(block))) { immediate = true; dc.promoted++; }
         continue;
       }
       const meta = metaOf(block);
@@ -740,7 +747,7 @@
       window.setTimeout(() => {
         if (!translating || !contextAlive()) return;
         sweepZeroSized(); // DOM から外れた 0×0 block の RO 監視を回収(リーク上限)
-        ingest(document.body || document.documentElement);
+        ingest(document.body || document.documentElement, true); // fullRecheck: 非 0×0 だが near 化した block も拾う
       }, delay)
     );
   }
