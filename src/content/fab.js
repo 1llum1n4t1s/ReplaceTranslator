@@ -247,7 +247,22 @@
   function isFullscreenVideo() {
     const el = document.fullscreenElement;
     if (!el) return false;
-    return el.tagName === "VIDEO" || !!el.querySelector("video");
+    // querySelector は shadow 境界を越えないため、カスタムプレイヤー/Web Components で <video> が
+    // open shadow DOM 内にあると検出できない。translator.js の collectNodes と同方針で shadow root も辿る
+    // (closed shadow は仕様上不可)。
+    function hasVideo(node) {
+      if (!node) return false;
+      if (node.tagName === "VIDEO") return true;
+      if (node.shadowRoot && hasVideo(node.shadowRoot)) return true;
+      const kids = node.children;
+      if (kids) {
+        for (let i = 0; i < kids.length; i++) {
+          if (hasVideo(kids[i])) return true;
+        }
+      }
+      return false;
+    }
+    return hasVideo(el);
   }
   // FAB の表示可否 (showFab 設定 + 動画全画面表示)。インライン display は fab.css (#__rt_fab) より優先されるので確実に消せる。
   function refreshVisibility() {
@@ -257,7 +272,7 @@
   document.addEventListener("fullscreenchange", () => {
     // 全画面化で FAB が非表示になる瞬間にドラッグ中だと、非表示要素への pointerup 配送がブラウザによっては
     // 行われず dragging=true が残留しうる (以後 pointermove が誤反応する) ため、先にドラッグを終了させる。
-    if (dragging) endDrag(undefined, true);
+    if (dragging) endDrag({}, true); // pointerId 無しの空オブジェクト (e.pointerId は undefined になるだけで例外を投げない)
     refreshVisibility();
   });
 
