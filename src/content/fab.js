@@ -241,9 +241,29 @@
 
   render();
 
-  // FAB の表示可否 (showFab)。インライン display は fab.css (#__rt_fab) より優先されるので確実に消せる。
+  let lastFlags = null; // 直近の CONTENT_FLAGS (showFab 判定をフルスクリーン切替時にも再利用する)
+  // 動画 <video> がブラウザ全画面表示中はページ操作の妨げになるため隠す。標準 Fullscreen API ベースなので
+  // YouTube/Twitch/U-NEXT/Prime Video 等、動画サイトを問わず汎用的に効く (サイト別の判定を持たない)。
+  function isFullscreenVideo() {
+    const el = document.fullscreenElement;
+    if (!el) return false;
+    return el.tagName === "VIDEO" || !!el.querySelector("video");
+  }
+  // FAB の表示可否 (showFab 設定 + 動画全画面表示)。インライン display は fab.css (#__rt_fab) より優先されるので確実に消せる。
+  function refreshVisibility() {
+    const hidden = (lastFlags && lastFlags.showFab === false) || isFullscreenVideo();
+    fab.style.display = hidden ? "none" : "";
+  }
+  document.addEventListener("fullscreenchange", () => {
+    // 全画面化で FAB が非表示になる瞬間にドラッグ中だと、非表示要素への pointerup 配送がブラウザによっては
+    // 行われず dragging=true が残留しうる (以後 pointermove が誤反応する) ため、先にドラッグを終了させる。
+    if (dragging) endDrag(undefined, true);
+    refreshVisibility();
+  });
+
   function applyVisibility(flags) {
-    fab.style.display = (flags && flags.showFab === false) ? "none" : "";
+    lastFlags = flags;
+    refreshVisibility();
   }
   function mount() {
     (document.body || document.documentElement).appendChild(fab);
