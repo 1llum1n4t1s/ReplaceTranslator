@@ -59,6 +59,7 @@
   "optMyMemoryNote": { "message": "No key needed. Add an email to raise the free daily limit (anonymous 5k / with email 50k chars/day). NMT engine, max 500 bytes per text." },
   "optShowFab": { "message": "Floating button" },
   "optShowFabDesc": { "message": "Show the floating translate button at the bottom-right of pages. When off, you can still translate from this popup or the context menu." },
+  "optFabOpacity": { "message": "Opacity" },
   "optSelectionTranslate": { "message": "Selection translation" },
   "optSelectionTranslateDesc": { "message": "Select text and press Ctrl+Shift+L (or right-click) to translate. Choose how it appears below." },
   "optSelShortcut": { "message": "Change shortcut" },

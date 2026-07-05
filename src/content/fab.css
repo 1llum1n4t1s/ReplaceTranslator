@@ -24,6 +24,7 @@
   --rail: #d8462b;          /* 朱のバー (テーマの朱・アクセント) */
   --line: #ddd6c8;          /* フラットな輪郭線 (生成りに寄せた淡い境界) */
   --rest: .72;              /* 格納・非ホバー時の存在感 */
+  --fab-alpha: 1;           /* ユーザー設定の不透明度乗数 (popup のスライダー→JS が上書き)。1=既定の見た目 */
 
   width: 30px;
   height: 32px;
@@ -40,7 +41,7 @@
   color: var(--ink);
   background: var(--paper);   /* ベタ塗り (グラデ・テクスチャなし) */
 
-  opacity: var(--rest);
+  opacity: calc(var(--rest) * var(--fab-alpha, 1)); /* 状態別の存在感(--rest)にユーザー設定の乗数(--fab-alpha)を掛ける */
   /* フラット: 幅・色・不透明度のみを素直に遷移 (影/フィルタ/呼吸アニメは使わない)。
      top は遷移対象にしない: ページ遷移ごとに content script が再注入され、JS が初回配置で
      top:50%(CSS既定) の FAB に offsetHeight を読んで(強制リフロー)から保存位置の px を設定するため、

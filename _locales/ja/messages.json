@@ -59,6 +59,7 @@
   "optMyMemoryNote": { "message": "キー不要。メールを入れると無料枠が増えます（匿名 5千 / メール登録 5万字/日）。NMT エンジン・1テキスト最大500バイト。" },
   "optShowFab": { "message": "フローティングボタン" },
   "optShowFabDesc": { "message": "ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。" },
+  "optFabOpacity": { "message": "不透明度" },
   "optSelectionTranslate": { "message": "選択テキスト翻訳" },
   "optSelectionTranslateDesc": { "message": "テキストを選択して Ctrl+Shift+L または右クリックで翻訳します。表示方法は下で選べます。" },
   "optSelShortcut": { "message": "ショートカットを変更" },

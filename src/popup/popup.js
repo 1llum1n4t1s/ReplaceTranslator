@@ -239,7 +239,13 @@
   // ---- 共通 ----
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
-    $("show-fab").checked = state.settings.showFab !== false;
+    const fabOn = state.settings.showFab !== false;
+    $("show-fab").checked = fabOn;
+    // 不透明度スライダー: 乗数(0.2〜1.0)→パーセント表示。FAB 非表示のときは操作不可にして淡くする
+    const opPct = Math.round((typeof state.settings.fabOpacity === "number" ? state.settings.fabOpacity : 1) * 100);
+    $("fab-opacity").value = String(opPct);
+    $("fab-opacity-val").textContent = opPct + "%";
+    $("fab-opacity").disabled = !fabOn;
     const selOn = state.settings.selectionTranslate !== false;
     $("sel-translate").checked = selOn;
     $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
@@ -440,7 +446,10 @@
     });
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
-    $("show-fab").addEventListener("change", (e) => save({ showFab: e.target.checked }));
+    $("show-fab").addEventListener("change", (e) => { save({ showFab: e.target.checked }); $("fab-opacity").disabled = !e.target.checked; });
+    // 不透明度スライダー: input でラベルを即時更新 (保存はせず軽量に), change (ドラッグ確定) で保存する
+    $("fab-opacity").addEventListener("input", (e) => { $("fab-opacity-val").textContent = e.target.value + "%"; });
+    $("fab-opacity").addEventListener("change", (e) => save({ fabOpacity: Number(e.target.value) / 100 }));
     $("sel-translate").addEventListener("change", (e) => { save({ selectionTranslate: e.target.checked }); $("sel-mode").disabled = !e.target.checked; });
     $("sel-mode").addEventListener("change", (e) => save({ selectionMode: e.target.value }));
     // ショートカット変更: ブラウザのコマンド設定ページを開く (Chrome=extensions/shortcuts / Firefox=about:addons)

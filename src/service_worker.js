@@ -62,7 +62,8 @@ if (typeof importScripts === "function") {
     // imageCapable: 選択中プロバイダが画像翻訳(vision)対応か。content(image-translator) がこれを見て、
     // 非対応プロバイダ選択中はホバーの「訳」ボタンを出さない (クリックしても no_vision になるだけのため)。
     // selectionMode: 選択翻訳の表示方法 (bubble=浮遊バブル / inline=対訳差し込み)。content(selection-translator) が読む。
-    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider), selectionTranslate: s.selectionTranslate, selectionMode: s.selectionMode };
+    // fabOpacity: フローティングボタンの不透明度 (乗数)。content(fab) が --fab-alpha に載せて透け具合を反映する。
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab, imageCapable: Providers.supportsImage(s.provider), selectionTranslate: s.selectionTranslate, selectionMode: s.selectionMode, fabOpacity: s.fabOpacity };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。

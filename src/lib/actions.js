@@ -183,7 +183,17 @@
     showFab: true,               // ページ右下のフローティング翻訳ボタンを表示する (OFF でも popup/右クリックから翻訳可)
     selectionTranslate: true,    // 選択テキスト翻訳 (ホットキー Ctrl+Shift+L / 右クリックで選択範囲を翻訳)
     selectionMode: "bubble",     // 選択翻訳の表示方法: "bubble"=浮遊バブル / "inline"=選択ブロック直後に対訳を差し込む(累積保持)
+    fabOpacity: 1,               // フローティングボタンの不透明度 (乗数)。1=既定の見た目、下げるほど透ける (fab.css の --rest に掛ける)
   });
+
+  // フローティングボタンの不透明度 (乗数) の許容範囲。0=完全透明で操作不能になるのを防ぐため下限 0.2、上限 1.0 に丸める。
+  const FAB_OPACITY_MIN = 0.2;
+  const FAB_OPACITY_MAX = 1;
+  function clampFabOpacity(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return DEFAULT_SETTINGS.fabOpacity; // 未設定 / 非数値は既定 (1) に倒す
+    return Math.min(FAB_OPACITY_MAX, Math.max(FAB_OPACITY_MIN, n));
+  }
 
   // 各社が廃止したモデル ID。保存設定 (settings.models[*]) に残っていると翻訳時に 404 で詰むため、
   // normalize 時に既定モデルへ自動移行する (動的取得 GET_MODELS を待たずに復旧する)。廃止が出たらここに足す。
@@ -232,6 +242,7 @@
       showFab: r.showFab !== false, // 既定 ON。既存ユーザーの保存済み設定 (キー欠損) でも FAB が消えないよう !== false で判定
       selectionTranslate: r.selectionTranslate !== false, // 既定 ON。欠損設定でも選択翻訳が消えないよう !== false で判定 (showFab と同形)
       selectionMode: r.selectionMode === "inline" ? "inline" : "bubble", // 未知値は既定の "bubble" に倒す (後方互換)
+      fabOpacity: clampFabOpacity(r.fabOpacity), // 0.2〜1.0 に丸める (欠損設定でも既定 1 に倒す)
     };
   }
 

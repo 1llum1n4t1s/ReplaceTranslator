@@ -333,6 +333,11 @@ body {
 .sel-sm { width: auto; flex: 1; padding: 6px 9px; font-size: 12px; border-radius: 8px; box-shadow: none; }
 .sel-sm:disabled { opacity: .5; cursor: default; }
 
+/* フローティングボタンの不透明度スライダー (show-fab OFF のとき disabled で淡くなる) */
+.range { flex: 1; height: 4px; accent-color: var(--vermilion); cursor: pointer; }
+.range:disabled { opacity: .5; cursor: default; }
+.range-val { font-size: 11px; font-weight: 700; color: var(--ink-soft); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+
 /* ---- クイック翻訳 (翻訳タブ末尾・常時表示) ---- */
 .qt { border-top: 1px dashed var(--rule); margin-top: 4px; padding-top: 13px; }
 .qt-head { display: flex; align-items: center; gap: 8px; color: var(--ink); padding: 2px 2px 0; }

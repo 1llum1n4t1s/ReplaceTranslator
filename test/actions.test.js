@@ -80,6 +80,14 @@ test("normalize defaults selectionTranslate to true when missing (existing insta
   assert.equal(SettingsSchema.normalize({ selectionTranslate: "x" }).selectionTranslate, true); // 厳密に false のときだけ無効 (showFab と同形)
 });
 
+test("normalize clamps fabOpacity to [0.2, 1] and defaults to 1 when missing/invalid", () => {
+  assert.equal(SettingsSchema.normalize({}).fabOpacity, 1);              // 欠損設定は既定 1 (現状の見た目)
+  assert.equal(SettingsSchema.normalize({ fabOpacity: 0.5 }).fabOpacity, 0.5);
+  assert.equal(SettingsSchema.normalize({ fabOpacity: 0 }).fabOpacity, 0.2);   // 下限クランプ (完全透明で操作不能を防ぐ)
+  assert.equal(SettingsSchema.normalize({ fabOpacity: 2 }).fabOpacity, 1);     // 上限クランプ
+  assert.equal(SettingsSchema.normalize({ fabOpacity: "x" }).fabOpacity, 1);   // 非数値は既定 1
+});
+
 test("Actions exposes the selection-translate trigger", () => {
   assert.equal(g.Actions.TRANSLATE_SELECTION_CS, "TRANSLATE_SELECTION_CS");
 });

@@ -276,9 +276,17 @@
     refreshVisibility();
   });
 
+  // ユーザー設定の不透明度乗数を CSS 変数 --fab-alpha に載せる (fab.css の opacity: calc(--rest * --fab-alpha))。
+  // 欠損 / 非数値 / 範囲外は 1 (既定の見た目) に丸める。インライン style は fab.css の既定値より優先される。
+  function applyOpacity(flags) {
+    const raw = flags && Number(flags.fabOpacity);
+    const alpha = Number.isFinite(raw) ? Math.min(1, Math.max(0.2, raw)) : 1;
+    fab.style.setProperty("--fab-alpha", String(alpha));
+  }
   function applyVisibility(flags) {
     lastFlags = flags;
     refreshVisibility();
+    applyOpacity(flags);
   }
   function mount() {
     (document.body || document.documentElement).appendChild(fab);

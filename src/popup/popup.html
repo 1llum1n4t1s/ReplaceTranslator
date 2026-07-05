@@ -45,6 +45,11 @@
           <div class="switch-text">
             <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
             <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
+            <div class="sub-field" id="fab-opacity-row">
+              <span class="sub-label" data-i18n="optFabOpacity">不透明度</span>
+              <input id="fab-opacity" class="range" type="range" min="20" max="100" step="5" value="100">
+              <span class="range-val" id="fab-opacity-val">100%</span>
+            </div>
           </div>
           <input id="show-fab" type="checkbox">
         </div>
