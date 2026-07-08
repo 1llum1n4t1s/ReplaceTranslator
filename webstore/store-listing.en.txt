@@ -9,15 +9,15 @@ Chrome Web Store listing (copy & paste) — English (en)
 Replace AI Translator API
 
 ■ Summary (max 132 chars)
-Translate any page in place with cloud LLMs (OpenAI, Anthropic, Gemini, Grok) via your own API key. One-click restore.
+Translate any page in place with cloud LLMs via your own API key. Natural, context-aware results with one-click restore.
 
 ■ Description (max 16,000 chars)
 
-Translate the web page you are viewing in place using cloud LLMs (OpenAI / Anthropic / Google Gemini / xAI (Grok)). Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
+Translate the web page you are viewing in place using the cloud LLM of your choice. Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
 
 [Features]
 - In-place replacement — replace the original text with the translation, toggle back to the original
-- Multiple LLM providers — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
+- Multiple LLM providers — switch between providers such as OpenAI / Anthropic / Google Gemini / xAI using your own API key
 - No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
@@ -26,7 +26,7 @@ Translate the web page you are viewing in place using cloud LLMs (OpenAI / Anthr
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
 
 [About API keys]
-In line with each provider's terms, this extension works with API keys (API tokens) only. It does not reuse subscription logins (ChatGPT Plus / Claude Pro / Gemini Advanced, etc.), which would violate those terms. To try it for free, Google Gemini (free tier) or the no-key MyMemory option is a good start.
+In line with each provider's terms, this extension works with API keys (API tokens) only. It does not reuse consumer chat-plan logins, which would violate those terms. To try it for free, a provider with a free tier or the no-key MyMemory option is a good start.
 
 [How to use]
 1. Install from the Chrome Web Store

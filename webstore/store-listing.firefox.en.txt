@@ -8,14 +8,14 @@ Inside the description use [brackets] for sub-headings, not ■ (a new ■ start
 Replace AI Translator API
 
 ■ Summary (AMO max 250 chars)
-Translate the page you're viewing in place using cloud LLMs (OpenAI / Anthropic / Gemini / Grok). Replace the original text and switch back in one click, with natural, context-aware results. Mixed-language and infinite-scroll friendly.
+Translate the page you're viewing in place using cloud LLMs with your own API key. Replace the original text and switch back in one click, with natural, context-aware results. Mixed-language and infinite-scroll friendly.
 
 ■ Description
-Translate the page you are viewing in place using cloud LLMs (OpenAI / Anthropic / Google Gemini / xAI (Grok)). Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
+Translate the page you are viewing in place using the cloud LLM of your choice. Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
 
 [Features]
 - In-place replacement — replace the original text with the translation, toggle back to the original
-- Multiple LLM providers — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
+- Multiple LLM providers — switch between providers such as OpenAI / Anthropic / Google Gemini / xAI using your own API key
 - No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
@@ -24,4 +24,4 @@ Translate the page you are viewing in place using cloud LLMs (OpenAI / Anthropic
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
 
 [About API keys]
-In line with each provider's terms, this extension works with API keys (API tokens) only. It does not reuse subscription logins (ChatGPT Plus / Claude Pro / Gemini Advanced, etc.). To try it for free, Google Gemini (free tier) or the no-key MyMemory option is a good start.
+In line with each provider's terms, this extension works with API keys (API tokens) only. It does not reuse consumer chat-plan logins. To try it for free, a provider with a free tier or the no-key MyMemory option is a good start.
