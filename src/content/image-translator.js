@@ -120,8 +120,18 @@
   // display:none はヒットテストに乗らないので、visibility と自身の computed opacity だけ見れば足りる。
   function isShown(el) {
     try {
-      const s = el.ownerDocument.defaultView.getComputedStyle(el);
-      return s.visibility !== "hidden" && parseFloat(s.opacity) >= 0.1;
+      const view = el.ownerDocument.defaultView;
+      // visibility は継承されて computed に現れる (子の visible 上書きも反映済み) ため自身だけ見る
+      if (view.getComputedStyle(el).visibility === "hidden") return false;
+      // opacity は継承されず親の透明度が computed に現れないため、祖先 (Shadow DOM ホスト含む) を
+      // 遡って実効透明度を積算する (opacity:0 のラッパー内の video を透明と判定するため)
+      let opacity = 1;
+      for (let node = el; node;) {
+        opacity *= parseFloat(view.getComputedStyle(node).opacity);
+        if (opacity < 0.1) return false;
+        node = node.parentElement || node.getRootNode().host || null;
+      }
+      return true;
     } catch (_e) { return true; }
   }
 
