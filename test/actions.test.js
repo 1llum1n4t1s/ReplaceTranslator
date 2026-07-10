@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const g = require("./_load-actions.js");
 
-const { SettingsSchema, TokenUsage, Providers, BatchTuner, ModelPricing } = g;
+const { SettingsSchema, TokenUsage, Providers, BatchTuner, ModelPricing, RuntimeLimits } = g;
 
 // ---- SettingsSchema.normalize ----
 
@@ -90,6 +90,10 @@ test("normalize clamps fabOpacity to [0.2, 1] and defaults to 1 when missing/inv
 
 test("Actions exposes the selection-translate trigger", () => {
   assert.equal(g.Actions.TRANSLATE_SELECTION_CS, "TRANSLATE_SELECTION_CS");
+});
+
+test("RuntimeLimits exposes a finite image pixel guard", () => {
+  assert.equal(RuntimeLimits.MAX_IMAGE_PIXELS, 25000000);
 });
 
 // ---- TokenUsage ----
@@ -180,4 +184,38 @@ test("ModelPricing.lookup total equals input + output, null for unknown", () => 
   assert.ok(p && p.total === p.input + p.output);
   assert.equal(ModelPricing.lookup("totally-unknown"), null);
   assert.equal(ModelPricing.lookup(""), null);
+});
+
+test("ModelPricing.setDynamic prefers exact dynamic price over bundled table", () => {
+  try {
+    ModelPricing.setDynamic({ "gpt-99.6": { input: 5, output: 30 }, "gpt-4o-mini": { input: 9, output: 9 } });
+    // 同梱表に無い新世代 (世代境界ガードで gpt-99 に落ちない ID) も動的価格で引ける
+    assert.equal(ModelPricing.lookup("gpt-99.6").total, 35);
+    // ベンダ接頭辞付き ID (OpenRouter 等) は末尾一致で引ける
+    assert.equal(ModelPricing.lookup("some-vendor/gpt-99.6").input, 5);
+    // 完全一致は同梱の部分一致より優先される (実勢価格が勝つ)
+    assert.equal(ModelPricing.lookup("gpt-4o-mini").input, 9);
+    // 動的に無いモデルは同梱表へフォールバック
+    assert.equal(ModelPricing.lookup("gpt-4o-2024-08-06").input, 2.50);
+    // 不正な価格 (数値でない) は無視して同梱表フォールバック
+    ModelPricing.setDynamic({ "gpt-4o-mini": { input: "x", output: null } });
+    assert.equal(ModelPricing.lookup("gpt-4o-mini").input, 0.15);
+  } finally {
+    ModelPricing.setDynamic(null); // 他テストへ漏らさない
+  }
+  // 動的なし → 従来どおり世代境界ガードで価格不明に倒れる
+  assert.equal(ModelPricing.lookup("gpt-99.6"), null);
+});
+
+test("ModelPricing.displayName returns official name from dynamic data, null otherwise", () => {
+  try {
+    ModelPricing.setDynamic({ "gpt-99.6-sol": { input: 5, output: 30, name: "GPT-99.6 Sol" }, "no-name": { input: 1, output: 2 } });
+    assert.equal(ModelPricing.displayName("gpt-99.6-sol"), "GPT-99.6 Sol");
+    assert.equal(ModelPricing.displayName("vendor/gpt-99.6-sol"), "GPT-99.6 Sol"); // ベンダ接頭辞は末尾一致
+    assert.equal(ModelPricing.displayName("no-name"), null);   // name 無しエントリは null (ID 表示に倒す)
+    assert.equal(ModelPricing.displayName("unknown"), null);
+  } finally {
+    ModelPricing.setDynamic(null);
+  }
+  assert.equal(ModelPricing.displayName("gpt-99.6-sol"), null); // 動的なしでも null
 });

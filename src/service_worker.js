@@ -182,19 +182,39 @@ if (typeof importScripts === "function") {
   }
 
   // ---- in-flight fetch 中断 (復元/再翻訳で無駄なネットワーク・課金枠を切る) ----
-  // タブ単位で進行中の AbortController を保持し、translatePage/restorePage 開始時に中断する。
-  const inflightByTab = new Map(); // tabId -> Set<AbortController>
-  function trackController(tabId, controller) {
+  // 操作種別ごとに AbortController を所有する。ページ再翻訳で画像OCRまで中断しないよう、
+  // page/image の cancellation group を分離し、restore/tab close だけが全 group を止める。
+  const inflightByTab = new Map(); // tabId -> Map<group, Set<AbortController>>
+  function trackController(tabId, controller, group = "page") {
     if (tabId == null) return () => {};
-    let set = inflightByTab.get(tabId);
-    if (!set) { set = new Set(); inflightByTab.set(tabId, set); }
+    let groups = inflightByTab.get(tabId);
+    if (!groups) { groups = new Map(); inflightByTab.set(tabId, groups); }
+    let set = groups.get(group);
+    if (!set) { set = new Set(); groups.set(group, set); }
     set.add(controller);
-    return () => { const s = inflightByTab.get(tabId); if (s) { s.delete(controller); if (!s.size) inflightByTab.delete(tabId); } };
+    return () => {
+      const current = inflightByTab.get(tabId);
+      const currentSet = current && current.get(group);
+      if (!currentSet) return;
+      currentSet.delete(controller);
+      if (!currentSet.size) current.delete(group);
+      if (!current.size) inflightByTab.delete(tabId);
+    };
   }
-  function abortTab(tabId) {
-    const set = inflightByTab.get(tabId);
+  function abortGroup(tabId, group) {
+    const groups = inflightByTab.get(tabId);
+    const set = groups && groups.get(group);
     if (!set) return;
     for (const c of set) { try { c.abort(); } catch (_e) { /* noop */ } }
+    groups.delete(group);
+    if (!groups.size) inflightByTab.delete(tabId);
+  }
+  function abortTab(tabId) {
+    const groups = inflightByTab.get(tabId);
+    if (!groups) return;
+    for (const set of groups.values()) {
+      for (const c of set) { try { c.abort(); } catch (_e) { /* noop */ } }
+    }
     inflightByTab.delete(tabId);
   }
 
@@ -209,11 +229,80 @@ if (typeof importScripts === "function") {
   // 確認する。await 中に restorePage (や別の translatePage) が世代を進めていたら送信を取り止める = stale な
   // 再翻訳を発生源で断つ。Map は tabId キーなので裏タブには一切干渉しない (今のタブだけ確実に意図どおりへ)。
   const tabGen = new Map(); // tabId -> number (translate/restore の最新意図の世代)
+  const pageSessions = new Map(); // tabId -> { id, settings } (1 page run = 1 immutable provider/key snapshot)
   function bumpTabGen(tabId) {
     if (tabId == null) return 0;
     const g = (tabGen.get(tabId) || 0) + 1;
     tabGen.set(tabId, g);
     return g;
+  }
+
+  // ---- provider/API-key 単位の中央バックプレッシャ ----
+  // content script の並列度は frame ごとに存在するため、ここで全 frame/tab を合算する。
+  // maxConcurrency 未指定の provider は content 側の既定値と同じ 24 を上限にする。
+  const providerQueues = new Map(); // provider+key -> { active, limit, waiters[] }
+  const DEFAULT_PROVIDER_CONCURRENCY = 24;
+  function providerLimit(providerId) {
+    const provider = Providers.get(providerId);
+    const cap = provider && Number(provider.maxConcurrency);
+    return (cap && cap > 0) ? cap : DEFAULT_PROVIDER_CONCURRENCY;
+  }
+  function providerQueueKey(settings) {
+    return `${settings.provider}:${keyFor(settings, settings.provider) || "__no_key__"}`;
+  }
+  function withProviderSlot(settings, signal, work) {
+    const key = providerQueueKey(settings);
+    let q = providerQueues.get(key);
+    if (!q) { q = { active: 0, limit: providerLimit(settings.provider), waiters: [] }; providerQueues.set(key, q); }
+    const take = () => {
+      q.active++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        q.active--;
+        pump();
+      };
+    };
+    const pump = () => {
+      while (q.active < q.limit && q.waiters.length) {
+        const waiter = q.waiters.shift();
+        if (waiter.cancelled) continue;
+        waiter.cleanup();
+        waiter.resolve(take());
+      }
+      if (!q.active && !q.waiters.length) providerQueues.delete(key);
+    };
+    return new Promise((resolve, reject) => {
+      const waiter = { cancelled: false, resolve, cleanup: () => {} };
+      const onAbort = () => {
+        waiter.cancelled = true;
+        waiter.cleanup();
+        reject({ ok: false, error: "aborted" });
+      };
+      waiter.cleanup = () => { if (signal) signal.removeEventListener("abort", onAbort); };
+      if (signal && signal.aborted) { onAbort(); return; }
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      if (q.active < q.limit) {
+        waiter.cleanup();
+        resolve(take());
+      } else {
+        q.waiters.push(waiter);
+      }
+    }).then(async (release) => {
+      try { return await work(); } finally { release(); }
+    });
+  }
+
+  // ページ翻訳は開始時の provider/model/key を固定し、content が auto 解決した言語だけを許可する。
+  // 設定変更中に batch ごとへ最新設定を混ぜると、1 run 内で課金先・認証情報が切り替わるため。
+  function resolvePageSessionSettings(incoming, session) {
+    if (!session || !session.settings) return null;
+    const base = session.settings;
+    return Object.assign({}, base, {
+      sourceLang: incoming && typeof incoming.sourceLang === "string" ? incoming.sourceLang : base.sourceLang,
+      targetLang: incoming && typeof incoming.targetLang === "string" ? incoming.targetLang : base.targetLang,
+    });
   }
 
   // ---- 翻訳代理 fetch (核心) ----
@@ -296,7 +385,8 @@ if (typeof importScripts === "function") {
   }
 
   // OpenAI 互換社を SSE ストリーミングで翻訳し、確定要素ごとに onPartial(index, text) を呼ぶ (早出し)。
-  // 戻り値: 非stream と同形の結果、stream 不可/通信失敗時は null (呼び出し側が非stream にフォールバック)。
+  // 戻り値: 非stream と同形の結果、stream 非対応時だけ null。送信後の通信失敗は配信結果不明として返し、
+  // 同じ論理batchを非streamで二重送信しない。
   // 翻訳の真実は蓄積した完全 JSON の extractTranslations。partial がズレても最終結果が確定し直す。
   async function translateBatchStream(settings, texts, signal, onPartial) {
     const providerId = settings.provider;
@@ -317,7 +407,7 @@ if (typeof importScripts === "function") {
       res = await fetch(req.url, { method: req.method, headers: req.headers, body: JSON.stringify(req.body), signal: withTimeout(signal) });
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      return null; // 通信失敗/タイムアウト → 非stream で再試行させる
+      return { ok: false, error: "network", ambiguous: true, provider: providerId };
     }
     if (!res.ok) {
       // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
@@ -480,20 +570,85 @@ if (typeof importScripts === "function") {
     // ※ "imagine"(xAI grok-imagine 等の生成) は "image" の部分文字列でないため別途列挙が必要。
     // ※ vision(画像入力チャット) は画像翻訳で使うので除外しない ("vision" は "image" にマッチしない)。
     const exclude = /embed|whisper|tts|transcribe|dall-e|image|imagine|audio|realtime|moderation|search|guard|video|veo|sora/i;
-    // 日付/版数が入った ID (例 -2024-08-06 / -20241022 / -0709) は除外し、エイリアス (latest 等) を優先。
-    // ただし Anthropic は日付入り ID しか配信しないため除外せず、後段の normalizeModelList でエイリアス化+重複排除する。
+    // "latest" はローリングエイリアス (gpt-*-chat-latest / gemini-flash-latest 等)。中身が予告なく差し替わり
+    // 翻訳の挙動一貫性が保てないため、無日付の公開版 ID (gpt-5.6-sol / gemini-2.5-flash 等) に寄せて一覧から外す。
+    const rolling = /latest/i;
+    // 日付/版数が入った ID (例 -2024-08-06 / -20241022 / -0709) も除外し、無日付の公開版 ID に寄せる。
+    // ただし Anthropic は日付入りスナップショット ID しか配信しないため dated/rolling とも除外せず、
+    // 後段の normalizeModelList (anthropicAlias) が -latest/-日付 を剥がしてエイリアス化+重複排除する。
     const dated = /\d{4}-\d{2}-\d{2}|\d{6,}|[-_]\d{4}$/;
     return models.filter((m) =>
       m && m.id &&
       (!include || include.test(m.id)) &&
       !exclude.test(m.id) &&
-      (providerId === "anthropic" || !dated.test(m.id)));
+      (providerId === "anthropic" || (!dated.test(m.id) && !rolling.test(m.id))));
   }
+  // ---- 動的価格の取得 (models.dev) ----
+  // 同梱 model-pricing.js の TABLE は新モデルが出るたびに手更新が要る (更新漏れ = pickPriced が新モデルを
+  // 一覧から隠す)。models.dev (オープンソースのモデルカタログ・全対象社を収録) の api.json から実勢価格を
+  // 取得して ModelPricing.setDynamic へ流し込み、同梱表は取得失敗/未収録時のフォールバックに落とす。
+  // 通信はモデル一覧の force 取得時のみ + PRICING_TTL_MS で抑制 (数MB 級 JSON を毎回引かない)。
+  const PRICING_URL = "https://models.dev/api.json";
+  const PRICING_TTL_MS = 60 * 60 * 1000; // 1h: force 連打 (キー blur 保存の連続等) での再取得を抑える
+  const PRICING_VERSION = 3; // 抽出フォーマットの世代 (3 = name の "(latest)" 除去)。旧世代キャッシュは TTL 内でも再取得する
+  // 拡張の providerId → models.dev のプロバイダキー (fugu は変動価格で意図的に未収録・mymemory は無料)
+  const PRICING_PROVIDERS = { openai: "openai", anthropic: "anthropic", gemini: "google", xai: "xai", deepseek: "deepseek", groq: "groq", openrouter: "openrouter" };
+  let pricingLoaded = false;    // storage キャッシュを ModelPricing へ反映済みか (SW 起動ごとに 1 回)
+  let pricingRefreshing = null; // 並行 force を 1 本の fetch に集約
+  function extractPricing(json) {
+    const map = {};
+    for (const key of Object.values(PRICING_PROVIDERS)) {
+      const models = json && json[key] && json[key].models;
+      if (!models) continue;
+      for (const id of Object.keys(models)) {
+        const c = models[id] && models[id].cost;
+        if (!c) continue;
+        const input = Number(c.input), output = Number(c.output);
+        if (!Number.isFinite(input) || !Number.isFinite(output)) continue;
+        const lower = id.toLowerCase();
+        const entry = { input, output };
+        // 公式表示名 ("GPT-5.6 Sol" 等) も持ち帰り、popup のモデル一覧で生 ID の代わりに出す。
+        // "(latest)" 装飾は剥がす (Anthropic のエイリアス ID に付く。一覧の表記を公開版と揃える)
+        if (typeof models[id].name === "string" && models[id].name) {
+          entry.name = models[id].name.replace(/\s*\(latest\)\s*$/i, "");
+        }
+        map[lower] = entry;
+        // ベンダ接頭辞付き ID (openrouter の "google/gemini-…" 等) は末尾でも引けるようにする
+        const slash = lower.lastIndexOf("/");
+        if (slash >= 0 && !map[lower.slice(slash + 1)]) map[lower.slice(slash + 1)] = entry;
+      }
+    }
+    return map;
+  }
+  async function ensurePricing(force) {
+    const cached = (await chrome.storage.local.get(StorageKeys.PRICING_CACHE))[StorageKeys.PRICING_CACHE];
+    if (!pricingLoaded) {
+      pricingLoaded = true;
+      if (cached && cached.map) ModelPricing.setDynamic(cached.map); // SW 再起動でもキャッシュ価格で即動く
+    }
+    if (!force) return;
+    if (cached && cached.v === PRICING_VERSION && cached.fetchedAt && (Date.now() - cached.fetchedAt) < PRICING_TTL_MS) return;
+    if (pricingRefreshing) { await pricingRefreshing; return; }
+    pricingRefreshing = (async () => {
+      try {
+        const res = await fetch(PRICING_URL, { signal: withTimeout() });
+        if (!res.ok) return;
+        const map = extractPricing(await res.json());
+        if (!Object.keys(map).length) return; // 形式変化等で空になったら既存キャッシュ/同梱表を保持 (壊さない)
+        ModelPricing.setDynamic(map);
+        await chrome.storage.local.set({ [StorageKeys.PRICING_CACHE]: { map, fetchedAt: Date.now(), v: PRICING_VERSION } });
+      } catch (_e) { /* 取得失敗は同梱表フォールバックで続行 (モデル一覧表示を止めない) */ }
+      finally { pricingRefreshing = null; }
+    })();
+    await pricingRefreshing;
+  }
+
   // 価格ゲージを出せる (model-pricing に載っている) モデルだけを {id, price} 配列にして残す。
   // ユーザーはコスト比較できない "—" モデルを選びようがないので一覧から除く。
   // ただし 1 件も価格が付かないときは全件 (price:null 込み) を返す = 空一覧で詰むのを防ぐ保険。
   function pickPriced(ids) {
-    const all = ids.map((id) => ({ id, price: ModelPricing.lookup(id) }));
+    // name は models.dev の公式表示名 (無ければ popup が ID 表示に倒す。undefined は storage 保存時に落ちる)
+    const all = ids.map((id) => ({ id, price: ModelPricing.lookup(id), name: ModelPricing.displayName(id) || undefined }));
     const priced = all.filter((m) => m.price);
     return priced.length ? priced : all;
   }
@@ -562,6 +717,8 @@ if (typeof importScripts === "function") {
     if (!provider || provider.batch === false) return { ok: true, models: [] };
     const settings = await getSettings();
     const apiKey = keyFor(settings, providerId);
+    // 価格を pickPriced が引く前に動的価格を用意する (force 時のみ通信・それ以外は storage キャッシュ反映のみ)
+    await ensurePricing(Boolean(force));
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     const cached = cacheAll[providerId];
     // 静的な既定モデルを価格付きで返すフォールバック (価格ゲージを出せるものだけ)
@@ -593,6 +750,45 @@ if (typeof importScripts === "function") {
       bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
     return btoa(bin);
+  }
+
+  // 代表的な画像形式のヘッダだけを読む。decoderへ渡す前にpixel数を検査するため、圧縮byte数とは別の上限を持つ。
+  function readImageDimensions(bytes, mime) {
+    if (!bytes || bytes.length < 10) return null;
+    if (mime === "image/png" && bytes.length >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50) {
+      const u32 = (i) => (((bytes[i] * 0x100 + bytes[i + 1]) * 0x100 + bytes[i + 2]) * 0x100 + bytes[i + 3]);
+      return { width: u32(16), height: u32(20) };
+    }
+    if (mime === "image/gif" && bytes[0] === 0x47 && bytes[1] === 0x49) {
+      return { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
+    }
+    if (mime === "image/webp" && bytes.length >= 30 && bytes[0] === 0x52 && bytes[8] === 0x57) {
+      const type = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+      if (type === "VP8X") {
+        const w = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
+        const h = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
+        return { width: w, height: h };
+      }
+    }
+    if (mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < bytes.length) {
+        if (bytes[i] !== 0xff) { i++; continue; }
+        const marker = bytes[i + 1];
+        i += 2;
+        if (marker === 0xd8 || marker === 0xd9) continue;
+        if (i + 1 >= bytes.length) break;
+        const size = (bytes[i] << 8) | bytes[i + 1];
+        if (size < 2 || i + size > bytes.length) break;
+        const isSof = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) ||
+          (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
+        if (isSof && i + 7 < bytes.length) {
+          return { height: (bytes[i + 3] << 8) | bytes[i + 4], width: (bytes[i + 5] << 8) | bytes[i + 6] };
+        }
+        i += size;
+      }
+    }
+    return null;
   }
 
   // IPv4 がループバック/プライベート/リンクローカル/CGNAT かどうか (先頭2オクテットで判定)
@@ -743,6 +939,10 @@ if (typeof importScripts === "function") {
       } else {
         return { ok: false, error: "not_image", mime: ctype };
       }
+      const dims = readImageDimensions(bytes, mime);
+      if (dims && imageDimensionsTooLarge(dims.width, dims.height)) {
+        return { ok: false, error: "image_too_large", width: dims.width, height: dims.height };
+      }
       return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
@@ -821,6 +1021,12 @@ if (typeof importScripts === "function") {
     return { ok: true, blocks, image: { base64: b64, mime } };
   }
 
+  function imageDimensionsTooLarge(width, height) {
+    const w = Number(width), h = Number(height);
+    const max = (globalThis.RuntimeLimits && RuntimeLimits.MAX_IMAGE_PIXELS) || 25000000;
+    return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 && w * h > max;
+  }
+
   // ---- ページ翻訳/復元の指示 ----
   // 全フレームに注入する (右サイドパネル等が iframe のときも翻訳されるように)。
   // 各フレームの translator は文字数の少ない枠(広告等)を自前のしきい値で除外する。
@@ -839,17 +1045,19 @@ if (typeof importScripts === "function") {
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId) {
     const myGen = bumpTabGen(tabId); // この翻訳指示の世代を採番 (await 中に restore が割り込んだら陳腐化する)
-    abortTab(tabId); // 再翻訳: このタブの前回の in-flight fetch を中断 (古い設定の無駄リクエストを切る)
+    abortGroup(tabId, "page"); // 再翻訳: 前回のページfetchだけ中断 (手動画像OCRは継続)
     resetFrameProgress(tabId); // フレーム横断の進捗集約をリセット (watchdog も解除・新しい翻訳セッション)
     // FAB/右クリック/自動は popup の pendingSave を待てないため、進行中の APPLY_SETTINGS 保存を待ってから読む。
     // 設定変更直後に翻訳開始しても、ページ全体が旧 provider/旧言語で走り出すのを防ぐ。
     await settingsWriteChain;
     const settings = await getSettings();
+    pageSessions.set(tabId, { id: myGen, settings });
     try {
       await injectTranslator(tabId);
     } catch (_e) {
       // chrome:// / Web Store / PDF ビューア等の注入不可ページ。restorePage と同じく経路を局所化し、汎用 exception
       // ではなく専用エラーで返す (popup は !ok を一律 "Error" 表示するので UX は同値、将来の個別文言にも備える)。
+      pageSessions.delete(tabId);
       return { ok: false, error: "not_injectable" };
     }
     // injectTranslator の await 中に restorePage (OFF) や別の翻訳指示が世代を進めていたら、この APPLY_TRANSLATE_CS は
@@ -857,13 +1065,18 @@ if (typeof importScripts === "function") {
     // popup の「翻訳」ボタンが !ok を Error 表示するのを避ける (ユーザー意図は最新の restore/別翻訳が表現する)。
     if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
     // content には API キーを渡さない (publicSettings で除去)。キーは TRANSLATE_BATCH 受信時に bg 側で引く。
-    await chrome.tabs.sendMessage(tabId, { action: Actions.APPLY_TRANSLATE_CS, settings: publicSettings(settings) });
+    await chrome.tabs.sendMessage(tabId, {
+      action: Actions.APPLY_TRANSLATE_CS,
+      settings: publicSettings(settings),
+      sessionId: myGen,
+    });
     return { ok: true };
   }
 
   async function restorePage(tabId) {
     bumpTabGen(tabId); // 世代を進める。await 中の translatePage の myGen を陳腐化させ、後発の APPLY_TRANSLATE_CS を止める
     abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
+    pageSessions.delete(tabId);
     // 集約状態を直接リセットする (translatePage と対称化)。通常は translator の "restored" 通知が reset を促すが、
     // フレームが context 失効/離脱して "restored" を返せないと st.errored/loading が残置する。ここで直接リセットすれば
     // 「翻訳が loading に張り付いた → FAB クリックで復元」が確実に状態を解除できる手動脱出になる。
@@ -883,11 +1096,42 @@ if (typeof importScripts === "function") {
   // グローバル done を発行する。小さい iframe / 子フレームが先に done で UI が早期確定するのを防ぐ。
   const frameProgress = new Map(); // tabId -> { active:Set<frameId>, done:Set<frameId>, timer:id|null }
   const FRAME_DONE_GRACE_MS = 8000; // 一部フレーム done 後、残りがこの時間応答しなければ離脱とみなし done を発行
-  // 直近の翻訳エラーをタブ単位で状態化する。error は揮発イベントで、自動翻訳/FAB はエラー後に popup を
-  // 開かないと理由が分からない。GET_STATE で直近エラーを返し、後から popup を開いても原因 (キー無効/quota 等)
-  // を出せるようにする (新セッション開始/復元で resetFrameProgress がクリア)。
+  // 直近の翻訳エラーをタブ単位で状態化する。自動翻訳/FAB はエラー後に popup を開かないと理由が分からないため、
+  // メモリに加えて短期の storage.session にも保存し、SW休止後でもTTL内なら原因 (キー無効/quota 等) を出せるようにする。
   const lastErrorByTab = new Map(); // tabId -> { detail, ts }
   const LAST_ERROR_TTL_MS = 90000;  // この時間内に開いた popup にだけ直近エラーを見せる (古いエラーの誤表示を防ぐ)
+  const LAST_ERROR_STORAGE_PREFIX = "lastError:";
+  function lastErrorStorageKey(tabId) { return LAST_ERROR_STORAGE_PREFIX + String(tabId); }
+  async function persistLastError(tabId, detail) {
+    try {
+      if (chrome.storage.session) {
+        await chrome.storage.session.set({ [lastErrorStorageKey(tabId)]: { detail, ts: Date.now() } });
+      }
+    } catch (_e) { /* session storage 非対応環境ではメモリ表示だけ継続 */ }
+  }
+  async function clearPersistedLastError(tabId) {
+    try {
+      if (chrome.storage.session) await chrome.storage.session.remove(lastErrorStorageKey(tabId));
+    } catch (_e) { /* noop */ }
+  }
+  async function getLastError(tabId) {
+    if (tabId == null) return null;
+    const now = Date.now();
+    const inMem = lastErrorByTab.get(tabId);
+    if (inMem && now - inMem.ts < LAST_ERROR_TTL_MS) return inMem.detail;
+    if (inMem) lastErrorByTab.delete(tabId);
+    try {
+      if (!chrome.storage.session) return null;
+      const data = await chrome.storage.session.get(lastErrorStorageKey(tabId));
+      const saved = data && data[lastErrorStorageKey(tabId)];
+      if (saved && now - saved.ts < LAST_ERROR_TTL_MS) {
+        lastErrorByTab.set(tabId, saved);
+        return saved.detail;
+      }
+      if (saved) await clearPersistedLastError(tabId);
+    } catch (_e) { /* noop */ }
+    return null;
+  }
   function relayProgress(tabId, msg) {
     chrome.tabs.sendMessage(tabId, msg).catch(() => { /* 受信端が無ければ無視 */ }); // FAB (content top frame)
     // popup が閉じていると runtime.sendMessage は「Receiving end does not exist」で非同期に reject する。
@@ -903,6 +1147,7 @@ if (typeof importScripts === "function") {
     clearFrameTimer(frameProgress.get(tabId));
     frameProgress.delete(tabId);
     lastErrorByTab.delete(tabId); // 新セッション開始/復元で直近エラーをクリア (古い理由が残らないように)
+    void clearPersistedLastError(tabId);
   }
   function handleFrameProgress(tabId, frameId, msg) {
     let st = frameProgress.get(tabId);
@@ -912,6 +1157,7 @@ if (typeof importScripts === "function") {
     if (msg.state === "error") {
       st.errored = true; clearFrameTimer(st);
       lastErrorByTab.set(tabId, { detail: msg.detail, ts: Date.now() }); // 後から popup を開いても理由を出せるよう状態化
+      void persistLastError(tabId, msg.detail);
       relayProgress(tabId, msg); return;
     }
     if (st.errored && msg.state !== "restored") return; // 終端後は restore 以外を中継しない
@@ -930,11 +1176,16 @@ if (typeof importScripts === "function") {
         if ([...st.active].every((f) => st.done.has(f))) {
           relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(st.partial) })); // 全参加フレーム完了
         } else {
-          // 未完フレームが残る。iframe の離脱/ナビゲーションで永久に done が来ず FAB/popup が loading に
-          // 張り付くのを防ぐため watchdog を張る (猶予後に done を発行)。
+          // 未完フレームが残る。iframe の離脱/ナビゲーションで永久に loading へ張り付くのを防ぐが、
+          // 生存中の遅いframeを「完全done」と偽装しない。猶予後は pending_frames 付き partial として通知する。
           st.timer = setTimeout(() => {
             const cur = frameProgress.get(tabId);
-            if (cur) { cur.timer = null; relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(cur.partial) })); }
+            if (cur) {
+              cur.timer = null;
+              cur.partial = true;
+              const pendingFrames = [...cur.active].filter((f) => !cur.done.has(f));
+              relayProgress(tabId, Object.assign({}, msg, { partial: true, pendingFrames }));
+            }
           }, FRAME_DONE_GRACE_MS);
         }
         break;
@@ -953,7 +1204,7 @@ if (typeof importScripts === "function") {
   }
   // タブが閉じたら集約状態と in-flight を後始末する (離脱フレーム/タブの取り残し防止)
   try {
-    chrome.tabs.onRemoved.addListener((tabId) => { resetFrameProgress(tabId); abortTab(tabId); tabGen.delete(tabId); });
+    chrome.tabs.onRemoved.addListener((tabId) => { resetFrameProgress(tabId); abortTab(tabId); tabGen.delete(tabId); pageSessions.delete(tabId); lastErrorByTab.delete(tabId); });
   } catch (_e) { /* noop */ }
 
   // ---- メッセージディスパッチ ----
@@ -1044,7 +1295,7 @@ if (typeof importScripts === "function") {
         }
       });
     }
-    if (!res) res = await translateBatch(settings, texts, signal, { tune: !quick }); // stream 非対応/失敗は非stream へ。quick は学習しない
+    if (!res) res = await translateBatch(settings, texts, signal, { tune: !quick }); // stream 非対応レスポンスだけ非streamへ
     return res;
   }
 
@@ -1066,33 +1317,65 @@ if (typeof importScripts === "function") {
           }
           case Actions.TRANSLATE_BATCH: {
             const stored = await getSettingsCached();
-            let settings = resolveSettings(msg.settings, stored); // apiKeys は bg 保管値で上書き (キー漏洩防止)
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
+            const session = (!msg.quick && msg.sessionId != null && tabId != null)
+              ? pageSessions.get(tabId)
+              : null;
+            let settings;
+            if (!msg.quick) {
+              if (!session || msg.sessionId == null || session.id !== msg.sessionId) {
+                sendResponse({ ok: false, error: "stale_session" });
+                break;
+              }
+              settings = resolvePageSessionSettings(msg.settings, session);
+            } else {
+              settings = resolveSettings(msg.settings, stored); // quick等は最新設定を使う
+            }
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録する。ただし quick
             // (popup クイック翻訳 / 選択テキスト翻訳) は短い単発で、ページの復元/再翻訳 (abortTab) に
             // 巻き込んで中断させたくないため abort グループに登録しない (content 側は reqId ガードで stale 応答を捨てる)。
             const controller = new AbortController();
-            const untrack = msg.quick ? () => {} : trackController(tabId, controller);
+            const untrack = msg.quick ? () => {} : trackController(tabId, controller, "page");
             try {
               const texts = msg.texts || [];
               // 廃止モデルの 404 は translateWithHeal が同プロバイダの現行モデルへ自動フォールバック + 1 回再試行する
               // (静的 RETIRED に依存せず未知の廃止も自己修復。キャッシュ先回りで 2 バッチ目以降の無駄な 404 も出さない)。
-              const res = await translateWithHeal(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick);
+              let res;
+              try {
+                res = await withProviderSlot(settings, controller.signal, () =>
+                  translateWithHeal(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick)
+                );
+              } catch (e) {
+                res = (e && e.error) ? e : { ok: false, error: "aborted" };
+              }
               sendResponse(res);
             } finally { untrack(); }
             break;
           }
           case Actions.TRANSLATE_IMAGE: {
+            if (imageDimensionsTooLarge(msg.imageWidth, msg.imageHeight)) {
+              sendResponse({ ok: false, error: "image_too_large" });
+              break;
+            }
             // ページから直接来る (popup の pendingSave を待てない) ため、進行中の APPLY_SETTINGS 保存を待ってから
             // 設定を読む。target/provider を変えて即ホバー翻訳しても、初回が旧 provider/旧言語で実行されるのを防ぐ。
             await settingsWriteChain;
             const stored = await getSettingsCached();
             const settings = resolveSettings(msg.settings, stored);
             const controller = new AbortController();
-            const untrack = trackController(sender.tab && sender.tab.id, controller);
+            const imageTabId = sender.tab && sender.tab.id;
+            const untrack = trackController(imageTabId, controller, "image");
             try {
-              sendResponse(await translateImage(settings, msg.imageUrl, controller.signal));
+              let res;
+              try {
+                res = await withProviderSlot(settings, controller.signal, () =>
+                  translateImage(settings, msg.imageUrl, controller.signal)
+                );
+              } catch (e) {
+                res = (e && e.error) ? e : { ok: false, error: "aborted" };
+              }
+              sendResponse(res);
             } finally { untrack(); }
             break;
           }
@@ -1121,11 +1404,12 @@ if (typeof importScripts === "function") {
           }
           case Actions.GET_STATE: {
             // popup が自タブの直近エラーを再表示できるよう、TTL 内の last-error も返す
-            // (自動翻訳/FAB はエラー後に popup を開かず、揮発イベントを逃すため)。
+            // (自動翻訳/FAB はエラー後に popup を開かず、即時イベントを逃すため)。
             const errTab = msg.tabId;
-            const le = (errTab != null) ? lastErrorByTab.get(errTab) : null;
-            const lastError = (le && (Date.now() - le.ts) < LAST_ERROR_TTL_MS) ? le.detail : null;
-            sendResponse({ ok: true, settings: await getSettings(), lastError });
+            const lastError = await getLastError(errTab);
+            const stateSettings = await getSettings();
+            // content scriptには公開設定だけを返す。APIキーを含む全設定は拡張ページ専用にする。
+            sendResponse({ ok: true, settings: sender && sender.tab ? publicSettings(stateSettings) : stateSettings, lastError });
             break;
           }
           case Actions.GET_MODELS: {
