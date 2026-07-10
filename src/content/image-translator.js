@@ -115,7 +115,18 @@
   // document.elementsFromPoint はシャドウホストしか返さず tagName === "VIDEO" では検出できない。
   // ShadowRoot.elementsFromPoint (Chrome/Firefox 対応) でカーソル位置の内側スタックだけを再帰確認する
   // (querySelector 全走査だと mouseover 毎に重く、video を含む大きなコンポーネント全面をブロックしてしまう)。
+  // 要素が視覚上見えているか (透明プリロード動画対策)。サイトはホバー再生用 video を opacity:0 で
+  // サムネの上に重ねることがあり、ヒットテストには乗るが実際に見えているのはサムネ。
+  // display:none はヒットテストに乗らないので、visibility と自身の computed opacity だけ見れば足りる。
+  function isShown(el) {
+    try {
+      const s = el.ownerDocument.defaultView.getComputedStyle(el);
+      return s.visibility !== "hidden" && parseFloat(s.opacity) >= 0.1;
+    } catch (_e) { return true; }
+  }
+
   function coversVideo(el, x, y) {
+    if (!isShown(el)) return false;                     // 透明レイヤーは動画ごと無視して奥のサムネを生かす
     if (el.tagName === "VIDEO") return true;
     const root = el.shadowRoot;
     if (!root || typeof root.elementsFromPoint !== "function") return false;
@@ -146,7 +157,13 @@
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
     const img = imgAtPoint(e);
-    if (!img) return;
+    if (!img) {
+      // 表示中のボタンは隠す: 対象画像の矩形内でも動画等に覆われた位置では残さない (onMouseOut は
+      // 矩形内判定でボタンを保持するため、ここで消さないと動画の上にボタンが残る)。ボタン自身の
+      // ホバーは冒頭の e.target === btn で return 済みなので誤って消えない。
+      if (btn) btn.style.display = "none";
+      return;
+    }
     // 画像翻訳に未対応のプロバイダ (vision 無し = xai/deepseek/mymemory 等) を選択中は「訳」ボタンを出さない
     // (クリックしても no_vision になるだけなので無意味な操作を見せない)。ただし既に翻訳済みの画像は「原(戻す)」を
     // 出して元に戻せるようにする (翻訳した後にプロバイダを非対応へ切り替えたケースで取り残さない)。
