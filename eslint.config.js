@@ -14,6 +14,8 @@ const ACTIONS_GLOBALS = {
   // src/lib/*.js が globalThis に公開する定数。
   // 新規 globalThis 公開を追加したら本リストにも追加すること。
   Actions: "readonly",          // src/lib/actions.js — メッセージアクション定数
+  ExtUtil: "readonly",          // src/lib/actions.js — 共有小物 (tr / contextAlive)
+  RuntimeLimits: "readonly",    // src/lib/actions.js — decoder前の入力上限
   SettingsSchema: "readonly",   // src/lib/actions.js — 設定スキーマ + normalize
   StorageKeys: "readonly",      // src/lib/actions.js — storage キー
   Providers: "readonly",        // src/lib/actions.js — プロバイダ定義 (id/label/endpoint/model)

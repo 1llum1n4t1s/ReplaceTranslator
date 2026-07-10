@@ -31,9 +31,7 @@
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
-  function contextAlive() {
-    try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
-  }
+  const contextAlive = ExtUtil.contextAlive; // actions.js の共有実装
   // context 失効時などに、登録リスナーを解除し btn 除去・state クリアして、これ以上 chrome API / DOM を
   // 触らないよう静かに停止する。各操作は try/catch で例外を吸収する (translator.js の shutdown と同パターン)。
   function shutdown() {
@@ -51,9 +49,8 @@
     target = null;
   }
 
-  const tr = (k, f) => {
-    try { return (chrome.i18n && chrome.i18n.getMessage(k)) || f; } catch (_e) { return f; }
-  };
+  const tr = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
+  const MAX_IMAGE_PIXELS = (globalThis.RuntimeLimits && RuntimeLimits.MAX_IMAGE_PIXELS) || 25000000;
 
   function eligible(el) {
     if (!el || el.tagName !== "IMG") return false;
@@ -76,6 +73,15 @@
     btn.textContent = on ? "原" : "訳";
     btn.title = on ? tr("imgRevert", "画像の翻訳を消して元に戻す") : tr("imgBtn", "画像内のテキストを翻訳");
     btn.classList.toggle("__rt-img-btn-on", on);
+  }
+
+  function showImageError(error) {
+    if (!btn) return;
+    btn.title = imgErrorText({ error });
+    btn.textContent = "×";
+    window.setTimeout(() => {
+      if (btn) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+    }, 4000);
   }
 
   function ensureBtn() {
@@ -758,6 +764,7 @@
   function isStaleImg(guard, img) {
     if (!guard) return false;
     if (typeof guard.myRun === "number" && guard.myRun !== imgRunId) return true;
+    if (typeof guard.requestId === "number" && imageRequestIds.get(img) !== guard.requestId) return true;
     if (!img || !img.isConnected) return true;
     if (guard.url && (img.currentSrc || img.src) !== guard.url) return true;
     return false;
@@ -942,18 +949,34 @@
     }
   }
 
+  let imgRunId = 0; // 画像翻訳の全体世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
+  let imageRequestSeq = 0;
+  const imageRequestIds = new WeakMap(); // img -> 最新の個別OCR要求
+
+  function invalidateImageRequest(img) {
+    if (img) imageRequestIds.set(img, ++imageRequestSeq);
+  }
+
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
+    const width = Number(img.naturalWidth) || 0;
+    const height = Number(img.naturalHeight) || 0;
+    if (width > 0 && height > 0 && width * height > MAX_IMAGE_PIXELS) {
+      showImageError("image_too_large");
+      return;
+    }
     const myRun = imgRunId; // 復元後に届いた遅延応答を描かないための世代チェック
+    const requestId = ++imageRequestSeq;
+    imageRequestIds.set(img, requestId);
     if (btn) btn.textContent = "…";
     try {
-      chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
+      chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url, imageWidth: width, imageHeight: height }, (res) => {
         if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
         if (!contextAlive()) { shutdown(); return; } // 応答到着時に失効していたら DOM を触らず停止
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
-        if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
+        if (myRun !== imgRunId || imageRequestIds.get(img) !== requestId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
         // 切り分けログ (localStorage __rt_debug=1 のときだけ): vision が読んだ原文(orig)と訳文(trans)を出す。
         // orig が既に崩れていれば vision の読み取り段、orig 正常で trans 崩れなら翻訳段、と一目で確定できる。
         if (res && res.ok && Array.isArray(res.blocks)) {
@@ -976,8 +999,8 @@
         const blocks = (res && res.ok) ? filterBlocks(res.blocks) : []; // ロゴ/ブランド語の重畳を除外
         if (blocks.length) {
           // canvas inpaint (背景色 fill で原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
-          renderTranslated(img, blocks, res.image, { myRun, url })
-            .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
+          renderTranslated(img, blocks, res.image, { myRun, url, requestId })
+            .then(() => { if (myRun === imgRunId && imageRequestIds.get(img) === requestId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
             .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
         } else if (btn) {
           // 「×」表示。res.ok だが空 = 翻訳対象テキスト無し/全ロゴ(正常)。res.ok===false = 失敗。
@@ -993,8 +1016,6 @@
       });
     } catch (_e) { if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
   }
-
-  let imgRunId = 0; // 画像翻訳の世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
 
   // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)。
   function restorePrevStyle(el) {
@@ -1021,6 +1042,7 @@
   // ホバーボタンの「原」で、その 1 枚だけオーバーレイを消して原文に戻す (ページ全体の復元とは独立)。
   function revertImg(img) {
     const wrap = img && img.closest(".__rt-img-wrap"); // <picture> ネストでも wrap を辿れる
+    invalidateImageRequest(img); // その画像だけ、遅れて届くOCR結果を無効化する
     if (wrap) unwrapImage(wrap);
     setBtnMode(img); // ボタンを「訳」に戻す (続けて再翻訳できる)
   }

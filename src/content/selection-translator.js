@@ -36,12 +36,8 @@
   let posRaf = 0;          // scroll/resize 再配置の rAF coalesce
   let lastSelRoot = null;  // 直近に選択が見つかった shadow root (scroll 連打での再走査を避けるキャッシュ)
 
-  function contextAlive() {
-    try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
-  }
-  function tr(key, fallback) {
-    try { const m = chrome.i18n && chrome.i18n.getMessage(key); return m || fallback; } catch (_e) { return fallback; }
-  }
+  const contextAlive = ExtUtil.contextAlive; // 拡張 context 生存判定 (actions.js の共有実装)
+  const tr = ExtUtil.tr;                     // i18n 取得 (同上)
 
   // 翻訳失敗の理由を i18n に展開する (popup の errorText / fab の errSummary と同じキーを再利用)。
   // 全 SW error 種別を網羅する: 漏れがあると generic「エラー」に倒れて原因が分からなくなる
