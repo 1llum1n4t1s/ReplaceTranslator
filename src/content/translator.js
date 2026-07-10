@@ -58,6 +58,7 @@
   let lastHref = "";                    // SPA ナビゲーション検知用 (location.href の変化を見る)
   let translating = false;              // 翻訳 ON 状態
   let runId = 0;                        // 翻訳セッション ID (復元/再開で中断判定)
+  let sessionId = null;                 // background が固定した page-run の設定スナップショット ID
   let settings = null;
   let io = null;                        // IntersectionObserver (ビューポート優先)
   let mo = null;                        // MutationObserver (動的追加)
@@ -69,6 +70,7 @@
   let flushTimer = null;
   let pendingAttrRoots = new Set();     // 可視性に効く属性変化があった要素 (デバウンスして再 ingest する対象)
   let attrTimer = null;                 // 属性駆動の再 ingest デバウンスタイマー
+  let lastAttrFullScan = 0;
   let reingestTimers = [];              // scheduleReingest の遅延再走査タイマー群 (多重起動を畳む/停止時に解除)
   let flushing = false;                 // flush 走行中フラグ (同時多発を直列化して 429 を抑える)
   let firstFlush = true;                // 初回 flush は即時(最初の訳を早く出す)、以降デバウンス
@@ -80,13 +82,20 @@
   let batchSeq = 0;                     // TRANSLATE_BATCH 連番 (streaming の partial を batchId で紐付ける)
   const pendingBatches = new Map();     // batchId → batch ({node,text}[])。TRANSLATE_PARTIAL の逐次適用に使う
   const queue = [];                     // 翻訳待ち {node, text}
+  let queuedNodes = new WeakSet();      // 同じノードをin-flight前に重複キューへ積まない
+  let pageTextCount = 0;
+  let pageCharCount = 0;
   const INCOMPLETE_REQUEUE_MAX = 2;     // stream 出力切れ(incomplete)で未訳のまま残ったノードを再キューする上限 (無限ループ防止)
 
   // 初回翻訳 / SPA 遷移のあと、コンテンツが段階的に描画されるのを待って全体を取り込み直す遅延(ms)。
   // qiankun 等の micro-frontend や非同期チャートは初回 ingest 時に 0-height で、可視内で高さが付いても IO は
   // 発火しない (スクロールしないと訳されない)。描画完了後に再走査して「高さの付いたブロック」を near として拾う。
   // 旧 [350,1200] は遅いダッシュボードの描画(2〜4s+)に間に合わず "翻訳済みなのに英語のまま" になっていた。
-  const REINGEST_DELAYS = [350, 1200, 2500, 4500, 7500, 12000];
+  const REINGEST_DELAYS = [350, 1200, 2500];
+  // 1 page run の入力予算。スクロール追従は維持しつつ、悪意ある大量DOMで無制限に課金しない。
+  const PAGE_MAX_TEXTS = 5000;
+  const PAGE_MAX_CHARS = 500000;
+  const PAGE_MAX_SINGLE_CHARS = 20000;
   // ResizeObserver で同時追跡する 0×0 block の上限。仮想化リスト等で 0×0 placeholder が大量生成されても
   // RO 監視(と強参照)が無制限に増えないようにする保険。超過分は io.observe + スクロールの IO 発火に委ねる。
   const ZEROSIZE_CAP = 400;
@@ -202,11 +211,20 @@
   // root 配下の翻訳対象テキストノードを集める。
   // TreeWalker は Shadow DOM を貫通しないので、開いた shadowRoot を辿る DFS で実装する
   // (Immersive 同様に Web コンポーネント内のテキストも翻訳対象にする)。子は document 順で積む。
+  // collectNodes の病的ガード: 通常ページでは到達しない大きさに置く (受理テキスト 5 万 / 走査 30 万ノード)。
+  // 旧 PAGE_MAX_TEXTS(5000) での打ち切りは超過分が io.observe に載らず「完了なのに下半分が原文」の無言欠落
+  // になるため撤去したが、無制限だと仮想化なしの超巨大 DOM で DFS + ingest(ブロック毎の rect 読み=reflow) が
+  // メインスレッドを分単位で塞ぎ、REINGEST/属性再走査の繰り返しでページが応答停止に見える。上限到達は
+  // droppedTransient に数えて done(partial) で正直に報告する (通常予算は従来どおり enqueue 側の PAGE_MAX_*)。
+  const COLLECT_MAX_TEXTS = 50000;
+  const COLLECT_MAX_VISITS = 300000;
   function collectNodes(root) {
     const out = [];
     if (!root) return out;
     const stack = [root];
+    let visited = 0;
     while (stack.length) {
+      if (out.length >= COLLECT_MAX_TEXTS || ++visited > COLLECT_MAX_VISITS) { droppedTransient++; break; }
       const node = stack.pop();
       const t = node.nodeType;
       if (t === 3) { if (accept(node)) out.push(node); continue; }       // テキスト
@@ -274,7 +292,7 @@
       if (observedBlocks.has(block)) {
         // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外1: 初回 0×0 で observe した block は
         // 高さが付いて near 化したか毎回再評価する(0×0→サイズ付与の in-viewport 遷移は IO が発火しないことが
-        // あるため)。例外2: fullRecheck (scheduleReingest の定期再走査・350〜12000ms に最大6回) 時は、
+        // あるため)。例外2: fullRecheck (scheduleReingest の定期再走査・350〜2500ms に最大3回) 時は、
         // 0×0 でなかった block も含め near 化したか再評価する。初回計測時に非 0×0 でも「近傍の要素がまだ描画/
         // 確定していない一時的なレイアウト」のせいで最終位置より下に見え near=false と判定されることがあり
         // (例: 上にあるローディングプレースホルダが後で縮む)、この class の block は zeroSizedBlocks に入らず
@@ -317,14 +335,23 @@
   // collectNodes() が accept() 済みノードだけを返すため、ここでは再検証しない (二重 accept=closest 走査の回避)。
   // 全呼び出し元 (ingest / onIntersect) が collectNodes 経由なのが前提。
   function enqueue(node, y) {
-    queue.push({ node, text: node.nodeValue, _y: y || 0 }); // _y = 所属ブロックのページ絶対Y (sortTopDown 用)
+    if (!node || queuedNodes.has(node) || translatedNodes.has(node)) return;
+    const text = String(node.nodeValue || "");
+    if (text.length > PAGE_MAX_SINGLE_CHARS || pageTextCount >= PAGE_MAX_TEXTS || pageCharCount + text.length > PAGE_MAX_CHARS) {
+      // 上限超過分は原文のまま残し、done(partial)で正直に通知する。
+      translatedNodes.add(node);
+      droppedTransient++;
+      return;
+    }
+    queuedNodes.add(node);
+    pageTextCount++;
+    pageCharCount += text.length;
+    queue.push({ node, text, _y: y || 0 }); // _y = 所属ブロックのページ絶対Y (sortTopDown 用)
   }
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
-  function contextAlive() {
-    try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
-  }
+  const contextAlive = ExtUtil.contextAlive; // actions.js の共有実装 (translator は actions.js と共に注入される)
   // context 失効時などに翻訳を止め、observer/timer を後始末してこれ以上 chrome API を叩かないようにする。
   function shutdown() {
     translating = false;
@@ -341,7 +368,7 @@
     const texts = batch.map((b) => b.text);
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ action: A.TRANSLATE_BATCH, texts, settings, batchId }, (res) => {
+        chrome.runtime.sendMessage({ action: A.TRANSLATE_BATCH, texts, settings, batchId, sessionId }, (res) => {
           pendingBatches.delete(batchId);
           if (chrome.runtime.lastError) {
             resolve({ ok: false, error: "runtime", message: chrome.runtime.lastError.message });
@@ -392,9 +419,9 @@
       // MyMemory 等の NMT は無料枠で 429 を即返す。429 を数百ms 後にリトライしても解けず、
       // 指数バックオフ分(約2秒/バッチ)を丸ごと無駄にするだけなので、NMT の 429 は即諦める。
       const isNmt = isNmtProvider();
-      const transient = e === "network" || e === "runtime" || e === "incomplete" ||
+      const transient = !(res && res.ambiguous) && (e === "network" || e === "runtime" || e === "incomplete" ||
         (e === "http" && res.status >= 500) ||
-        (e === "http" && res.status === 429 && !isNmt && quotaScope(res) !== "day");
+        (e === "http" && res.status === 429 && !isNmt && quotaScope(res) !== "day"));
       if (transient && attempt < MAX_RETRY) {
         // 429 時のバッチ縮小は background(BatchTuner) を単一ソースにし、res.nextBatchSize で反映する
         // (クライアント側の自前半減は廃止 = 二重管理の解消)。ジッタで 10 並列ワーカーの同時リトライを分散。
@@ -475,7 +502,7 @@
     const toSend = [];
     for (const x of pending) {
       const cached = translationMemo.get(x.text);
-      if (cached !== undefined) applyOne(x, cached);
+      if (cached !== undefined) { queuedNodes.delete(x.node); applyOne(x, cached); }
       else toSend.push(x);
     }
     if (toSend.length === 0) {
@@ -501,6 +528,7 @@
         cursor += batch.length;
         const res = await sendBatchWithRetry(batch, myRun);
         if (myRun !== runId) return;
+        for (const b of batch) queuedNodes.delete(b.node);
         // バッチサイズ自動学習は background(tuningMem) を単一ソースとし、ok/エラー問わず nextBatchSize を採用する。
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
         if (res && res.ok && Array.isArray(res.translations)) {
@@ -735,9 +763,15 @@
       const roots = pendingAttrRoots;
       pendingAttrRoots = new Set();
       if (!translating || !contextAlive()) return;
-      // 属性変化が多発するページ (アニメ/ホバーで class が頻繁に変わる) で個別 ingest を撃ち続けないよう、
-      // 対象が多いときは body 全体の 1 回再走査に畳む (collectNodes が既処理ブロックを skip するので冪等)。
-      if (roots.size > 30) { ingest(document.body || document.documentElement); return; }
+      // 属性変化が多発するページ (アニメ/ホバーで class が頻繁に変わる) でも、body全走査は毎秒1回まで。
+      if (roots.size > 30) {
+        const now = Date.now();
+        if (now - lastAttrFullScan >= 1000) {
+          lastAttrFullScan = now;
+          ingest(document.body || document.documentElement);
+        }
+        return;
+      }
       for (const r of roots) {
         if (r && r.isConnected) ingest(r);
       }
@@ -785,6 +819,7 @@
     zeroSizedBlocks = new Set();
     if (flushTimer) { window.clearTimeout(flushTimer); flushTimer = null; }
     if (attrTimer) { window.clearTimeout(attrTimer); attrTimer = null; }
+    lastAttrFullScan = 0;
     pendingAttrRoots = new Set();
     for (const id of reingestTimers) window.clearTimeout(id);
     reingestTimers = [];
@@ -865,9 +900,13 @@
     translationMemo.clear(); // provider/targetLang 変更での再翻訳時に古い訳をキャッシュ適用しないよう破棄
   }
 
-  async function startTranslate(newSettings) {
+  async function startTranslate(newSettings, newSessionId) {
     settings = newSettings;
+    sessionId = (newSessionId != null) ? newSessionId : null;
     dbg("startTranslate BUILD", RT_BUILD, "top=", window.top === window.self, "src=", newSettings && newSettings.sourceLang, "tgt=", newSettings && newSettings.targetLang, "provider=", newSettings && newSettings.provider, "url=", location.href.slice(0, 80));
+    // 再翻訳では前runのobserverが保持する旧DOMターゲットを先に切断する。
+    // WeakSet/zeroSizedBlocksだけを作り直すと、削除済み要素がIO/RO側に残り続ける。
+    if (io || mo || ro || reingestTimers.length) stopObservers();
     // 2 回目以降の翻訳 (言語/provider 変更で再実行) は先に原文へ戻す。前回の訳が残ると accept() が既訳ノードを
     // 全弾きし、iframe では frameHasEnoughText() が 0 字と誤判定して再翻訳されないため、閾値判定より前に revert する。
     revertTranslations();
@@ -919,6 +958,9 @@
     currentBatchSize = 0;
     warmupLeft = WARMUP_BATCHES; // 開始直後の数バッチは小さく投げて最初の訳を早く出す
     queue.length = 0;
+    queuedNodes = new WeakSet();
+    pageTextCount = 0;
+    pageCharCount = 0;
     pendingBatches.clear(); // 前セッションの streaming partial 紐付けを破棄
     observedBlocks = new WeakSet(); // 再翻訳 (復元→再 ON) で取りこぼさないよう作り直す
     flushedBlocks = new WeakSet();
@@ -938,6 +980,7 @@
 
   function restore() {
     translating = false;
+    sessionId = null;
     runId += 1; // 進行中ループを中断
     stopObservers();
     revertTranslations();
@@ -955,7 +998,7 @@
       return undefined;
     }
     if (msg.action === A.APPLY_TRANSLATE_CS) {
-      startTranslate(msg.settings).then(() => sendResponse({ ok: true })).catch((e) =>
+      startTranslate(msg.settings, msg.sessionId).then(() => sendResponse({ ok: true })).catch((e) =>
         sendResponse({ ok: false, message: String((e && e.message) || e) })
       );
       return true;
