@@ -118,6 +118,7 @@
     try { stack = document.elementsFromPoint(e.clientX, e.clientY); } catch (_e) { return null; }
     for (const el of stack) {
       if (el === btn) continue;                         // 自前のボタン/オーバーレイは飛ばす
+      if (el.tagName === "VIDEO") return null;          // 見えているのは動画: 下に敷かれたポスター/サムネ img を拾わない
       if (eligible(el)) return el;                      // 被さった要素 (アンカー等) の下の img を採用
     }
     return null;
