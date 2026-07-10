@@ -10,6 +10,22 @@
  */
 
 (function () {
+  // ---- 拡張共通ユーティリティ (content/popup 共有の小物・重複実装の一本化先) ----
+  // __rtActionsLoaded ガードより前に補完定義する: 旧版 actions.js を評価済みの isolated world へ
+  // 更新後の版が再注入された場合、ガードの早期 return だと新規追加の公開物が欠けたまま
+  // translator.js 等が ExtUtil 参照 (ReferenceError) で死ぬ。既存定義があれば触らない。
+  if (!globalThis.ExtUtil) {
+    globalThis.ExtUtil = Object.freeze({
+      // i18n 文言取得。取得失敗/未定義キーは fallback (fab/image-translator/selection-translator/popup で共有)
+      tr(key, fallback) {
+        try { return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback; } catch (_e) { return fallback; }
+      },
+      // 拡張 context が生きているか (リロード/更新で置き去りになった旧 content script の検出)
+      contextAlive() {
+        try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
+      },
+    });
+  }
   if (globalThis.__rtActionsLoaded) return;
   globalThis.__rtActionsLoaded = true;
 
@@ -312,24 +328,11 @@
     },
   });
 
-  // ---- 拡張共通ユーティリティ (content/popup 共有の小物・重複実装の一本化先) ----
-  const ExtUtil = Object.freeze({
-    // i18n 文言取得。取得失敗/未定義キーは fallback (fab/image-translator/selection-translator/popup で共有)
-    tr(key, fallback) {
-      try { return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback; } catch (_e) { return fallback; }
-    },
-    // 拡張 context が生きているか (リロード/更新で置き去りになった旧 content script の検出)
-    contextAlive() {
-      try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
-    },
-  });
-
   // decoderへ渡す前に拒否する画像画素数上限。byte数だけでは高圧縮pixel bombを防げない。
   const RuntimeLimits = Object.freeze({ MAX_IMAGE_PIXELS: 25000000 });
 
-  // ---- globalThis 公開 ----
+  // ---- globalThis 公開 (ExtUtil は IIFE 冒頭・ガード前で定義済み) ----
   globalThis.Actions = Actions;
-  globalThis.ExtUtil = ExtUtil;
   globalThis.StorageKeys = StorageKeys;
   globalThis.Providers = Providers;
   globalThis.SettingsSchema = SettingsSchema;

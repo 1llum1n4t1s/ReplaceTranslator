@@ -230,6 +230,37 @@ if (typeof importScripts === "function") {
   // 再翻訳を発生源で断つ。Map は tabId キーなので裏タブには一切干渉しない (今のタブだけ確実に意図どおりへ)。
   const tabGen = new Map(); // tabId -> number (translate/restore の最新意図の世代)
   const pageSessions = new Map(); // tabId -> { id, settings } (1 page run = 1 immutable provider/key snapshot)
+  // MV3 SW は翻訳途中でも suspend/再起動され得る。pageSessions がメモリだけだと再起動で消え、注入済み
+  // translator の後続 TRANSLATE_BATCH (スクロール/動的追加分) が全部 stale_session 拒否になり「ページの
+  // 残りが訳されない」まま復旧しない。storage.session (ディスク非永続・拡張コンテキスト限定・ブラウザ終了で
+  // 消える) へミラーし、SW 再起動後の最初の参照で復元する。tabGen も session.id 以上へシードして、再起動後の
+  // 新しい翻訳指示が旧セッションより小さい世代を採番しないようにする。
+  const PAGE_SESSIONS_KEY = "pageSessionsV1";
+  let pageSessionsLoaded = null; // 復元は一度だけ (Promise 共有で並行呼び出しを一本化)
+  function ensurePageSessions() {
+    if (!pageSessionsLoaded) {
+      pageSessionsLoaded = (async () => {
+        try {
+          const saved = (await chrome.storage.session.get(PAGE_SESSIONS_KEY))[PAGE_SESSIONS_KEY] || {};
+          for (const [k, s] of Object.entries(saved)) {
+            const tabId = Number(k);
+            if (!Number.isInteger(tabId) || !s || typeof s.id !== "number") continue;
+            if (!pageSessions.has(tabId)) pageSessions.set(tabId, s);
+            if ((tabGen.get(tabId) || 0) < s.id) tabGen.set(tabId, s.id);
+          }
+        } catch (_e) { /* storage.session 不可な環境は従来どおりメモリのみで動く */ }
+      })();
+    }
+    return pageSessionsLoaded;
+  }
+  function persistPageSessions() {
+    try {
+      const obj = {};
+      for (const [tabId, s] of pageSessions) obj[tabId] = s;
+      const p = chrome.storage.session.set({ [PAGE_SESSIONS_KEY]: obj });
+      if (p && p.catch) p.catch(() => { /* noop */ });
+    } catch (_e) { /* noop */ }
+  }
   function bumpTabGen(tabId) {
     if (tabId == null) return 0;
     const g = (tabGen.get(tabId) || 0) + 1;
@@ -245,7 +276,12 @@ if (typeof importScripts === "function") {
   function providerLimit(providerId) {
     const provider = Providers.get(providerId);
     const cap = provider && Number(provider.maxConcurrency);
-    return (cap && cap > 0) ? cap : DEFAULT_PROVIDER_CONCURRENCY;
+    if (cap && cap > 0) return cap;
+    // batch 不可 provider (MyMemory) は 1 TRANSLATE_BATCH = translateEach の内部 8 並列 GET に展開される。
+    // 既定 24 スロットだと最悪 ~192 GET が同時に走り、共有キー/IP の 429/quota 枯渇を自ら誘発するため
+    // スロットは 1 に絞る (実効上限は内部並列の 8。content 側もフレーム毎に直列 = 挙動一貫)。
+    if (provider && provider.batch === false) return 1;
+    return DEFAULT_PROVIDER_CONCURRENCY;
   }
   function providerQueueKey(settings) {
     return `${settings.provider}:${keyFor(settings, settings.provider) || "__no_key__"}`;
@@ -1060,6 +1096,7 @@ if (typeof importScripts === "function") {
   // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId) {
+    await ensurePageSessions(); // SW 再起動後でも旧セッション/世代を踏まえてから採番する (persist が他タブ分を消さないようにも必要)
     const myGen = bumpTabGen(tabId); // この翻訳指示の世代を採番 (await 中に restore が割り込んだら陳腐化する)
     abortGroup(tabId, "page"); // 再翻訳: 前回のページfetchだけ中断 (手動画像OCRは継続)
     resetFrameProgress(tabId); // フレーム横断の進捗集約をリセット (watchdog も解除・新しい翻訳セッション)
@@ -1072,13 +1109,14 @@ if (typeof importScripts === "function") {
     const settings = await getSettings();
     if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
     pageSessions.set(tabId, { id: myGen, settings });
+    persistPageSessions();
     try {
       await injectTranslator(tabId);
     } catch (_e) {
       // chrome:// / Web Store / PDF ビューア等の注入不可ページ。restorePage と同じく経路を局所化し、汎用 exception
       // ではなく専用エラーで返す (popup は !ok を一律 "Error" 表示するので UX は同値、将来の個別文言にも備える)。
       const cur = pageSessions.get(tabId);
-      if (cur && cur.id === myGen) pageSessions.delete(tabId); // 自分のセッションだけ消す (後発の新セッションを巻き添えにしない)
+      if (cur && cur.id === myGen) { pageSessions.delete(tabId); persistPageSessions(); } // 自分のセッションだけ消す (後発の新セッションを巻き添えにしない)
       return { ok: false, error: "not_injectable" };
     }
     // injectTranslator の await 中に restorePage (OFF) や別の翻訳指示が世代を進めていたら、この APPLY_TRANSLATE_CS は
@@ -1095,9 +1133,11 @@ if (typeof importScripts === "function") {
   }
 
   async function restorePage(tabId) {
+    await ensurePageSessions(); // persist が SW 再起動前の他タブ分を消さないよう、削除前に必ず復元しておく
     bumpTabGen(tabId); // 世代を進める。await 中の translatePage の myGen を陳腐化させ、後発の APPLY_TRANSLATE_CS を止める
     abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
     pageSessions.delete(tabId);
+    persistPageSessions();
     // 集約状態を直接リセットする (translatePage と対称化)。通常は translator の "restored" 通知が reset を促すが、
     // フレームが context 失効/離脱して "restored" を返せないと st.errored/loading が残置する。ここで直接リセットすれば
     // 「翻訳が loading に張り付いた → FAB クリックで復元」が確実に状態を解除できる手動脱出になる。
@@ -1225,7 +1265,11 @@ if (typeof importScripts === "function") {
   }
   // タブが閉じたら集約状態と in-flight を後始末する (離脱フレーム/タブの取り残し防止)
   try {
-    chrome.tabs.onRemoved.addListener((tabId) => { resetFrameProgress(tabId); abortTab(tabId); tabGen.delete(tabId); pageSessions.delete(tabId); lastErrorByTab.delete(tabId); });
+    chrome.tabs.onRemoved.addListener((tabId) => {
+      resetFrameProgress(tabId); abortTab(tabId); tabGen.delete(tabId); lastErrorByTab.delete(tabId);
+      // pageSessions は storage.session ミラーがあるため、復元を待ってから消して他タブ分を巻き添えにしない
+      ensurePageSessions().then(() => { pageSessions.delete(tabId); persistPageSessions(); });
+    });
   } catch (_e) { /* noop */ }
 
   // ---- メッセージディスパッチ ----
@@ -1340,6 +1384,7 @@ if (typeof importScripts === "function") {
             const stored = await getSettingsCached();
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
+            if (!msg.quick) await ensurePageSessions(); // SW 再起動後の後続バッチを stale_session で全滅させない
             const session = (!msg.quick && msg.sessionId != null && tabId != null)
               ? pageSessions.get(tabId)
               : null;

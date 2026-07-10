@@ -872,7 +872,9 @@
   // 描画後は startFollow で「外部リサイズ/移動/差替 (ライトボックス等)」を監視し、取り残しオーバーレイを掃除する。
   async function renderTranslated(img, blocks, image, opts) {
     dbg("render", image && image.base64 ? "inpaint" : "html", "blocks=" + (blocks ? blocks.length : 0));
-    const guard = opts && { myRun: opts.myRun, url: opts.url };
+    // requestId もガードに含める: 応答到着後〜decode/描画中に「原(戻す)」や再 OCR が走った古い結果を
+    // canvas/フォールバックオーバーレイとして重ねない (ownsBtn はボタン表示しか守らない)
+    const guard = opts && { myRun: opts.myRun, url: opts.url, requestId: opts.requestId };
     // canvas inpaint(原文消去+焼き込み)が本線。renderInpaint は object-fit:cover/contain を
     // canvas 上で再現(fitDrawRect)するので、X 等の cover クロップ画像でも歪まず原文を消せる。
     // base64 が無い/canvas が失敗したときだけ、画像を壊さない HTML オーバーレイ(renderBlocks)へ落とす。
@@ -880,6 +882,7 @@
       try { await renderInpaint(img, blocks, image, guard); startFollow(img); return; }
       catch (e) { dbg("inpaint-fail", (e && e.message) || String(e)); /* HTML オーバーレイへ */ }
     }
+    if (isStaleImg(guard, img)) return; // inpaint 失敗までの間に復元/再OCR/差替が起きた → 古い結果を重ねない
     dbg("render", "fallback=blocks", "hasImg=" + !!image, "hasB64=" + !!(image && image.base64));
     renderBlocks(img, blocks);
     startFollow(img);
