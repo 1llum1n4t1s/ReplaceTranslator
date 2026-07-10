@@ -494,6 +494,10 @@
       if (seen.has(x.node)) continue;
       if (x.node.isConnected && x.node.nodeValue === x.text && !translatedNodes.has(x.node)) {
         seen.add(x.node); pending.push(x);
+      } else {
+        // 陳腐化 (切断/書換済/翻訳済) で捨てるノードは queuedNodes からも外す。残したままだと
+        // 以後テキストが変わって再度対象になっても enqueue 冒頭のガードで永久にスキップされる。
+        queuedNodes.delete(x.node);
       }
     }
     if (pending.length === 0) { flushing = false; maybeAnnounceDone(myRun); return; }
@@ -769,6 +773,16 @@
         if (now - lastAttrFullScan >= 1000) {
           lastAttrFullScan = now;
           ingest(document.body || document.documentElement);
+        } else {
+          // スロットル中に退避済み集合を捨てるだけだと、以後属性変化が止まったとき今回ぶんの表示切替を
+          // 永久に取りこぼす。残り時間後に body 全走査を 1 回予約して確実に拾う (待機中に溜まった分も畳まれる)。
+          attrTimer = window.setTimeout(() => {
+            attrTimer = null;
+            if (!translating || !contextAlive()) return;
+            lastAttrFullScan = Date.now();
+            pendingAttrRoots = new Set();
+            ingest(document.body || document.documentElement);
+          }, Math.max(50, 1000 - (now - lastAttrFullScan)));
         }
         return;
       }

@@ -92,8 +92,11 @@
   function fromDynamic(id) {
     const hit = hitFor(id);
     if (!hit) return null;
-    const input = Number(hit.input), output = Number(hit.output);
-    if (!Number.isFinite(input) || !Number.isFinite(output)) return null;
+    // Number(null)/Number("") は 0 になり欠損価格が「無料」として通ってしまうため、
+    // 数値型かつ有限・非負のものだけを受理する (それ以外は同梱表フォールバックへ)
+    const input = hit.input, output = hit.output;
+    if (typeof input !== "number" || typeof output !== "number" ||
+        !Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return null;
     return { input, output, total: input + output };
   }
   // 公式表示名 ("gpt-5.6-sol" → "GPT-5.6 Sol")。動的データに無ければ null (呼び出し側は ID 表示に倒す)

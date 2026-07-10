@@ -69,7 +69,23 @@ jobs:
       - name: 静的検証
         run: |
           pnpm lint
-          node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('manifest.json','utf8')); if (!m.background?.service_worker || !m.action?.default_popup) process.exit(1);"
+          # truthy 判定だけではパス typo の壊れた ZIP を素通しするため、manifest 参照先の実在まで確認する
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const m = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          const required = {
+            "background.service_worker": m.background?.service_worker,
+            "action.default_popup": m.action?.default_popup,
+          };
+          for (const cs of m.content_scripts || []) {
+            for (const f of [...(cs.js || []), ...(cs.css || [])]) required[`content_scripts:${f}`] = f;
+          }
+          for (const [name, file] of Object.entries(required)) {
+            if (typeof file !== "string" || !fs.existsSync(file)) {
+              throw new Error(`${name} の参照先が不正です: ${file}`);
+            }
+          }
+          NODE
 
       - name: zip パッケージを作成
         run: |

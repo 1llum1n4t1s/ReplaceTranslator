@@ -374,10 +374,12 @@
     });
     // ---- 発音 (Web Speech API speechSynthesis。Chrome/Firefox 両対応・権限追加不要) ----
     const speakInBtn = $("qt-speak-in"), speakOutBtn = $("qt-speak-out");
-    let speakingBtn = null; // 再生中ボタン (同じボタン再クリックで停止)
+    let speakingBtn = null;   // 再生中ボタン (同じボタン再クリックで停止)
+    let speakGeneration = 0;  // 停止/新規再生のたびに進める世代。auto 言語推定の await 中に停止された古い処理が発話を始めるのを防ぐ
     // speechSynthesis は BCP47 を期待する。設定の言語コードのうち地域が要る中国語だけ写像する
     const bcp47 = (code) => (code === "zh-Hans" ? "zh-CN" : code === "zh-Hant" ? "zh-TW" : code);
     function stopSpeak() {
+      speakGeneration++;
       try { window.speechSynthesis.cancel(); } catch (_e) { /* noop */ }
       if (speakingBtn) speakingBtn.classList.remove("speaking");
       speakingBtn = null;
@@ -386,6 +388,10 @@
       if (!("speechSynthesis" in window) || !text) return;
       if (speakingBtn === btn) { stopSpeak(); return; }
       stopSpeak();
+      const myGeneration = speakGeneration;
+      // 言語推定の await 前に「再生中」を確定させる (推定中の再クリック/クリアでも停止対象になる)
+      speakingBtn = btn;
+      btn.classList.add("speaking");
       let lang = langCode;
       if (!lang || lang === "auto") {
         // 翻訳元 auto は実テキストから言語を推定 (translator.js の detectPageLang と同じ CLD)
@@ -395,11 +401,12 @@
           lang = top && top.language;
         } catch (_e) { /* 推定失敗はエンジン既定音声に任せる */ }
       }
+      if (myGeneration !== speakGeneration || speakingBtn !== btn) return; // 推定待ちの間に停止/別再生が始まった → 発話しない
       const u = new SpeechSynthesisUtterance(text);
       if (lang && lang !== "auto") u.lang = bcp47(Lang.normalizeCode(lang) || lang);
-      u.onend = u.onerror = () => { if (speakingBtn === btn) { btn.classList.remove("speaking"); speakingBtn = null; } };
-      speakingBtn = btn;
-      btn.classList.add("speaking");
+      u.onend = u.onerror = () => {
+        if (myGeneration === speakGeneration && speakingBtn === btn) { btn.classList.remove("speaking"); speakingBtn = null; }
+      };
       window.speechSynthesis.speak(u);
     }
     if (speakInBtn) speakInBtn.addEventListener("click", () => speak(speakInBtn, inEl.value.trim(), state.settings && state.settings.sourceLang));

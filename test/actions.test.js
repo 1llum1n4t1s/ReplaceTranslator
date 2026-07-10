@@ -200,6 +200,12 @@ test("ModelPricing.setDynamic prefers exact dynamic price over bundled table", (
     // 不正な価格 (数値でない) は無視して同梱表フォールバック
     ModelPricing.setDynamic({ "gpt-4o-mini": { input: "x", output: null } });
     assert.equal(ModelPricing.lookup("gpt-4o-mini").input, 0.15);
+    // null 単独も 0 扱いにしない (Number(null)===0 の混入検知)。片側欠損はエントリごと不採用
+    ModelPricing.setDynamic({ "gpt-4o-mini": { input: 1, output: null } });
+    assert.equal(ModelPricing.lookup("gpt-4o-mini").input, 0.15);
+    // 負値も不採用
+    ModelPricing.setDynamic({ "gpt-4o-mini": { input: -1, output: 2 } });
+    assert.equal(ModelPricing.lookup("gpt-4o-mini").input, 0.15);
   } finally {
     ModelPricing.setDynamic(null); // 他テストへ漏らさない
   }

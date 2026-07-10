@@ -590,7 +590,7 @@ if (typeof importScripts === "function") {
   // 通信はモデル一覧の force 取得時のみ + PRICING_TTL_MS で抑制 (数MB 級 JSON を毎回引かない)。
   const PRICING_URL = "https://models.dev/api.json";
   const PRICING_TTL_MS = 60 * 60 * 1000; // 1h: force 連打 (キー blur 保存の連続等) での再取得を抑える
-  const PRICING_VERSION = 3; // 抽出フォーマットの世代 (3 = name の "(latest)" 除去)。旧世代キャッシュは TTL 内でも再取得する
+  const PRICING_VERSION = 4; // 抽出フォーマットの世代 (4 = 欠損価格の 0 化を排除)。旧世代キャッシュは TTL 内でも再取得する
   // 拡張の providerId → models.dev のプロバイダキー (fugu は変動価格で意図的に未収録・mymemory は無料)
   const PRICING_PROVIDERS = { openai: "openai", anthropic: "anthropic", gemini: "google", xai: "xai", deepseek: "deepseek", groq: "groq", openrouter: "openrouter" };
   let pricingLoaded = false;    // storage キャッシュを ModelPricing へ反映済みか (SW 起動ごとに 1 回)
@@ -603,8 +603,11 @@ if (typeof importScripts === "function") {
       for (const id of Object.keys(models)) {
         const c = models[id] && models[id].cost;
         if (!c) continue;
-        const input = Number(c.input), output = Number(c.output);
-        if (!Number.isFinite(input) || !Number.isFinite(output)) continue;
+        // Number(null)/Number("") は 0 になり欠損価格を「無料」として登録してしまう。
+        // 数値型かつ有限・非負のものだけを取り込む (欠損は同梱表フォールバックに委ねる)
+        const input = c.input, output = c.output;
+        if (typeof input !== "number" || typeof output !== "number" ||
+            !Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) continue;
         const lower = id.toLowerCase();
         const entry = { input, output };
         // 公式表示名 ("GPT-5.6 Sol" 等) も持ち帰り、popup のモデル一覧で生 ID の代わりに出す。
@@ -768,6 +771,16 @@ if (typeof importScripts === "function") {
         const w = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
         const h = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
         return { width: w, height: h };
+      }
+      // 非拡張 WebP もピクセル上限ガードに乗せる (VP8X だけだと一般的な VP8/VP8L が素通りする)
+      if (type === "VP8 " && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+        // ロッシー VP8: frame tag 3B + start code (9d 01 2a) の後に 14bit ずつ width/height
+        return { width: (bytes[26] | (bytes[27] << 8)) & 0x3fff, height: (bytes[28] | (bytes[29] << 8)) & 0x3fff };
+      }
+      if (type === "VP8L" && bytes[20] === 0x2f) {
+        // ロスレス VP8L: signature 0x2f の後の 4B に width-1 (14bit) → height-1 (14bit)
+        const b = (bytes[21] | (bytes[22] << 8) | (bytes[23] << 16) | (bytes[24] << 24)) >>> 0;
+        return { width: (b & 0x3fff) + 1, height: ((b >>> 14) & 0x3fff) + 1 };
       }
     }
     if (mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8) {
@@ -943,6 +956,9 @@ if (typeof importScripts === "function") {
       if (dims && imageDimensionsTooLarge(dims.width, dims.height)) {
         return { ok: false, error: "image_too_large", width: dims.width, height: dims.height };
       }
+      // 標準的な WebP は VP8X/VP8/VP8L のいずれかで寸法が読める。読めないものは不正/未知形式であり、
+      // ピクセル上限を検証できないまま decoder (createImageBitmap) へ渡さない (展開爆弾の防御を貫通させない)
+      if (!dims && mime === "image/webp") return { ok: false, error: "not_image", mime };
       return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
@@ -1050,14 +1066,19 @@ if (typeof importScripts === "function") {
     // FAB/右クリック/自動は popup の pendingSave を待てないため、進行中の APPLY_SETTINGS 保存を待ってから読む。
     // 設定変更直後に翻訳開始しても、ページ全体が旧 provider/旧言語で走り出すのを防ぐ。
     await settingsWriteChain;
+    // 各 await 後に世代を確認する: 古い呼び出しが後から pageSessions.set で新セッションを上書きしたり、
+    // 古い注入失敗が新セッションを巻き添え削除したりしないようにする (並行した翻訳開始/OFF との競合対策)
+    if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
     const settings = await getSettings();
+    if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
     pageSessions.set(tabId, { id: myGen, settings });
     try {
       await injectTranslator(tabId);
     } catch (_e) {
       // chrome:// / Web Store / PDF ビューア等の注入不可ページ。restorePage と同じく経路を局所化し、汎用 exception
       // ではなく専用エラーで返す (popup は !ok を一律 "Error" 表示するので UX は同値、将来の個別文言にも備える)。
-      pageSessions.delete(tabId);
+      const cur = pageSessions.get(tabId);
+      if (cur && cur.id === myGen) pageSessions.delete(tabId); // 自分のセッションだけ消す (後発の新セッションを巻き添えにしない)
       return { ok: false, error: "not_injectable" };
     }
     // injectTranslator の await 中に restorePage (OFF) や別の翻訳指示が世代を進めていたら、この APPLY_TRANSLATE_CS は
