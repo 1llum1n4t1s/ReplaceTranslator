@@ -111,6 +111,17 @@
   // オーバーレイ要素を重ねるため、mouseover の e.target が img にならず、被さった要素だけが見える。
   // その場合は elementsFromPoint でカーソル位置の要素スタック (最前面→奥) を辿り、最初の eligible な
   // img を拾う (被った要素の下の img も pointer-events:auto ならスタックに含まれる)。
+  // カーソル位置を動画が覆っているか。カスタムプレーヤーは video を開いた Shadow DOM に包むため、
+  // document.elementsFromPoint はシャドウホストしか返さず tagName === "VIDEO" では検出できない。
+  // ShadowRoot.elementsFromPoint (Chrome/Firefox 対応) でカーソル位置の内側スタックだけを再帰確認する
+  // (querySelector 全走査だと mouseover 毎に重く、video を含む大きなコンポーネント全面をブロックしてしまう)。
+  function coversVideo(el, x, y) {
+    if (el.tagName === "VIDEO") return true;
+    const root = el.shadowRoot;
+    if (!root || typeof root.elementsFromPoint !== "function") return false;
+    try { return root.elementsFromPoint(x, y).some((n) => n !== el && coversVideo(n, x, y)); } catch (_e) { return false; }
+  }
+
   function imgAtPoint(e) {
     if (eligible(e.target)) return e.target;            // 速い経路: img が最前面
     if (typeof e.clientX !== "number") return null;
@@ -118,7 +129,7 @@
     try { stack = document.elementsFromPoint(e.clientX, e.clientY); } catch (_e) { return null; }
     for (const el of stack) {
       if (el === btn) continue;                         // 自前のボタン/オーバーレイは飛ばす
-      if (el.tagName === "VIDEO") return null;          // 見えているのは動画: 下に敷かれたポスター/サムネ img を拾わない
+      if (coversVideo(el, e.clientX, e.clientY)) return null; // 見えているのは動画: 下に敷かれたポスター/サムネ img を拾わない
       if (eligible(el)) return el;                      // 被さった要素 (アンカー等) の下の img を採用
     }
     return null;
