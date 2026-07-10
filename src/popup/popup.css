@@ -397,6 +397,7 @@ body {
 }
 .qt-mini:hover { color: var(--ink); border-color: var(--coral-soft); }
 .qt-mini.copy.done { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+.qt-mini.speaking { color: var(--coral); border-color: var(--coral); } /* 読み上げ中 (再クリックで停止) */
 @media (prefers-reduced-motion: reduce) {
   .qt-out .txt { transition: none !important; animation: none !important; }
   .qt.busy .qt-spin { animation: none; }

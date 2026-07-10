@@ -11,9 +11,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const state = { settings: null };
-  const msg = (k, f) => {
-    try { return chrome.i18n.getMessage(k) || f; } catch (_e) { return f; }
-  };
+  const msg = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
 
   function applyI18n() {
     document.querySelectorAll("[data-i18n]").forEach((el) => {
@@ -105,7 +103,7 @@
 
       const name = document.createElement("span");
       name.className = "mi-name";
-      name.textContent = m.id;
+      name.textContent = m.name || m.id; // 公式表示名 ("GPT-5.6 Sol") 優先。無ければ生 ID
 
       const cost = document.createElement("span");
       cost.className = "mi-cost";
@@ -117,10 +115,11 @@
         bar.style.width = `${maxCost > 0 ? Math.max(8, Math.round((m.price.total / maxCost) * 100)) : 8}%`;
         track.appendChild(bar);
         cost.appendChild(track);
-        item.title = `$${m.price.input} / $${m.price.output} per 1M tokens (in / out)`;
+        // 表示名を出しているときは実 ID も tooltip に併記する (API に渡る ID を確認できるように)
+        item.title = (m.name ? `${m.id}\n` : "") + `$${m.price.input} / $${m.price.output} per 1M tokens (in / out)`;
       } else {
         cost.textContent = msg("costUnknown", "—");
-        item.title = msg("costUnknownTitle", "Price unknown");
+        item.title = (m.name ? `${m.id}\n` : "") + msg("costUnknownTitle", "Price unknown");
       }
 
       item.append(name, cost);
@@ -373,7 +372,43 @@
     inEl.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); window.clearTimeout(timer); run(); }
     });
-    clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; setCount(); render(""); inEl.focus(); });
+    // ---- 発音 (Web Speech API speechSynthesis。Chrome/Firefox 両対応・権限追加不要) ----
+    const speakInBtn = $("qt-speak-in"), speakOutBtn = $("qt-speak-out");
+    let speakingBtn = null; // 再生中ボタン (同じボタン再クリックで停止)
+    // speechSynthesis は BCP47 を期待する。設定の言語コードのうち地域が要る中国語だけ写像する
+    const bcp47 = (code) => (code === "zh-Hans" ? "zh-CN" : code === "zh-Hant" ? "zh-TW" : code);
+    function stopSpeak() {
+      try { window.speechSynthesis.cancel(); } catch (_e) { /* noop */ }
+      if (speakingBtn) speakingBtn.classList.remove("speaking");
+      speakingBtn = null;
+    }
+    async function speak(btn, text, langCode) {
+      if (!("speechSynthesis" in window) || !text) return;
+      if (speakingBtn === btn) { stopSpeak(); return; }
+      stopSpeak();
+      let lang = langCode;
+      if (!lang || lang === "auto") {
+        // 翻訳元 auto は実テキストから言語を推定 (translator.js の detectPageLang と同じ CLD)
+        try {
+          const d = await new Promise((resolve) => chrome.i18n.detectLanguage(text, resolve));
+          const top = d && d.languages && d.languages[0];
+          lang = top && top.language;
+        } catch (_e) { /* 推定失敗はエンジン既定音声に任せる */ }
+      }
+      const u = new SpeechSynthesisUtterance(text);
+      if (lang && lang !== "auto") u.lang = bcp47(Lang.normalizeCode(lang) || lang);
+      u.onend = u.onerror = () => { if (speakingBtn === btn) { btn.classList.remove("speaking"); speakingBtn = null; } };
+      speakingBtn = btn;
+      btn.classList.add("speaking");
+      window.speechSynthesis.speak(u);
+    }
+    if (speakInBtn) speakInBtn.addEventListener("click", () => speak(speakInBtn, inEl.value.trim(), state.settings && state.settings.sourceLang));
+    if (speakOutBtn) speakOutBtn.addEventListener("click", () => {
+      if (outEl.classList.contains("err")) return; // エラーメッセージは読み上げない
+      speak(speakOutBtn, (outEl.textContent || "").trim(), state.settings && state.settings.targetLang);
+    });
+
+    clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; setCount(); render(""); stopSpeak(); inEl.focus(); });
     copyBtn.addEventListener("click", () => {
       const t = outEl.textContent || "";
       if (!t || outEl.classList.contains("err")) return;
