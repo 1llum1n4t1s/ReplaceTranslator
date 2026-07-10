@@ -25,6 +25,9 @@ Get an API key here:
 | OpenAI | https://platform.openai.com/api-keys | Pay as you go |
 | Anthropic (Claude) | https://console.anthropic.com/settings/keys | Pay as you go |
 | xAI (Grok) | https://console.x.ai/ | Pay as you go (OpenAI-compatible API) |
+| OpenRouter | https://openrouter.ai/keys | Pay as you go (multi-model gateway) |
+| DeepSeek | https://platform.deepseek.com/api_keys | Pay as you go (text only) |
+| Groq | https://console.groq.com/keys | Free tier available (OpenAI-compatible API) |
 | MyMemory | **No key** | Free NMT, no signup, instant trial (short text, 5k–50k chars/day, no mixed-language translation) |
 
 > To try it for free, **Google Gemini** (free tier) is recommended.
@@ -46,7 +49,7 @@ The Chrome Web Store link will be added once published.
 2. In the **"Translate" tab**, pick a target language, then "Translate". Use "Restore" to go back
 3. You can also toggle translate/restore with the **floating button (訳 / 原) at the bottom-right of the page** (drag it anywhere you like, or hide it from the "Translate" tab)
 4. The right-click menu also offers "Translate this page" / "Restore original"
-5. Turn on **image text translation** in the "Translate" tab, then hover an image and click 訳 to translate text inside it (experimental, vision-capable LLMs)
+5. With a vision-capable LLM selected, hover an image and click 訳 to translate text inside it (experimental)
 
 ### Source / target
 - **Source** — leave it on "Detect language" and the extension detects the page's main language and translates only that language. Pages already in the target language are left untouched (stray fragments in other languages are not swept up). You can also pin a specific source language.

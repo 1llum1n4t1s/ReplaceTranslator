@@ -25,6 +25,9 @@ API キーは以下から取得できます:
 | OpenAI | https://platform.openai.com/api-keys | 従量課金 |
 | Anthropic (Claude) | https://console.anthropic.com/settings/keys | 従量課金 |
 | xAI (Grok) | https://console.x.ai/ | 従量課金（OpenAI 互換 API） |
+| OpenRouter | https://openrouter.ai/keys | 従量課金（複数モデルを中継） |
+| DeepSeek | https://platform.deepseek.com/api_keys | 従量課金（テキストのみ） |
+| Groq | https://console.groq.com/keys | 無料枠あり・OpenAI 互換 API |
 | Sakana AI (Fugu) | https://console.sakana.ai/ | 従量課金（OpenAI 互換 API・複数モデルを自動ルーティング） |
 | MyMemory | **キー不要** | 無料 NMT・登録なしで即試せる（短文向け・1日 5千〜5万字・混在翻訳は非対応） |
 
@@ -47,7 +50,7 @@ API キーは以下から取得できます:
 2. **「翻訳」タブ**で翻訳先言語を選んで「翻訳」。原文に戻すには「原文に戻す」
 3. **ページ右下のフローティングボタン（訳 / 原）** をクリックしても翻訳 / 復元をトグルできます（ドラッグで好きな位置へ移動可。「翻訳」タブの設定で非表示にもできます）
 4. 右クリックメニューからも「このページを翻訳」/「原文に戻す」が使えます
-5. 「翻訳」タブで**画像内テキストの翻訳**を ON にすると、画像にホバーして「訳」で画像内の文字も翻訳できます（実験的・vision 対応 LLM）
+5. vision 対応 LLM を選んでいるときは、画像にホバーして「訳」を押すと画像内の文字も翻訳できます（実験的）
 
 ### 翻訳元 / 翻訳先
 - **翻訳元** — 「自動判定」のままにすると、ページの主要言語を検出してその言語だけを翻訳します。ページが既に翻訳先言語のときは何もしません（混ざった別言語の断片を巻き込みません）。特定の言語だけ訳したいときは明示指定もできます
