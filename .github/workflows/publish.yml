@@ -66,6 +66,11 @@ jobs:
       - name: テスト実行
         run: pnpm test
 
+      - name: 静的検証
+        run: |
+          pnpm lint
+          node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('manifest.json','utf8')); if (!m.background?.service_worker || !m.action?.default_popup) process.exit(1);"
+
       - name: zip パッケージを作成
         run: |
           # _locales/ は manifest.json の default_locale 参照先。含めないと CWS の Submit for review で
@@ -92,6 +97,9 @@ jobs:
           find firefox-build \( -name "*.DS_Store" -o -name "*.swp" -o -name "*~" \) -delete
           echo "📂 firefox-build 内容:"
           ls -la firefox-build/
+
+      - name: Firefox manifest 検証
+        run: pnpm exec web-ext lint --source-dir firefox-build
 
       - name: Firefox source artifact を保存
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
