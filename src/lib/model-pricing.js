@@ -72,9 +72,45 @@
     // 価格なし ("—") で並べて選べるよう、あえてどちらも載せない (誤った固定価格のサイレント表示も避ける)。
   ];
 
+  // ---- 動的価格 (models.dev) ----
+  // SW が models.dev の api.json から取得した実勢価格 (モデル ID 完全一致)。新モデルが出るたびに
+  // 同梱 TABLE を手更新しなくても、force 取得時に最新価格が流れ込む。同梱 TABLE は取得失敗/未収録
+  // モデルのフォールバックとして残す (完全一致 > 部分一致の優先順)。
+  let dynamic = null; // { [lowercased model id]: {input, output, name?} }
+  function setDynamic(map) {
+    dynamic = (map && typeof map === "object") ? map : null;
+  }
+  function hitFor(id) {
+    if (!dynamic) return null;
+    let hit = dynamic[id];
+    if (!hit) {
+      const slash = id.lastIndexOf("/");
+      if (slash >= 0) hit = dynamic[id.slice(slash + 1)]; // OpenRouter 等のベンダ接頭辞付き ID は末尾で照合
+    }
+    return hit || null;
+  }
+  function fromDynamic(id) {
+    const hit = hitFor(id);
+    if (!hit) return null;
+    // Number(null)/Number("") は 0 になり欠損価格が「無料」として通ってしまうため、
+    // 数値型かつ有限・非負のものだけを受理する (それ以外は同梱表フォールバックへ)
+    const input = hit.input, output = hit.output;
+    if (typeof input !== "number" || typeof output !== "number" ||
+        !Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return null;
+    return { input, output, total: input + output };
+  }
+  // 公式表示名 ("gpt-5.6-sol" → "GPT-5.6 Sol")。動的データに無ければ null (呼び出し側は ID 表示に倒す)
+  function displayName(modelId) {
+    if (!modelId) return null;
+    const hit = hitFor(String(modelId).toLowerCase());
+    return (hit && typeof hit.name === "string" && hit.name) || null;
+  }
+
   function lookup(modelId) {
     if (!modelId) return null;
     const id = String(modelId).toLowerCase();
+    const dyn = fromDynamic(id);
+    if (dyn) return dyn;
     let best = null;
     for (const row of TABLE) {
       const key = row[0];
@@ -91,5 +127,5 @@
     return { input: best[1], output: best[2], total: best[1] + best[2] };
   }
 
-  globalThis.ModelPricing = Object.freeze({ lookup });
+  globalThis.ModelPricing = Object.freeze({ lookup, setDynamic, displayName });
 })();

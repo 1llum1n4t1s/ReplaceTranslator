@@ -26,16 +26,24 @@
 
   // 拡張 context 失効時 (Extension context invalidated) は静かに無視する送信ラッパ
   function send(msg) {
+    const fail = () => {
+      if (msg && msg.action === A.TRANSLATE_PAGE) {
+        state = "off";
+        errText = tr("fabError", "翻訳を開始できませんでした");
+        render();
+      }
+    };
     try {
       const p = chrome.runtime.sendMessage(msg); // callback 省略時は Promise。受信側不在の reject も無視する
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    } catch (_e) { /* noop */ }
+      if (p && typeof p.catch === "function") p.catch(fail);
+    } catch (_e) { fail(); }
   }
 
   const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
   let state = "off"; // "off" | "loading" | "on"
   let errText = ""; // 直近の翻訳エラーの理由 (FAB の title に出す。空なら通常表示。無言失敗の可視化)
+  let partialText = ""; // 一部未翻訳の注記 (partial done)。エラーではないので __rt-error は付けず title にだけ出す
   let posRatio = 0.82; // 縦位置の比率 (0=最上 / 1=最下)。初期は右下寄り。保存値で上書きする
 
   const fab = document.createElement("button");
@@ -80,14 +88,7 @@
   );
   fab.append(spine);
 
-  function tr(key, fallback) {
-    try {
-      const m = chrome.i18n && chrome.i18n.getMessage(key);
-      return m || fallback;
-    } catch (_e) {
-      return fallback;
-    }
-  }
+  const tr = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
 
   // 翻訳エラーの理由を FAB の title 用に短くまとめる。popup の errorText と同じ i18n キーを再利用し、
   // detail({error,status,provider}) からキー無効/quota/通信/HTTP を出し分ける (popup を開かなくても原因が読める)。
@@ -121,7 +122,9 @@
     else if (isOn) base = tr("fabRestore", "原文に戻す");
     else base = tr("fabTranslate", "ページを翻訳");
     // エラー時は失敗理由を title/aria に出す (popup を開かなくてもホバーで原因が読める = 無言失敗の可視化)。
-    const label = isErr ? errText : base;
+    // partial は成功扱い (state=on のまま)。__rt-error を併用すると .__rt-on の朱地に --ink が朱で
+    // 上書きされアイコンが消えるため、注記は title/aria にだけ載せる
+    const label = isErr ? errText : (partialText ? `${base}（${partialText}）` : base);
     fab.title = (isErr || isLoading) ? label : `${label}（ドラッグで移動）`;
     fab.setAttribute("aria-label", label);
     fab.setAttribute("aria-pressed", isOn ? "true" : "false");
@@ -203,7 +206,7 @@
       return;
     }
     if (state === "off") {
-      errText = ""; // 再翻訳で前回のエラー表示をクリア
+      errText = ""; partialText = ""; // 再翻訳で前回のエラー/一部未翻訳表示をクリア
       state = "loading";
       render();
       send({ action: A.TRANSLATE_PAGE });
@@ -232,11 +235,11 @@
   // translator の進捗で状態同期
   chrome.runtime.onMessage.addListener((m) => {
     if (!m || m.action !== A.TRANSLATION_PROGRESS) return;
-    if (m.state === "progress") { errText = ""; state = "loading"; render(); }
-    else if (m.state === "done") { errText = ""; state = "on"; render(); }
-    else if (m.state === "error") { errText = errSummary(m.detail); state = "off"; render(); } // 失敗理由を title に出す
-    else if (m.state === "restored") { errText = ""; state = "off"; render(); }
-    else if (m.state === "skipped") { errText = ""; state = "off"; render(); } // ページ言語=翻訳先 → 訳すものが無いので未翻訳状態へ戻す
+    if (m.state === "progress") { errText = ""; partialText = ""; state = "loading"; render(); }
+    else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "一部未翻訳（フレーム遅延/レート制限）") : ""; state = "on"; render(); }
+    else if (m.state === "error") { errText = errSummary(m.detail); partialText = ""; state = "off"; render(); } // 失敗理由を title に出す
+    else if (m.state === "restored") { errText = ""; partialText = ""; state = "off"; render(); }
+    else if (m.state === "skipped") { errText = ""; partialText = ""; state = "off"; render(); } // ページ言語=翻訳先 → 訳すものが無いので未翻訳状態へ戻す
   });
 
   render();

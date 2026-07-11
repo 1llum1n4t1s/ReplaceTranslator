@@ -31,9 +31,7 @@
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
-  function contextAlive() {
-    try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
-  }
+  const contextAlive = ExtUtil.contextAlive; // actions.js の共有実装
   // context 失効時などに、登録リスナーを解除し btn 除去・state クリアして、これ以上 chrome API / DOM を
   // 触らないよう静かに停止する。各操作は try/catch で例外を吸収する (translator.js の shutdown と同パターン)。
   function shutdown() {
@@ -51,9 +49,8 @@
     target = null;
   }
 
-  const tr = (k, f) => {
-    try { return (chrome.i18n && chrome.i18n.getMessage(k)) || f; } catch (_e) { return f; }
-  };
+  const tr = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
+  const MAX_IMAGE_PIXELS = (globalThis.RuntimeLimits && RuntimeLimits.MAX_IMAGE_PIXELS) || 25000000;
 
   function eligible(el) {
     if (!el || el.tagName !== "IMG") return false;
@@ -76,6 +73,17 @@
     btn.textContent = on ? "原" : "訳";
     btn.title = on ? tr("imgRevert", "画像の翻訳を消して元に戻す") : tr("imgBtn", "画像内のテキストを翻訳");
     btn.classList.toggle("__rt-img-btn-on", on);
+  }
+
+  // ボタンは全画像で共有なので、遅延更新 (タイマー/OCR 応答) は「今もその画像がボタンの対象か」を
+  // 確認してから触る。別画像へホバーが移った後に古い結果が表示や「原」状態を上書きしないようにする。
+  function showImageError(img, error) {
+    if (!btn || target !== img) return;
+    btn.title = imgErrorText({ error });
+    btn.textContent = "×";
+    window.setTimeout(() => {
+      if (btn && target === img) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+    }, 4000);
   }
 
   function ensureBtn() {
@@ -111,6 +119,38 @@
   // オーバーレイ要素を重ねるため、mouseover の e.target が img にならず、被さった要素だけが見える。
   // その場合は elementsFromPoint でカーソル位置の要素スタック (最前面→奥) を辿り、最初の eligible な
   // img を拾う (被った要素の下の img も pointer-events:auto ならスタックに含まれる)。
+  // カーソル位置を動画が覆っているか。カスタムプレーヤーは video を開いた Shadow DOM に包むため、
+  // document.elementsFromPoint はシャドウホストしか返さず tagName === "VIDEO" では検出できない。
+  // ShadowRoot.elementsFromPoint (Chrome/Firefox 対応) でカーソル位置の内側スタックだけを再帰確認する
+  // (querySelector 全走査だと mouseover 毎に重く、video を含む大きなコンポーネント全面をブロックしてしまう)。
+  // 要素が視覚上見えているか (透明プリロード動画対策)。サイトはホバー再生用 video を opacity:0 で
+  // サムネの上に重ねることがあり、ヒットテストには乗るが実際に見えているのはサムネ。
+  // display:none はヒットテストに乗らないので、visibility と自身の computed opacity だけ見れば足りる。
+  function isShown(el) {
+    try {
+      const view = el.ownerDocument.defaultView;
+      // visibility は継承されて computed に現れる (子の visible 上書きも反映済み) ため自身だけ見る
+      if (view.getComputedStyle(el).visibility === "hidden") return false;
+      // opacity は継承されず親の透明度が computed に現れないため、祖先 (Shadow DOM ホスト含む) を
+      // 遡って実効透明度を積算する (opacity:0 のラッパー内の video を透明と判定するため)
+      let opacity = 1;
+      for (let node = el; node;) {
+        opacity *= parseFloat(view.getComputedStyle(node).opacity);
+        if (opacity < 0.1) return false;
+        node = node.parentElement || node.getRootNode().host || null;
+      }
+      return true;
+    } catch (_e) { return true; }
+  }
+
+  function coversVideo(el, x, y) {
+    if (!isShown(el)) return false;                     // 透明レイヤーは動画ごと無視して奥のサムネを生かす
+    if (el.tagName === "VIDEO") return true;
+    const root = el.shadowRoot;
+    if (!root || typeof root.elementsFromPoint !== "function") return false;
+    try { return root.elementsFromPoint(x, y).some((n) => n !== el && coversVideo(n, x, y)); } catch (_e) { return false; }
+  }
+
   function imgAtPoint(e) {
     if (eligible(e.target)) return e.target;            // 速い経路: img が最前面
     if (typeof e.clientX !== "number") return null;
@@ -118,6 +158,7 @@
     try { stack = document.elementsFromPoint(e.clientX, e.clientY); } catch (_e) { return null; }
     for (const el of stack) {
       if (el === btn) continue;                         // 自前のボタン/オーバーレイは飛ばす
+      if (coversVideo(el, e.clientX, e.clientY)) return null; // 見えているのは動画: 下に敷かれたポスター/サムネ img を拾わない
       if (eligible(el)) return el;                      // 被さった要素 (アンカー等) の下の img を採用
     }
     return null;
@@ -134,7 +175,13 @@
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
     const img = imgAtPoint(e);
-    if (!img) return;
+    if (!img) {
+      // 表示中のボタンは隠す: 対象画像の矩形内でも動画等に覆われた位置では残さない (onMouseOut は
+      // 矩形内判定でボタンを保持するため、ここで消さないと動画の上にボタンが残る)。ボタン自身の
+      // ホバーは冒頭の e.target === btn で return 済みなので誤って消えない。
+      if (btn) btn.style.display = "none";
+      return;
+    }
     // 画像翻訳に未対応のプロバイダ (vision 無し = xai/deepseek/mymemory 等) を選択中は「訳」ボタンを出さない
     // (クリックしても no_vision になるだけなので無意味な操作を見せない)。ただし既に翻訳済みの画像は「原(戻す)」を
     // 出して元に戻せるようにする (翻訳した後にプロバイダを非対応へ切り替えたケースで取り残さない)。
@@ -719,6 +766,7 @@
   function isStaleImg(guard, img) {
     if (!guard) return false;
     if (typeof guard.myRun === "number" && guard.myRun !== imgRunId) return true;
+    if (typeof guard.requestId === "number" && imageRequestIds.get(img) !== guard.requestId) return true;
     if (!img || !img.isConnected) return true;
     if (guard.url && (img.currentSrc || img.src) !== guard.url) return true;
     return false;
@@ -824,7 +872,9 @@
   // 描画後は startFollow で「外部リサイズ/移動/差替 (ライトボックス等)」を監視し、取り残しオーバーレイを掃除する。
   async function renderTranslated(img, blocks, image, opts) {
     dbg("render", image && image.base64 ? "inpaint" : "html", "blocks=" + (blocks ? blocks.length : 0));
-    const guard = opts && { myRun: opts.myRun, url: opts.url };
+    // requestId もガードに含める: 応答到着後〜decode/描画中に「原(戻す)」や再 OCR が走った古い結果を
+    // canvas/フォールバックオーバーレイとして重ねない (ownsBtn はボタン表示しか守らない)
+    const guard = opts && { myRun: opts.myRun, url: opts.url, requestId: opts.requestId };
     // canvas inpaint(原文消去+焼き込み)が本線。renderInpaint は object-fit:cover/contain を
     // canvas 上で再現(fitDrawRect)するので、X 等の cover クロップ画像でも歪まず原文を消せる。
     // base64 が無い/canvas が失敗したときだけ、画像を壊さない HTML オーバーレイ(renderBlocks)へ落とす。
@@ -832,6 +882,7 @@
       try { await renderInpaint(img, blocks, image, guard); startFollow(img); return; }
       catch (e) { dbg("inpaint-fail", (e && e.message) || String(e)); /* HTML オーバーレイへ */ }
     }
+    if (isStaleImg(guard, img)) return; // inpaint 失敗までの間に復元/再OCR/差替が起きた → 古い結果を重ねない
     dbg("render", "fallback=blocks", "hasImg=" + !!image, "hasB64=" + !!(image && image.base64));
     renderBlocks(img, blocks);
     startFollow(img);
@@ -903,18 +954,37 @@
     }
   }
 
+  let imgRunId = 0; // 画像翻訳の全体世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
+  let imageRequestSeq = 0;
+  const imageRequestIds = new WeakMap(); // img -> 最新の個別OCR要求
+
+  function invalidateImageRequest(img) {
+    if (img) imageRequestIds.set(img, ++imageRequestSeq);
+  }
+
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
+    const width = Number(img.naturalWidth) || 0;
+    const height = Number(img.naturalHeight) || 0;
+    if (width > 0 && height > 0 && width * height > MAX_IMAGE_PIXELS) {
+      showImageError(img, "image_too_large");
+      return;
+    }
     const myRun = imgRunId; // 復元後に届いた遅延応答を描かないための世代チェック
+    const requestId = ++imageRequestSeq;
+    imageRequestIds.set(img, requestId);
+    // 共有ボタンをこの応答が触ってよいか (対象画像がまだこの img で、最新リクエストのままか)。
+    // 別画像へホバーが移った/同じ画像を再クリックした後に、古い応答がボタン表示を上書きするのを防ぐ。
+    const ownsBtn = () => Boolean(btn && target === img && imageRequestIds.get(img) === requestId);
     if (btn) btn.textContent = "…";
     try {
-      chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url }, (res) => {
-        if (chrome.runtime.lastError) { if (btn) btn.textContent = "訳"; return; }
+      chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url, imageWidth: width, imageHeight: height }, (res) => {
+        if (chrome.runtime.lastError) { if (ownsBtn()) btn.textContent = "訳"; return; }
         if (!contextAlive()) { shutdown(); return; } // 応答到着時に失効していたら DOM を触らず停止
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
-        if (myRun !== imgRunId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (btn) btn.textContent = "訳"; return; }
+        if (myRun !== imgRunId || imageRequestIds.get(img) !== requestId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (ownsBtn()) btn.textContent = "訳"; return; }
         // 切り分けログ (localStorage __rt_debug=1 のときだけ): vision が読んだ原文(orig)と訳文(trans)を出す。
         // orig が既に崩れていれば vision の読み取り段、orig 正常で trans 崩れなら翻訳段、と一目で確定できる。
         if (res && res.ok && Array.isArray(res.blocks)) {
@@ -927,20 +997,20 @@
         // アニメーション画像 (SW がバイトから判定) はこの画像を以後ボタン非表示にする。初回だけ理由を出して隠す。
         if (res && res.error === "animated") {
           animatedImgs.add(img);
-          if (btn) {
+          if (ownsBtn()) {
             btn.title = imgErrorText(res);
             btn.textContent = "×";
-            window.setTimeout(() => { if (btn) { btn.style.display = "none"; btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); } }, 2000);
+            window.setTimeout(() => { if (btn && target === img) { btn.style.display = "none"; btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); } }, 2000);
           }
           return;
         }
         const blocks = (res && res.ok) ? filterBlocks(res.blocks) : []; // ロゴ/ブランド語の重畳を除外
         if (blocks.length) {
           // canvas inpaint (背景色 fill で原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
-          renderTranslated(img, blocks, res.image, { myRun, url })
-            .then(() => { if (myRun === imgRunId) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
-            .catch(() => { if (btn) btn.textContent = "訳"; });        // 画像が消えていた等で描画失敗 → 無視
-        } else if (btn) {
+          renderTranslated(img, blocks, res.image, { myRun, url, requestId })
+            .then(() => { if (myRun === imgRunId && ownsBtn()) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
+            .catch(() => { if (ownsBtn()) btn.textContent = "訳"; });   // 画像が消えていた等で描画失敗 → 無視
+        } else if (ownsBtn()) {
           // 「×」表示。res.ok だが空 = 翻訳対象テキスト無し/全ロゴ(正常)。res.ok===false = 失敗。
           // 失敗時は理由を title(ホバーで表示)に載せ、原因不明の無言失敗を防ぐ(ページ翻訳の errorText 相当)。
           // 失敗は読めるよう「×」を長め(4s)に保持し、文字無しは短く(1.5s)戻す。
@@ -948,14 +1018,12 @@
           btn.title = failed ? imgErrorText(res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
           btn.textContent = "×";
           window.setTimeout(() => {
-            if (btn) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+            if (btn && target === img) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
           }, failed ? 4000 : 1500);
         }
       });
-    } catch (_e) { if (btn) btn.textContent = "訳"; } // context 失効は静かに無視
+    } catch (_e) { if (btn && target === img) btn.textContent = "訳"; } // context 失効は静かに無視
   }
-
-  let imgRunId = 0; // 画像翻訳の世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
 
   // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)。
   function restorePrevStyle(el) {
@@ -982,6 +1050,7 @@
   // ホバーボタンの「原」で、その 1 枚だけオーバーレイを消して原文に戻す (ページ全体の復元とは独立)。
   function revertImg(img) {
     const wrap = img && img.closest(".__rt-img-wrap"); // <picture> ネストでも wrap を辿れる
+    invalidateImageRequest(img); // その画像だけ、遅れて届くOCR結果を無効化する
     if (wrap) unwrapImage(wrap);
     setBtnMode(img); // ボタンを「訳」に戻す (続けて再翻訳できる)
   }
