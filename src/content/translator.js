@@ -43,6 +43,8 @@
   // ---- 状態 ----
   const originalMap = new WeakMap();    // Node → 原文 (復元用)
   const writtenValue = new WeakMap();   // Node → 我々が書き込んだ訳文 (ページ側の書き換えと区別するため)
+  let originalReapplyAt = new WeakMap(); // Node → 原文書き戻しへ最後に訳文を再適用した時刻 (ページとの書き換え競合を止める)
+  let recentScopeWrites = new WeakMap(); // 安定した親コンポーネント → 直近に訳文を書いた原文と時刻 (Text ノード再生成競合の検知)
   const translatedNodes = new Set();    // 翻訳/処理済みノード (再翻訳防止 + 復元走査用)
   // 原文テキスト → 訳文のセッション内メモ。SPA 再レンダで Text ノード実体が差し替わると WeakMap キーから
   // 外れて同一原文を再翻訳してしまう (= autoTranslate で「翻訳済みを何度も再翻訳」)。同じ原文を既に訳して
@@ -86,6 +88,8 @@
   let pageTextCount = 0;
   let pageCharCount = 0;
   const INCOMPLETE_REQUEUE_MAX = 2;     // stream 出力切れ(incomplete)で未訳のまま残ったノードを再キューする上限 (無限ループ防止)
+  const ORIGINAL_REAPPLY_COOLDOWN_MS = 1000; // ページが直後に原文へ戻したノードではページ側を優先し、MO の相互書き換えを止める
+  const SCOPE_WRITE_MAX_TEXTS = 128;    // 1 コンポーネントで保持する競合検知用原文数 (巨大 Web Component での増加を上限化)
 
   // 初回翻訳 / SPA 遷移のあと、コンテンツが段階的に描画されるのを待って全体を取り込み直す遅延(ms)。
   // qiankun 等の micro-frontend や非同期チャートは初回 ingest 時に 0-height で、可視内で高さが付いても IO は
@@ -199,6 +203,44 @@
     return true;
   }
 
+  // Text ノードやその直近ラッパーを作り直す Web Component でも同じ単位を引けるよう、最寄りの custom element
+  // (shadow host を含む) を競合検知スコープにする。custom element が無い通常 DOM は直親を使う。
+  function rewriteScope(node) {
+    let el = node && node.parentElement;
+    const directParent = el;
+    while (el) {
+      if (String(el.localName || "").includes("-")) return el;
+      const parent = el.parentElement;
+      if (parent) { el = parent; continue; }
+      const root = el.getRootNode && el.getRootNode();
+      el = root && root.host && root.host !== el ? root.host : null;
+    }
+    return directParent;
+  }
+
+  function noteScopeWrite(node, text) {
+    const scope = rewriteScope(node);
+    if (!scope || !text) return;
+    let writes = recentScopeWrites.get(scope);
+    if (!writes) { writes = new Map(); recentScopeWrites.set(scope, writes); }
+    if (writes.size >= SCOPE_WRITE_MAX_TEXTS && !writes.has(text)) writes.delete(writes.keys().next().value);
+    writes.delete(text); // Map の末尾へ動かし、上限到達時に古い原文から外せるようにする
+    writes.set(text, Date.now());
+  }
+
+  function scopeWriteIsRecent(node, text) {
+    const scope = rewriteScope(node);
+    const writes = scope && recentScopeWrites.get(scope);
+    if (!writes) return false;
+    const last = writes.get(text);
+    const now = Date.now();
+    if (last == null || now - last >= ORIGINAL_REAPPLY_COOLDOWN_MS) return false;
+    // ページが再生成を続ける間は時刻を延長し、静止してクールダウンした後だけ再適用できるようにする。
+    writes.delete(text);
+    writes.set(text, now);
+    return true;
+  }
+
   // テキストノードを監視すべきブロック要素 (インライン親は透過して上へ辿る)
   function blockAncestor(node) {
     let el = node.parentElement;
@@ -208,7 +250,7 @@
     return el || document.body;
   }
 
-  // root 配下の翻訳対象テキストノードを集める。
+  // root 配下の翻訳対象テキストノードを document 順に遅延列挙する。
   // TreeWalker は Shadow DOM を貫通しないので、開いた shadowRoot を辿る DFS で実装する
   // (Immersive 同様に Web コンポーネント内のテキストも翻訳対象にする)。子は document 順で積む。
   // collectNodes の病的ガード: 通常ページでは到達しない大きさに置く (受理テキスト 5 万 / 走査 30 万ノード)。
@@ -218,17 +260,22 @@
   // droppedTransient に数えて done(partial) で正直に報告する (通常予算は従来どおり enqueue 側の PAGE_MAX_*)。
   const COLLECT_MAX_TEXTS = 50000;
   const COLLECT_MAX_VISITS = 300000;
-  function collectNodes(root) {
-    const out = [];
-    if (!root) return out;
+  function* collectNodes(root) {
+    if (!root) return;
     const stack = [root];
     let visited = 0;
+    let accepted = 0;
     while (stack.length) {
-      if (out.length >= COLLECT_MAX_TEXTS || ++visited > COLLECT_MAX_VISITS) { droppedTransient++; break; }
+      if (accepted >= COLLECT_MAX_TEXTS || ++visited > COLLECT_MAX_VISITS) { droppedTransient++; return; }
       const node = stack.pop();
       const t = node.nodeType;
-      if (t === 3) { if (accept(node)) out.push(node); continue; }       // テキスト
+      if (t === 3) {                                                   // テキスト
+        if (accept(node)) { accepted++; yield node; }
+        continue;
+      }
       if (t !== 1 && t !== 11) continue;                                  // 要素 or DocumentFragment(shadowRoot)
+      // accept() で全テキストを個別に落とす前に、翻訳対象外 subtree を入口で枝刈りする。
+      if (t === 1 && node.matches(SKIP_CLOSEST)) continue;
       if (t === 1 && node.shadowRoot) {                                   // 開いた shadow DOM を辿る
         stack.push(node.shadowRoot);
         // shadow root 内部の動的更新も拾えるよう MutationObserver に登録する (翻訳中のみ)
@@ -240,7 +287,6 @@
       const kids = node.childNodes;
       for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);     // 逆順 push で pop 時に document 順
     }
-    return out;
   }
 
   // ブロックの rect を 1 回だけ読み、(a) ビューポート(+先読みマージン)内か near と、
@@ -286,7 +332,14 @@
       // メモ適用なら API も reflow も無く、MO コールバック内の同期書き換えなのでペイント前に訳文へ戻りちらつかない。
       // 原文が実際に変化したとき (時刻が進んで "12 minutes ago" 等) はメモミス → 下の通常経路で訳す (翻訳を維持する)。
       const memo = translationMemo.get(node.nodeValue);
-      if (memo !== undefined) { applyOne({ node, text: node.nodeValue }, memo); dc.memo++; continue; }
+      if (memo !== undefined) {
+        // ページが訳文への反応として同じ custom element 内の Text ノードを原文で作り直した場合は、ページ側を優先する。
+        // translatedNodes に残すため同じノードを再キューせず、別テキストやクールダウン後の更新は通常どおり翻訳できる。
+        if (scopeWriteIsRecent(node, node.nodeValue)) translatedNodes.add(node);
+        else applyOne({ node, text: node.nodeValue }, memo);
+        dc.memo++;
+        continue;
+      }
       const block = blockAncestor(node);
       if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; dc.flushedHit++; continue; }
       if (observedBlocks.has(block)) {
@@ -445,6 +498,7 @@
       if (!originalMap.has(item.node)) originalMap.set(item.node, item.text);
       item.node.nodeValue = t;
       writtenValue.set(item.node, t); // 我々が書いた値を記録 (ページの後続書き換えと判別する)
+      noteScopeWrite(item.node, item.text);
     }
   }
   // バッチ全体に適用 (最終確定)。streaming で既に適用済みのノードは nodeValue 不一致で applyOne がスキップする。
@@ -726,16 +780,24 @@
         if (translatedNodes.has(tn)) {
           // (a) 我々が書いた訳文のままなら無視 (自己書き換えでの再発火/ループ防止)。必ず最初に判定する。
           if (tn.nodeValue === writtenValue.get(tn)) continue;
-          // (b) ページが「我々が訳した原文」へ書き戻しただけ (SPA 仮想 DOM の同値再適用) → キャッシュ済みの訳文を
-          //     同期で即書き戻す。delete→ingest→API を踏まず、原文が一瞬見えるちらつきも出さない (再翻訳の主因を断つ)。
-          //     書き戻し後の characterData は (a) で continue するので自己ループしない。
+          // (b) ページが「我々が訳した原文」へ書き戻しただけ (SPA 仮想 DOM の同値再適用) → 通常はキャッシュ済みの
+          //     訳文を同期で即書き戻す。ページ側も MutationObserver 等で直後に原文へ戻す Web Component では、双方が
+          //     マイクロタスク内で書き換え続けると入力イベントまで停止する。短時間の再衝突時はページ側を優先して連鎖を
+          //     止める。translatedNodes は維持するため、原文になったノードを再キュー/API 送信するループにも入らない。
           const wv = writtenValue.get(tn);
-          if (wv != null && tn.nodeValue === originalMap.get(tn)) { tn.nodeValue = wv; continue; }
+          if (wv != null && tn.nodeValue === originalMap.get(tn)) {
+            const now = Date.now();
+            const last = originalReapplyAt.get(tn);
+            originalReapplyAt.set(tn, now);
+            if (last == null || now - last >= ORIGINAL_REAPPLY_COOLDOWN_MS) tn.nodeValue = wv;
+            continue;
+          }
           // (c) 別テキストへの実差し替え (チャット編集/SPA 本文入替) → 翻訳済みマーク/原文記録を捨てて訳し直す
           //     (古い訳の残留や復元時の誤上書きを防ぐ)。
           translatedNodes.delete(tn);
           originalMap.delete(tn);
           writtenValue.delete(tn);
+          originalReapplyAt.delete(tn);
         }
         ingest(tn.parentNode || tn);
         continue;
@@ -911,6 +973,8 @@
       writtenValue.delete(node);
     }
     translatedNodes.clear();
+    originalReapplyAt = new WeakMap();
+    recentScopeWrites = new WeakMap();
     translationMemo.clear(); // provider/targetLang 変更での再翻訳時に古い訳をキャッシュ適用しないよう破棄
   }
 

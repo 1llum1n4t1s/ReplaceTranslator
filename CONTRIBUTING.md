@@ -60,4 +60,4 @@ CI（`.github/workflows/publish.yml`）に必要な準備:
 - AMO listing（名前/概要/説明）は `webstore/store-listing.firefox.{ja,en}.txt` を編集（CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成し `web-ext sign --amo-metadata` に渡す）
 
 ## アーキテクチャと実装パターン
-設計の詳細・守るべきパターンは [CLAUDE.md](CLAUDE.md) を参照してください。
+設計の詳細・守るべきパターンは [AGENTS.md](AGENTS.md) を参照してください。

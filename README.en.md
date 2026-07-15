@@ -73,4 +73,4 @@ Japanese, English, Chinese (Simplified / Traditional), Korean, Spanish, French, 
 [MIT License](LICENSE)
 
 ## 👩‍💻 For developers
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [CLAUDE.md](CLAUDE.md) for build, test, and architecture.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for build, test, and architecture.

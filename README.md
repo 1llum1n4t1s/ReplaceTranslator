@@ -74,4 +74,4 @@ API キーは以下から取得できます:
 [MIT License](LICENSE)
 
 ## 👩‍💻 開発者の方へ
-ビルド・テスト・アーキテクチャは [CONTRIBUTING.md](CONTRIBUTING.md) と [CLAUDE.md](CLAUDE.md) を参照してください。
+ビルド・テスト・アーキテクチャは [CONTRIBUTING.md](CONTRIBUTING.md) と [AGENTS.md](AGENTS.md) を参照してください。

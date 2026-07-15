@@ -483,13 +483,19 @@
     return Math.sqrt(dr * dr + dg * dg + db * db);
   }
 
-  // drawInpaintBlock と同一式で block の cy ベース pixel box を求め、flat 背景色も返す (textured/極小は null)。
-  function flatBoxOf(ctx, blk, W, H) {
-    if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
+  // VLM が返す縦中央 cy を描画座標へ変換する規則を、判定・計測・描画で共有する。
+  function blockPixelRect(blk, W, H) {
     const w = Math.max(2, blk.box.w * W), h = Math.max(2, blk.box.h * H);
     const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
     const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
     const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
+    return { x, y, w, h };
+  }
+
+  // drawInpaintBlock と同じ pixel box で flat 背景色も返す (textured/極小は null)。
+  function flatBoxOf(ctx, blk, W, H) {
+    if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
+    const { x, y, w, h } = blockPixelRect(blk, W, H);
     const st = ringStats(ctx, x, y, w, h, W, H);
     if (!st || st.std >= 24 || (st.alpha != null && st.alpha < 0.5)) return null; // flat 不透明背景のみ (textured/透過は除外し行間 fill を乗せない)
     return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, color: st.color };
@@ -549,10 +555,7 @@
   // 連結判定 (shouldLinkRowsPitch) の色条件は両方 flat のときだけ要求する。cyPx=描画と同じ縦中央。
   function pixelBoxOf(ctx, blk, W, H) {
     if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
-    const w = Math.max(2, blk.box.w * W), h = Math.max(2, blk.box.h * H);
-    const x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
-    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
-    const y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
+    const { x, y, w, h } = blockPixelRect(blk, W, H);
     const st = ringStats(ctx, x, y, w, h, W, H);
     // cyPx は描画と同じ「クランプ後の縦中央」(y+h/2)。pitch 計測も availPitch も実際の描画位置と一致させる
     // (端でクランプされた行を cyN*H にすると gap を過小評価し font が不要に縮む)。
@@ -698,11 +701,7 @@
   // forcedFont>0 のとき pitch ベースの確定フォント (computeGroupFonts) を無条件採用し、元の見た目サイズへ拡大する。
   // scale=W/表示ボックス幅 で物理可読下限を換算する。
   function drawInpaintBlock(ctx, blk, W, H, forcedFont, scale) {
-    let w = Math.max(2, blk.box.w * W);
-    let h = Math.max(2, blk.box.h * H);
-    let x = Math.min(Math.max(0, blk.box.x * W), Math.max(0, W - w));
-    const cyN = (typeof blk.cy === "number" && blk.cy >= 0 && blk.cy <= 1) ? blk.cy : (blk.box.y + blk.box.h / 2);
-    let y = Math.min(Math.max(0, cyN * H - h / 2), Math.max(0, H - h));
+    let { x, y, w, h } = blockPixelRect(blk, W, H);
     const st = ringStats(ctx, x, y, w, h, W, H);
     const flat = st && st.std < 24; // 外周の色ブレが小さい=平坦背景 → 背景色 fill で原文を消せる
     if (flat) {
