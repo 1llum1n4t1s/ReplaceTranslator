@@ -147,12 +147,14 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s inherit_errexit
+          # curl 失敗 (transient な 4xx/5xx 含む) は errexit で即死させず空にフォールバックし、
+          # 下の「OAuth token 取得失敗 → publish step に委ねる」分岐を機能させる (pub_response と同形)。
           token_response=$(curl -fsS \
             -X POST "https://oauth2.googleapis.com/token" \
             --data-urlencode "client_id=${CWS_CLIENT_ID}" \
             --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
             --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
-            --data-urlencode "grant_type=refresh_token")
+            --data-urlencode "grant_type=refresh_token") || token_response=""
           access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
           if [ -z "${access_token:-}" ]; then
             echo "::warning::CWS pre-flight: OAuth token 取得失敗 → publish step に判定を委ねる"
