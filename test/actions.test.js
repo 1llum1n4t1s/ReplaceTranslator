@@ -67,10 +67,18 @@ test("normalize coerces boolean flags", () => {
   assert.equal(SettingsSchema.normalize({ autoTranslate: 0 }).autoTranslate, false);
 });
 
-test("normalize defaults showFab to true when missing (existing installs keep the FAB)", () => {
-  assert.equal(SettingsSchema.normalize({}).showFab, true);          // 既存ユーザーの保存済み設定にはキーが無い
+test("normalize defaults showFab to false when missing (FAB is opt-in)", () => {
+  assert.equal(SettingsSchema.normalize({}).showFab, false);         // 既定 OFF (キー欠損 = OFF に倒す)
   assert.equal(SettingsSchema.normalize({ showFab: false }).showFab, false);
   assert.equal(SettingsSchema.normalize({ showFab: true }).showFab, true);
+  assert.equal(SettingsSchema.normalize({ showFab: "x" }).showFab, false); // 厳密に true のときだけ有効
+});
+
+test("normalize defaults showImageButton to false when missing (image button is opt-in)", () => {
+  assert.equal(SettingsSchema.normalize({}).showImageButton, false);         // 既定 OFF (キー欠損 = OFF に倒す)
+  assert.equal(SettingsSchema.normalize({ showImageButton: false }).showImageButton, false);
+  assert.equal(SettingsSchema.normalize({ showImageButton: true }).showImageButton, true);
+  assert.equal(SettingsSchema.normalize({ showImageButton: "x" }).showImageButton, false); // 厳密に true のときだけ有効 (showFab と同形)
 });
 
 test("normalize defaults selectionTranslate to true when missing (existing installs keep selection translate)", () => {

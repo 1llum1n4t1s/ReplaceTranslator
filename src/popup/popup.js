@@ -238,7 +238,7 @@
   // ---- 共通 ----
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
-    const fabOn = state.settings.showFab !== false;
+    const fabOn = state.settings.showFab === true; // 既定 OFF (normalize 済みでも向きを合わせて明示 ON のみ点灯)
     $("show-fab").checked = fabOn;
     // 不透明度スライダー: 乗数(0.2〜1.0)→パーセント表示。FAB 非表示のときは操作不可にして淡くする
     const opPct = Math.round((typeof state.settings.fabOpacity === "number" ? state.settings.fabOpacity : 1) * 100);
@@ -247,6 +247,7 @@
     $("fab-opacity").disabled = !fabOn;
     const selOn = state.settings.selectionTranslate !== false;
     $("sel-translate").checked = selOn;
+    $("show-img-btn").checked = state.settings.showImageButton === true;
     $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
     $("sel-mode").disabled = !selOn; // 選択翻訳 OFF のときは表示方法を選べないよう淡くする
     renderProviderList();
@@ -494,6 +495,7 @@
     $("fab-opacity").addEventListener("change", (e) => save({ fabOpacity: Number(e.target.value) / 100 }));
     $("sel-translate").addEventListener("change", (e) => { save({ selectionTranslate: e.target.checked }); $("sel-mode").disabled = !e.target.checked; });
     $("sel-mode").addEventListener("change", (e) => save({ selectionMode: e.target.value }));
+    $("show-img-btn").addEventListener("change", (e) => save({ showImageButton: e.target.checked }));
     // ショートカット変更: ブラウザのコマンド設定ページを開く (Chrome=extensions/shortcuts / Firefox=about:addons)
     $("sel-shortcut").addEventListener("click", () => {
       const ff = typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent || "");

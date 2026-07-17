@@ -268,8 +268,9 @@
     return hasVideo(el);
   }
   // FAB の表示可否 (showFab 設定 + 動画全画面表示)。インライン display は fab.css (#__rt_fab) より優先されるので確実に消せる。
+  // showFab は既定 OFF: 明示的に ON のフラグを読めたときだけ表示する (フラグ未取得/欠損は非表示に倒す)。
   function refreshVisibility() {
-    const hidden = (lastFlags && lastFlags.showFab === false) || isFullscreenVideo();
+    const hidden = !(lastFlags && lastFlags.showFab === true) || isFullscreenVideo();
     fab.style.display = hidden ? "none" : "";
   }
   document.addEventListener("fullscreenchange", () => {

@@ -60,6 +60,8 @@
   "optShowFab": { "message": "フローティングボタン" },
   "optShowFabDesc": { "message": "ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。" },
   "optFabOpacity": { "message": "不透明度" },
+  "optShowImageBtn": { "message": "画像翻訳ボタン" },
+  "optShowImageBtnDesc": { "message": "画像にカーソルを重ねたときに「訳」ボタンを表示します。" },
   "optSelectionTranslate": { "message": "選択テキスト翻訳" },
   "optSelectionTranslateDesc": { "message": "テキストを選択して Ctrl+Shift+L または右クリックで翻訳します。表示方法は下で選べます。" },
   "optSelShortcut": { "message": "ショートカットを変更" },

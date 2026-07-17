@@ -23,6 +23,7 @@
   let target = null;
   let dead = false; // shutdown 済みフラグ (リスナー解除後の再入を弾く)
   let imageCapable = false; // 選択中プロバイダが画像翻訳(vision)対応か。CONTENT_FLAGS から読む。確定まで false=安全側
+  let showImageButton = false; // 画像ホバー「訳」ボタンの表示設定 (CONTENT_FLAGS)。既定 OFF・フラグ確定前も出さない (安全側)。OFF では翻訳済みの「原(戻す)」も含め一切出さない
   // (既定 provider は mymemory=非対応。楽観的に true 初期化すると get 解決前の数ms に非対応でもボタンが一瞬出るため false 始動)
   // アニメーション画像 (アニメ GIF/WebP・APNG) は canvas inpaint で焼くと静止画に固まるため翻訳対象外。SW が翻訳時に
   // バイトから判定し error:"animated" を返す → その画像をここに登録し、以後ホバーしても「訳」ボタンを出さない。
@@ -148,7 +149,11 @@
     if (el.tagName === "VIDEO") return true;
     const root = el.shadowRoot;
     if (!root || typeof root.elementsFromPoint !== "function") return false;
-    try { return root.elementsFromPoint(x, y).some((n) => n !== el && coversVideo(n, x, y)); } catch (_e) { return false; }
+    // ShadowRoot.elementsFromPoint は shadow 内の要素だけでなくホストの祖先 (light DOM 側のスタック) も返す。
+    // 祖先へ再帰すると「祖先の root が子孫ホストを返し返す」相互再帰になり、shadow ネストが深いサイト
+    // (Reddit の shreddit-* 等) で指数的に発散しメインスレッドを塞ぐ (= クリック不可のページ応答停止)。
+    // root.contains で「この root の内側」だけに絞れば深さ方向のみの再帰になり必ず終わる。
+    try { return root.elementsFromPoint(x, y).some((n) => n !== el && root.contains(n) && coversVideo(n, x, y)); } catch (_e) { return false; }
   }
 
   function imgAtPoint(e) {
@@ -172,6 +177,7 @@
 
   function onMouseOver(e) {
     if (dead) return;
+    if (!showImageButton) return;                // ボタン表示 OFF 設定: 画像解決 (elementsFromPoint 走査) ごと省く
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
     const img = imgAtPoint(e);
@@ -216,6 +222,9 @@
   const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
   function applyFlags(f) {
     if (f && typeof f.imageCapable === "boolean") imageCapable = f.imageCapable;
+    if (f && typeof f.showImageButton === "boolean") showImageButton = f.showImageButton;
+    // ボタン表示 OFF へ切り替わった瞬間は、翻訳済みの「原」も含め表示中のボタンを隠す (設定を ON に戻せば再表示できる)。
+    if (!showImageButton && btn) { btn.style.display = "none"; return; }
     // 非対応へ切り替わった瞬間に、表示中の「訳」ボタン (未翻訳画像) を隠す (翻訳済みの「原」は残す)。
     if (!imageCapable && btn && (!target || !isTranslated(target))) btn.style.display = "none";
   }
