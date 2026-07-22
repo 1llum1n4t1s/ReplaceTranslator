@@ -161,7 +161,8 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "::add-mask::${token_response}"
+          # add-mask は行単位で解釈されるため、複数行 JSON 全体を渡すと2行目以降が通常ログへ漏れる。
+          # parse 済みの単一行 access token だけを登録し、OAuth 応答本文自体は一切出力しない。
           echo "::add-mask::${access_token}"
           # DRAFT projection の uploadState は「直近アップロードの状態」であって審査提出済みかは表さない。
           # uploadState != FAILURE だけで skip すると、アップロード成功後に publish が失敗/タイムアウトした版を
@@ -202,7 +203,7 @@ jobs:
             echo "::error::access_token のパースに失敗しました"
             exit 1
           fi
-          echo "::add-mask::${token_response}"
+          # 複数行 token_response は add-mask へ渡さない（2行目以降のログ露出を防ぐ）。
           echo "::add-mask::${access_token}"
 
           echo "📤 Step 1/2: Chrome Web Store に ZIP をアップロード中..."
