@@ -1095,7 +1095,7 @@ if (typeof importScripts === "function") {
   // ページ翻訳/復元はワンショット動作。全ページ自動翻訳 (autoTranslate) の永続フラグはここでは変更しない。
   // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
-  async function translatePage(tabId) {
+  async function translatePage(tabId, manual = false) {
     await ensurePageSessions(); // SW 再起動後でも旧セッション/世代を踏まえてから採番する (persist が他タブ分を消さないようにも必要)
     const myGen = bumpTabGen(tabId); // この翻訳指示の世代を採番 (await 中に restore が割り込んだら陳腐化する)
     abortGroup(tabId, "page"); // 再翻訳: 前回のページfetchだけ中断 (手動画像OCRは継続)
@@ -1128,6 +1128,7 @@ if (typeof importScripts === "function") {
       action: Actions.APPLY_TRANSLATE_CS,
       settings: publicSettings(settings),
       sessionId: myGen,
+      manual,
     });
     return { ok: true };
   }
@@ -1448,7 +1449,7 @@ if (typeof importScripts === "function") {
           case Actions.TRANSLATE_PAGE: {
             const tabId = msg.tabId || (sender.tab && sender.tab.id);
             if (!tabId) { sendResponse({ ok: false, error: "no_tab" }); break; }
-            sendResponse(await translatePage(tabId));
+            sendResponse(await translatePage(tabId, msg.manual === true));
             break;
           }
           case Actions.RESTORE_PAGE: {
@@ -1544,7 +1545,7 @@ if (typeof importScripts === "function") {
   if (chrome.contextMenus) {
     chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       if (!tab || !tab.id) return;
-      if (info.menuItemId === "rt-translate") await translatePage(tab.id);
+      if (info.menuItemId === "rt-translate") await translatePage(tab.id, true);
       else if (info.menuItemId === "rt-restore") await restorePage(tab.id);
       else if (info.menuItemId === "rt-translate-selection") triggerSelectionTranslate(tab.id);
     });

@@ -70,12 +70,22 @@
     return (byCode[base] && base !== "auto") ? base : null;
   }
 
+  // 自動翻訳時に、翻訳先言語が主体のページをスキップするか判定する。
+  // 手動翻訳は少数の異言語テキストを訳したい明示操作なので、混在率にかかわらずスキップしない。
+  function shouldSkipSameLanguage(pageLang, targetLang, otherPct, threshold, manual) {
+    return manual !== true
+      && Boolean(pageLang)
+      && pageLang === targetLang
+      && !(Number(otherPct) >= Number(threshold));
+  }
+
   const Lang = Object.freeze({
     LANGUAGES: Object.freeze(LANGUAGES.map((l) => Object.freeze(l))),
     get,
     promptName,
     targets,
     normalizeCode,
+    shouldSkipSameLanguage,
   });
 
   globalThis.Lang = Lang;

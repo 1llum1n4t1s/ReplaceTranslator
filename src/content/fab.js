@@ -209,7 +209,7 @@
       errText = ""; partialText = ""; // 再翻訳で前回のエラー/一部未翻訳表示をクリア
       state = "loading";
       render();
-      send({ action: A.TRANSLATE_PAGE });
+      send({ action: A.TRANSLATE_PAGE, manual: true });
     } else {
       // on (翻訳済み) も loading (翻訳中) も、クリックで原文へ戻す = 復元/中止。
       // loading 中のクリックを無視すると、autoTranslate で重い/詰まったページでは FAB が

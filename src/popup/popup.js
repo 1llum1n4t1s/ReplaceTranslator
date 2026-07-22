@@ -461,7 +461,7 @@
       if (!tab) return;
       await pendingSave; // 直前の言語/provider 変更が storage に確定してから翻訳する (古い設定での初回実行を防ぐ)
       setStatus(msg("statusStarting", "Starting…"));
-      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_PAGE, tabId: tab.id }, (res) => {
+      chrome.runtime.sendMessage({ action: Actions.TRANSLATE_PAGE, tabId: tab.id, manual: true }, (res) => {
         if (!res || !res.ok) setStatus(msg("statusError", "Error"));
       });
     });

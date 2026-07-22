@@ -978,7 +978,7 @@
     translationMemo.clear(); // provider/targetLang 変更での再翻訳時に古い訳をキャッシュ適用しないよう破棄
   }
 
-  async function startTranslate(newSettings, newSessionId) {
+  async function startTranslate(newSettings, newSessionId, manual) {
     settings = newSettings;
     sessionId = (newSessionId != null) ? newSessionId : null;
     dbg("startTranslate BUILD", RT_BUILD, "top=", window.top === window.self, "src=", newSettings && newSettings.sourceLang, "tgt=", newSettings && newSettings.targetLang, "provider=", newSettings && newSettings.provider, "url=", location.href.slice(0, 80));
@@ -1000,7 +1000,9 @@
       return;
     }
     // sourceLang=auto はページの主要言語を検出して翻訳元に解決する。
-    // ページ言語=翻訳先のページは翻訳しない (日本語ページの英語メニュー等の断片を巻き込まない + API 呼び出しゼロ)。
+    // 自動翻訳では、ページ言語=翻訳先のページを翻訳しない
+    // (日本語ページの英語メニュー等の断片を巻き込まない + API 呼び出しゼロ)。
+    // popup/FAB/右クリックからの手動翻訳は、少数の異言語テキストを明示的に訳したい意図なのでこの判定を通さない。
     if (settings.sourceLang === "auto") {
       translating = false; // 検出の await 中は旧 observers/ループを止めておく
       runId += 1;
@@ -1012,8 +1014,9 @@
       // (日本語UI に囲まれた英語本文記事のような混在ページで、本文を skip で取り残さないため)。
       const otherPct = detected.langs.filter((l) => l.code !== settings.targetLang).reduce((a, l) => a + l.pct, 0);
       const mixedOther = otherPct >= MIXED_LANG_THRESHOLD; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
-      dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther);
-      if (pageLang && pageLang === settings.targetLang && !mixedOther) {
+      const skipSameLanguage = Lang.shouldSkipSameLanguage(pageLang, settings.targetLang, otherPct, MIXED_LANG_THRESHOLD, manual);
+      dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther, "manual=", manual);
+      if (skipSameLanguage) {
         // 実質ページ全体が翻訳先言語 → 訳すものが無い
         dbg("SKIP same-language (pageLang===targetLang)");
         stopObservers();
@@ -1076,7 +1079,7 @@
       return undefined;
     }
     if (msg.action === A.APPLY_TRANSLATE_CS) {
-      startTranslate(msg.settings, msg.sessionId).then(() => sendResponse({ ok: true })).catch((e) =>
+      startTranslate(msg.settings, msg.sessionId, msg.manual === true).then(() => sendResponse({ ok: true })).catch((e) =>
         sendResponse({ ok: false, message: String((e && e.message) || e) })
       );
       return true;

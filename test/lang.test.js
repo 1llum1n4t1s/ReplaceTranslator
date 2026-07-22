@@ -47,3 +47,11 @@ test("normalizeCode covers every selectable target language", () => {
     assert.equal(Lang.normalizeCode(l.code), l.code, `code: ${l.code}`);
   }
 });
+
+test("shouldSkipSameLanguage applies the mixed-language threshold only to automatic translation", () => {
+  assert.equal(Lang.shouldSkipSameLanguage("ja", "ja", 49.9, 50, false), true);
+  assert.equal(Lang.shouldSkipSameLanguage("ja", "ja", 50, 50, false), false);
+  assert.equal(Lang.shouldSkipSameLanguage("ja", "ja", 0, 50, true), false);
+  assert.equal(Lang.shouldSkipSameLanguage("en", "ja", 0, 50, false), false);
+  assert.equal(Lang.shouldSkipSameLanguage(null, "ja", 0, 50, false), false);
+});
