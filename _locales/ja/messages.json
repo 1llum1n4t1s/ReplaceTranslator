@@ -48,6 +48,7 @@
   "ctxTranslate": { "message": "このページを翻訳" },
   "ctxRestore": { "message": "原文に戻す" },
   "ctxTranslateSelection": { "message": "選択テキストを翻訳" },
+  "ctxTranslateImage": { "message": "この画像を翻訳" },
   "cmdTranslateSelection": { "message": "選択テキストを翻訳" },
 
   "optionsTitle": { "message": "Replace AI Translator API — 設定" },

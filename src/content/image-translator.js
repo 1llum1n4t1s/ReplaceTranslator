@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * image-translator.js — 画像内テキストの翻訳 (LLM vision・ホバー手動)
+ * image-translator.js — 画像内テキストの翻訳 (LLM vision・ホバー/右クリックの手動)
  *
  * 画像ホバーで「訳」ボタンを出し、クリックで background の TRANSLATE_IMAGE (vision) に投げ、
  * 返ってきた {translation, box} を画像の上にオーバーレイする。オーバーレイ後はボタンが「原」に
@@ -12,9 +12,10 @@
 (function () {
   if (window.__rtImgLoaded) return;
   window.__rtImgLoaded = true;
-  // 画像翻訳はホバー手動のみ (一括・後追い watcher・iframe 一括注入は廃止)。本スクリプトは manifest の
-  // content_scripts で top フレームにのみ常駐する (all_frames 指定なし) ため、フレーム判定は不要。
-  // 設定トグルは廃止: 翻訳はホバー+クリックの明示操作でしか起きないので、ホバーボタンは常時出す。
+  // 画像翻訳はホバー/右クリックの手動のみ (一括・後追い watcher・iframe 一括注入は廃止)。本スクリプトは
+  // manifest の content_scripts で top フレームにのみ常駐する (all_frames 指定なし)。iframe 内画像は
+  // 右クリック時に SW が info.frameId のフレームへ本スクリプトをオンデマンド注入して届ける (常駐はしない)。
+  // 設定トグルは廃止: 翻訳はホバー/右クリック+クリックの明示操作でしか起きない。
 
   const A = globalThis.Actions;
   if (!A) return;
@@ -23,7 +24,7 @@
   let target = null;
   let dead = false; // shutdown 済みフラグ (リスナー解除後の再入を弾く)
   let imageCapable = false; // 選択中プロバイダが画像翻訳(vision)対応か。CONTENT_FLAGS から読む。確定まで false=安全側
-  let showImageButton = false; // 画像ホバー「訳」ボタンの表示設定 (CONTENT_FLAGS)。既定 OFF・フラグ確定前も出さない (安全側)。OFF では翻訳済みの「原(戻す)」も含め一切出さない
+  let showImageButton = false; // 画像ホバー「訳」ボタンの表示設定 (CONTENT_FLAGS)。既定 OFF・フラグ確定前も出さない (安全側)。OFF でも翻訳済み画像の「原(戻す)」だけは出す (右クリック翻訳した画像を個別に戻せるように)
   // (既定 provider は mymemory=非対応。楽観的に true 初期化すると get 解決前の数ms に非対応でもボタンが一瞬出るため false 始動)
   // アニメーション画像 (アニメ GIF/WebP・APNG) は canvas inpaint で焼くと静止画に固まるため翻訳対象外。SW が翻訳時に
   // バイトから判定し error:"animated" を返す → その画像をここに登録し、以後ホバーしても「訳」ボタンを出さない。
@@ -40,6 +41,7 @@
     dead = true;
     try { document.removeEventListener("mouseover", onMouseOver, true); } catch (_e) { /* noop */ }
     try { document.removeEventListener("mouseout", onMouseOut, true); } catch (_e) { /* noop */ }
+    try { document.removeEventListener("contextmenu", onContextMenu, true); } catch (_e) { /* noop */ }
     try { window.removeEventListener("scroll", onScroll, true); } catch (_e) { /* noop */ }
     try { chrome.runtime.onMessage.removeListener(onRuntimeMessage); } catch (_e) { /* noop */ }
     try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch (_e) { /* noop */ }
@@ -177,7 +179,11 @@
 
   function onMouseOver(e) {
     if (dead) return;
-    if (!showImageButton) return;                // ボタン表示 OFF 設定: 画像解決 (elementsFromPoint 走査) ごと省く
+    // ボタン表示 OFF / vision 非対応プロバイダでは未翻訳画像にボタンを出さないので、翻訳済み画像の
+    // 「原(戻す)」候補 (= .__rt-img-wrap 内) にいるときだけ画像解決へ進み、それ以外は imgAtPoint
+    // (elementsFromPoint + getComputedStyle 走査) ごと省く (mouseover 高頻度イベントの無駄な style flush を防ぐ)。
+    if ((!showImageButton || !imageCapable) &&
+        !(e.target && e.target.closest && e.target.closest(".__rt-img-wrap"))) return;
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
     const img = imgAtPoint(e);
@@ -189,9 +195,10 @@
       return;
     }
     // 画像翻訳に未対応のプロバイダ (vision 無し = xai/deepseek/mymemory 等) を選択中は「訳」ボタンを出さない
-    // (クリックしても no_vision になるだけなので無意味な操作を見せない)。ただし既に翻訳済みの画像は「原(戻す)」を
-    // 出して元に戻せるようにする (翻訳した後にプロバイダを非対応へ切り替えたケースで取り残さない)。
-    if (!imageCapable && !isTranslated(img)) return;
+    // (クリックしても no_vision になるだけなので無意味な操作を見せない)。ボタン表示 OFF 設定も同様。
+    // ただし既に翻訳済みの画像は「原(戻す)」を出して元に戻せるようにする (翻訳後にプロバイダを非対応へ
+    // 切り替えた / 表示 OFF のまま右クリック翻訳したケースで取り残さない)。
+    if ((!imageCapable || !showImageButton) && !isTranslated(img)) return;
     // 翻訳済みでないアニメーション画像 (SW が判定済み) はボタンを出さない。アニメは焼き込みで固まるので翻訳対象外。
     if (animatedImgs.has(img) && !isTranslated(img)) return;
     target = img; placeBtn(img);
@@ -213,8 +220,50 @@
 
   // capture + passive: 全ページに常駐するので、ハンドラがスクロール/ホバーを妨げない (preventDefault しない) ことを
   // ブラウザに明示してイベント処理の最適化を許す。onMouseOver は eligible(IMG 以外は即 return) で軽い。
+  // 右クリック「この画像を翻訳」用: 直近の contextmenu で解決した画像を覚える (SW の TRANSLATE_IMAGE_CS が
+  // 届いたときの第一候補)。imgAtPoint 経由なのでオーバーレイ (<a> 等) 被りの画像も拾える。
+  let ctxImg = null;
+  function onContextMenu(e) {
+    if (dead) return;
+    ctxImg = imgAtPoint(e);
+  }
+
+  // srcUrl に一致する img を解決する。同一 URL の画像が複数あるとき (ロゴ/サムネ複製) に先頭一致だと
+  // 別の画像へオーバーレイが乗るため、ビューポート内 (右クリックした画像は必ず可視) を優先し、
+  // 同率なら表示面積の大きい方を採る。
+  function findBySrcUrl(srcUrl) {
+    let best = null, bestScore = -1;
+    for (const i of document.images) {
+      if ((i.currentSrc || i.src) !== srcUrl) continue;
+      const r = i.getBoundingClientRect();
+      const visible = r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+      const score = (visible ? 1e9 : 0) + Math.min(r.width * r.height, 1e8);
+      if (score > bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+
+  // 右クリックメニューからの画像翻訳。直近 contextmenu の対象 img を優先し、オンデマンド注入直後
+  // (contextmenu を見ていない) は srcUrl 照合で解決する。明示操作なのでホバーボタン表示設定 (showImageButton)
+  // には従わず、進捗/結果 (…/原/×+理由) は共有ホバーボタン UI で可視化する (vision 非対応や失敗も title で読める)。
+  function translateImgFromContext(srcUrl) {
+    if (dead) return;
+    if (!contextAlive()) { shutdown(); return; }
+    let img = (ctxImg && ctxImg.isConnected) ? ctxImg : null;
+    if (img && srcUrl && (img.currentSrc || img.src) !== srcUrl) img = null; // 別画像を指していたら srcUrl 照合へ
+    if (!img && srcUrl) img = findBySrcUrl(srcUrl);
+    if (!img) return; // SW が info.frameId のフレームへ配送するため通常ここには来ない (src 差し替え直後等のみ)
+    target = img;
+    placeBtn(img);
+    if (isTranslated(img)) return; // 翻訳済み: 「原(戻す)」ボタンを出すだけ (戻す操作はボタン/ページ復元に委ねる)
+    // 既知のアニメーション画像 (SW 判定済み) は再送しない (画像 fetch の無駄打ち防止)。理由だけ ×+title で出す。
+    if (animatedImgs.has(img)) { showImageError(img, "animated"); return; }
+    translateImg(img);
+  }
+
   document.addEventListener("mouseover", onMouseOver, { capture: true, passive: true });
   document.addEventListener("mouseout", onMouseOut, { capture: true, passive: true });
+  document.addEventListener("contextmenu", onContextMenu, { capture: true, passive: true });
   window.addEventListener("scroll", onScroll, { capture: true, passive: true });
 
   // 選択中プロバイダの画像翻訳対応可否 (imageCapable) を CONTENT_FLAGS から読む。非対応なら「訳」ボタンを出さない。
@@ -223,7 +272,7 @@
   function applyFlags(f) {
     if (f && typeof f.imageCapable === "boolean") imageCapable = f.imageCapable;
     if (f && typeof f.showImageButton === "boolean") showImageButton = f.showImageButton;
-    // ボタン表示 OFF へ切り替わった瞬間は、翻訳済みの「原」も含め表示中のボタンを隠す (設定を ON に戻せば再表示できる)。
+    // ボタン表示 OFF へ切り替わった瞬間は表示中のボタンを隠す (翻訳済み画像は再ホバーで「原」だけ再表示できる)。
     if (!showImageButton && btn) { btn.style.display = "none"; return; }
     // 非対応へ切り替わった瞬間に、表示中の「訳」ボタン (未翻訳画像) を隠す (翻訳済みの「原」は残す)。
     if (!imageCapable && btn && (!target || !isTranslated(target))) btn.style.display = "none";
@@ -965,6 +1014,10 @@
   let imgRunId = 0; // 画像翻訳の全体世代。復元時に ++ し、進行中ホバー OCR の遅延描画を止める
   let imageRequestSeq = 0;
   const imageRequestIds = new WeakMap(); // img -> 最新の個別OCR要求
+  // 翻訳リクエスト送信中の img。imageRequestIds は「古い応答を描かない」ための世代ガードで送信自体は
+  // 止めないため、「…」表示中の再クリック/右クリック連打がそのまま vision API の重複課金になる。
+  // 応答 (成功/失敗/lastError) で必ず解除する。
+  const inflightImgs = new WeakSet();
 
   function invalidateImageRequest(img) {
     if (img) imageRequestIds.set(img, ++imageRequestSeq);
@@ -973,6 +1026,7 @@
   function translateImg(img) {
     const url = img.currentSrc || img.src;
     if (!url) return;
+    if (inflightImgs.has(img)) return; // この画像は翻訳リクエスト送信中 (連打による重複課金を防ぐ)
     const width = Number(img.naturalWidth) || 0;
     const height = Number(img.naturalHeight) || 0;
     if (width > 0 && height > 0 && width * height > MAX_IMAGE_PIXELS) {
@@ -986,8 +1040,10 @@
     // 別画像へホバーが移った/同じ画像を再クリックした後に、古い応答がボタン表示を上書きするのを防ぐ。
     const ownsBtn = () => Boolean(btn && target === img && imageRequestIds.get(img) === requestId);
     if (btn) btn.textContent = "…";
+    inflightImgs.add(img);
     try {
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url, imageWidth: width, imageHeight: height }, (res) => {
+        inflightImgs.delete(img);
         if (chrome.runtime.lastError) { if (ownsBtn()) btn.textContent = "訳"; return; }
         if (!contextAlive()) { shutdown(); return; } // 応答到着時に失効していたら DOM を触らず停止
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
@@ -1030,7 +1086,7 @@
           }, failed ? 4000 : 1500);
         }
       });
-    } catch (_e) { if (btn && target === img) btn.textContent = "訳"; } // context 失効は静かに無視
+    } catch (_e) { inflightImgs.delete(img); if (btn && target === img) btn.textContent = "訳"; } // context 失効は静かに無視
   }
 
   // ensureWrap で退避した元 inline style を戻す (フィット用の width/height 等を除去)。
@@ -1074,11 +1130,12 @@
     document.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
   }
 
-  // 画像翻訳はホバー手動のみ (一括は廃止)。ページ翻訳には連動せず、原文復元時にだけ
-  // ホバーで付けたオーバーレイを消す (= ページを元に戻すと画像も元に戻る)。
+  // 画像翻訳はホバー/右クリックの手動のみ (一括は廃止)。ページ翻訳には連動せず、原文復元時にだけ
+  // 付けたオーバーレイを消す (= ページを元に戻すと画像も元に戻る)。
   function onRuntimeMessage(msg) {
     if (!msg || typeof msg.action !== "string") return undefined;
     if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
+    else if (msg.action === A.TRANSLATE_IMAGE_CS) translateImgFromContext(msg.srcUrl || "");
     return undefined;
   }
   try { chrome.runtime.onMessage.addListener(onRuntimeMessage); } catch (_e) { /* noop */ }

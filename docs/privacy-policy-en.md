@@ -20,8 +20,8 @@ Replace AI Translator API's developer does not collect, store, or receive any of
 - No page text is ever sent to any server operated by the extension's developer (the only destination is the provider's API you chose).
 
 ## Image translation (optional)
-- When image translation is enabled, the image you select (or images on the page) are fetched and sent as image data to the vision-capable provider you selected, in order to read and translate the text inside the image.
-- This is governed by the same provider privacy policies and terms listed above. MyMemory does not support image translation. The feature is off by default.
+- Image translation runs only when you explicitly act on an image (clicking the button shown on the image, or choosing "Translate this image" in the right-click menu). That single image is fetched and sent as image data to the vision-capable provider you selected, in order to read and translate the text inside the image. Images on the page are never sent automatically or in bulk.
+- This is governed by the same provider privacy policies and terms listed above. MyMemory does not support image translation.
 
 ## Token usage
 - Token usage counts are stored only inside your browser (`chrome.storage.local`), per month. They are never transmitted anywhere.
@@ -29,7 +29,7 @@ Replace AI Translator API's developer does not collect, store, or receive any of
 ## Why each permission is used
 - `storage`: store settings, API keys, and token usage locally
 - `scripting` / `activeTab` / `host_permissions`: inject the translator into the target page and talk to the provider API you selected
-- `contextMenus`: translate / restore from the right-click menu
+- `contextMenus`: right-click menu actions — translate page / translate selection / translate image / restore original
 
 ## Contact
 GitHub Issues: https://github.com/1llum1n4t1s/ReplaceTranslator/issues

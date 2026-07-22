@@ -638,7 +638,9 @@
           // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける。
           // 429/503/通信などレート制限・混雑由来の諦めは未訳ノード数を数え、done 時に「一部未翻訳」を正直に通知する
           // (無言 skip で「完了なのに訳されてない」を防ぐ)。
-          const isTransientDrop = res && (res.error === "network" || res.error === "runtime" ||
+          // stale_session (SW 再起動でセッション復元に失敗した後続バッチ) も未訳のまま残るので数える
+          // (通常は myRun ガード/ensurePageSessions で先に救済され、ここに来るのは縁ケースのみ)。
+          const isTransientDrop = res && (res.error === "network" || res.error === "runtime" || res.error === "stale_session" ||
             (res.error === "http" && (res.status === 429 || res.status >= 500)) || isOversize400(res));
           for (const b of batch) {
             translatedNodes.add(b.node);

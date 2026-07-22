@@ -48,6 +48,7 @@
   "ctxTranslate": { "message": "Translate this page" },
   "ctxRestore": { "message": "Restore original" },
   "ctxTranslateSelection": { "message": "Translate selection" },
+  "ctxTranslateImage": { "message": "Translate this image" },
   "cmdTranslateSelection": { "message": "Translate selected text" },
 
   "optionsTitle": { "message": "Replace AI Translator API — Settings" },

@@ -13,7 +13,7 @@
 - `src/service_worker.js` — Service Worker（LLM 代理 fetch・メッセージディスパッチ・usage 集計）
 - `src/content/translator.js` — DOM インプレース置換翻訳エンジン
 - `src/content/fab.js` + `fab.css` — 全ページ右端の翻訳タブ（レール型タブ形状・表面はアプリ専用「朱の栞」＝生成りの和紙×墨×朱・ホバーでせり出し・縦ドラッグ移動・ダーク対応）
-- `src/content/image-translator.js` + `image-translator.css` — 画像内テキストの翻訳オーバーレイ（ホバー手動・常時有効・LLM vision）
+- `src/content/image-translator.js` + `image-translator.css` — 画像内テキストの翻訳オーバーレイ（ホバー/右クリックの手動・LLM vision）
 - `src/popup/` — ポップアップ UI（2タブ「翻訳 / API設定」。設定は popup に統合済み、options ページは廃止）
 - `icons/` — `icon.svg`（原本）+ commit 済み `icon{16,48,128}.png`
 - `_locales/{en,ja}/messages.json` — i18n

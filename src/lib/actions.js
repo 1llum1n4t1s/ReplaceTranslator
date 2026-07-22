@@ -45,6 +45,7 @@
     APPLY_RESTORE_CS: "APPLY_RESTORE_CS",     // content に復元を指示
     TRANSLATE_PARTIAL: "TRANSLATE_PARTIAL",   // ストリーミングで確定した訳文要素を逐次 content へ (早出し)
     TRANSLATE_SELECTION_CS: "TRANSLATE_SELECTION_CS", // ホットキー/右クリックで選択テキスト翻訳の起動を content に合図
+    TRANSLATE_IMAGE_CS: "TRANSLATE_IMAGE_CS",         // 右クリック「画像を翻訳」の起動を content(image-translator) に合図
     // content → runtime (進捗通知; popup が開いていれば受信)
     TRANSLATION_PROGRESS: "TRANSLATION_PROGRESS",
   });

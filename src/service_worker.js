@@ -485,7 +485,9 @@ if (typeof importScripts === "function") {
       }
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
-      // 途中で切れても蓄積済み content で完全パースを試みる (下へ)
+      // 途中で切れても蓄積済み content で完全パースを試みる (下へ)。half-open の body を GC まで
+      // 持ち続けないよう reader は明示破棄する (readCappedBytes と同じ後始末)。
+      try { reader.cancel(); } catch (_e) { /* noop */ }
     }
     const translations = ProviderApi.extractTranslations(content);
     if (!Array.isArray(translations) || translations.length !== texts.length) {
@@ -660,6 +662,7 @@ if (typeof importScripts === "function") {
     return map;
   }
   async function ensurePricing(force) {
+    if (pricingLoaded && !force) return; // ロード済みの非 force 呼び出しは storage を読み直さない (無駄な I/O 回避)
     const cached = (await chrome.storage.local.get(StorageKeys.PRICING_CACHE))[StorageKeys.PRICING_CACHE];
     if (!pricingLoaded) {
       pricingLoaded = true;
@@ -1084,8 +1087,8 @@ if (typeof importScripts === "function") {
   // 各フレームの translator は文字数の少ない枠(広告等)を自前のしきい値で除外する。
   // APPLY_TRANSLATE_CS は tabs.sendMessage(frameId 省略) で全フレームに配信される。
   async function injectTranslator(tabId) {
-    // 画像翻訳はホバー手動のみで top フレームの manifest content script (image-translator.js) が担うため、
-    // ここでは翻訳エンジン (translator.js) だけを全フレームに注入する。
+    // 画像翻訳はホバー/右クリックの手動のみで manifest content script (image-translator.js・top 常駐 +
+    // 右クリック時の frameId 注入) が担うため、ここでは翻訳エンジン (translator.js) だけを全フレームに注入する。
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       files: ["src/lib/actions.js", "src/lib/lang.js", "src/content/translator.js"],
@@ -1509,6 +1512,11 @@ if (typeof importScripts === "function") {
         contexts: ["selection"],
       });
       chrome.contextMenus.create({
+        id: "rt-translate-image",
+        title: (chrome.i18n && chrome.i18n.getMessage("ctxTranslateImage")) || "Translate this image",
+        contexts: ["image"],
+      });
+      chrome.contextMenus.create({
         id: "rt-restore",
         title: (chrome.i18n && chrome.i18n.getMessage("ctxRestore")) || "Restore original",
         contexts: ["page"],
@@ -1516,24 +1524,39 @@ if (typeof importScripts === "function") {
     });
   }
 
-  // ホットキー/右クリックで content(selection-translator) に選択テキスト翻訳の起動を合図する。
-  // SW はページの選択を直接読めないため、content 側が window.getSelection() を読みバブルを出す。
-  // selection-translator は manifest content_scripts の常駐だが、Chrome は「拡張の更新/リロード前から
-  // 開いていたタブ」へ content_scripts を遡及注入しない。そのままだと sendMessage が受信端不在で黙殺され、
-  // バブルもエラーも出ず無反応になる。そこで失敗時は injectTranslator と同様にオンデマンド注入してから再送する
-  // (冪等ガード __rtActionsLoaded / __rtSelectionLoaded 済みなので既注入タブへ誤再注入しても無害)。
-  function triggerSelectionTranslate(tabId) {
+  // SW 発の常駐 content script 向けメッセージ送信 (selection/image 共通)。Chrome は「拡張の更新/リロード前から
+  // 開いていたタブ」へ content_scripts を遡及注入しないため、受信端不在の sendMessage は黙殺されて無反応になる。
+  // そこで送信失敗時は executeScript/insertCSS でオンデマンド注入してから再送する (冪等ガード __rt*Loaded 済みなので
+  // 既注入フレームへの誤再注入は無害)。frameId 指定でトップ以外のフレームにも配送できる (非常駐の iframe へは
+  // 注入フォールバックが必ず効く)。frameId を常に明示するのは、全フレーム配信だと過去に注入済みの iframe が
+  // 同一 srcUrl の別画像を重複処理し得るため (対象フレームだけに届ける)。
+  function sendCsOrInject(tabId, msg, files, css, frameId) {
     if (tabId == null) return;
-    chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_SELECTION_CS }).catch(async () => {
+    const fid = Number.isInteger(frameId) && frameId > 0 ? frameId : 0;
+    chrome.tabs.sendMessage(tabId, msg, { frameId: fid }).catch(async () => {
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ["src/lib/actions.js", "src/content/selection-translator.js"],
-        });
-        await chrome.scripting.insertCSS({ target: { tabId }, files: ["src/content/selection-translator.css"] });
-        await chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_SELECTION_CS });
+        await chrome.scripting.executeScript({ target: { tabId, frameIds: [fid] }, files });
+        await chrome.scripting.insertCSS({ target: { tabId, frameIds: [fid] }, files: [css] });
+        await chrome.tabs.sendMessage(tabId, msg, { frameId: fid });
       } catch (_e) { /* chrome:// / Web Store 等の注入不可ページは無視 */ }
     });
+  }
+
+  // ホットキー/右クリックで content(selection-translator) に選択テキスト翻訳の起動を合図する。
+  // SW はページの選択を直接読めないため、content 側が window.getSelection() を読みバブルを出す (トップフレームのみ)。
+  function triggerSelectionTranslate(tabId) {
+    sendCsOrInject(tabId, { action: Actions.TRANSLATE_SELECTION_CS },
+      ["src/lib/actions.js", "src/content/selection-translator.js"], "src/content/selection-translator.css");
+  }
+
+  // 右クリック「この画像を翻訳」で content(image-translator) に画像翻訳の起動を合図する。
+  // srcUrl を渡し、content 側は直近 contextmenu の対象 img (注入直後は srcUrl 照合) を解決して translateImg する。
+  // iframe 内の画像は info.frameId をそのまま配送先にし、非常駐フレームへはオンデマンド注入で届ける
+  // (常駐はトップのみ＝広告枠コスト回避を保ちつつ、明示操作のあったフレームだけ注入する。これが無いと
+  // iframe 画像の右クリック翻訳がトップで解決できず、メニューを押しても何も起きない無言 no-op になる)。
+  function triggerImageTranslate(tabId, srcUrl, frameId) {
+    sendCsOrInject(tabId, { action: Actions.TRANSLATE_IMAGE_CS, srcUrl: srcUrl || "" },
+      ["src/lib/actions.js", "src/content/image-translator.js"], "src/content/image-translator.css", frameId);
   }
 
   chrome.runtime.onInstalled.addListener(() => { setupContextMenus(); ensureContentFlags().catch(() => { /* noop */ }); });
@@ -1548,6 +1571,7 @@ if (typeof importScripts === "function") {
       if (info.menuItemId === "rt-translate") await translatePage(tab.id, true);
       else if (info.menuItemId === "rt-restore") await restorePage(tab.id);
       else if (info.menuItemId === "rt-translate-selection") triggerSelectionTranslate(tab.id);
+      else if (info.menuItemId === "rt-translate-image") triggerImageTranslate(tab.id, info.srcUrl, info.frameId);
     });
   }
 
