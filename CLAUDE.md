@@ -27,6 +27,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - メッセージは `Actions`（actions.js）定数で識別。設定変更は `APPLY_SETTINGS` → background が `SettingsSchema.normalize` を通して storage 保存
 - 共通定数・スキーマ・`Providers`/`BatchTuner`/`TokenUsage` は `actions.js`、言語表は `lang.js`、プロバイダ抽象（純粋関数）は `providers.js`、価格表は `model-pricing.js`。全て IIFE + globalThis 公開（直接 import 無し）
 - 注入: `fab.js` / `image-translator.js` / `selection-translator.js` は manifest `content_scripts` で**トップフレーム常駐**（`actions.js` が先頭で先に注入）。`translator.js` は `actions.js`+`lang.js` と共に `scripting.executeScript`（**`allFrames: true`**）でオンデマンド注入。選択翻訳は既存タブ救済で `selection-translator.js` を `executeScript` フォールバック注入もする（§選択テキスト翻訳）
+- **ローカル HTML（`file:///*`）も翻訳対象**: content_scripts の `matches` に `file:///*` を含める（`host_permissions` の `<all_urls>` は file スキームも覆うので追加不要）。ただし Chrome/Firefox とも**ユーザーが拡張の「ファイルの URL へのアクセスを許可する」を ON にするまで注入されない**（トグル OFF では常駐 content script も `scripting.executeScript` も効かず、SW は `not_injectable` を返す）。popup はこれを `statusNotInjectable` で「file:// なら許可設定を ON にして再読み込み」と案内する（`tab.url` は file 権限が無いと隠されて chrome:// と判別できないため、URL 判定に頼らず 1 文で両方を案内する）。画像翻訳は `isForbiddenImageUrl` が https 以外を弾くのでローカル画像には効かない（SSRF ガードを維持する）
 
 ## 翻訳エンジン translator.js（速度と網羅の要）
 - **ビューポート優先**: IntersectionObserver で各ブロックを observe し、可視(+`PREFETCH_MARGIN` 1200px 先読み)に入った順にテキストノードを enqueue。`sortTopDown` で**ページ上→下の優先順位**に並べてから投げる

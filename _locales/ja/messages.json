@@ -41,6 +41,7 @@
   "statusPartial": { "message": "一部未翻訳（レート制限/混雑）。少し待って再実行してね" },
   "statusQuotaDaily": { "message": "API の利用上限に達したみたい（無料枠の1日上限 / 残高切れ）。時間を置く・課金・別プロバイダ（Groq等）への切替を試してね" },
   "statusSameLang": { "message": "ページは既に翻訳先の言語です" },
+  "statusNotInjectable": { "message": "このページは翻訳できません。ローカルファイル（file://）の場合は、拡張機能の詳細設定で「ファイルの URL へのアクセスを許可する」を ON にしてページを再読み込みしてね" },
   "statusNoKey": { "message": "このサービスの API キーが未設定です" },
   "statusBadKey": { "message": "API キーが無効か権限がありません" },
   "statusNetwork": { "message": "ネットワークエラー — 接続を確認してください" },

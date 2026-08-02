@@ -41,6 +41,7 @@
   "statusPartial": { "message": "Partly untranslated (rate limit / overload). Wait a bit and retry." },
   "statusQuotaDaily": { "message": "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider (e.g. Groq)." },
   "statusSameLang": { "message": "Page is already in the target language" },
+  "statusNotInjectable": { "message": "This page cannot be translated. For a local file (file://), turn on \"Allow access to file URLs\" for this extension in the browser's extension settings, then reload the page." },
   "statusNoKey": { "message": "API key is not set for this service" },
   "statusBadKey": { "message": "API key is invalid or unauthorized" },
   "statusNetwork": { "message": "Network error — check your connection" },

@@ -3,7 +3,7 @@
   "name": "__MSG_appName__",
   "description": "__MSG_appDescription__",
   "default_locale": "en",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "browser_specific_settings": {
     "gecko": {
       "id": "{f3a8b1c2-6d4e-4a9f-8b2c-1e7d5a9c3f60}",
@@ -33,7 +33,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
       "js": ["src/lib/actions.js", "src/content/fab.js", "src/content/image-translator.js", "src/content/selection-translator.js"],
       "css": ["src/content/fab.css", "src/content/image-translator.css", "src/content/selection-translator.css"],
       "run_at": "document_idle"

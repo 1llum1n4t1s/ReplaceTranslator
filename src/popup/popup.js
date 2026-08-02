@@ -312,6 +312,15 @@
     return pfx + generic;
   }
 
+  // 注入失敗 (not_injectable) の理由を出す。ローカル HTML (file://) はブラウザ側の「ファイルの URL への
+  // アクセスを許可する」が OFF だと content script を注入できず、chrome:// / ストア等も同じ経路で失敗する。
+  // tab.url は file:// への権限が無いと隠されて判別できないため、両方を 1 文で案内する
+  // (ただの「エラー」表示にすると拡張の不具合と誤解され、file アクセスの設定手順に辿り着けない)。
+  function injectErrorText(res) {
+    if (!res || res.error !== "not_injectable") return msg("statusError", "Error");
+    return msg("statusNotInjectable", "This page cannot be translated. For a local file, allow file URL access for this extension in the browser's extension settings, then reload the page.");
+  }
+
   // ---- クイック翻訳 (ちょっとだけ訳す。上部の翻訳元⇄翻訳先を流用し TRANSLATE_BATCH に 1 件投げる) ----
   function langShort(coderef) {
     if (coderef === "auto") return msg("qtAuto", "自動");
@@ -462,7 +471,7 @@
       await pendingSave; // 直前の言語/provider 変更が storage に確定してから翻訳する (古い設定での初回実行を防ぐ)
       setStatus(msg("statusStarting", "Starting…"));
       chrome.runtime.sendMessage({ action: Actions.TRANSLATE_PAGE, tabId: tab.id, manual: true }, (res) => {
-        if (!res || !res.ok) setStatus(msg("statusError", "Error"));
+        if (!res || !res.ok) setStatus(injectErrorText(res));
       });
     });
     $("restore").addEventListener("click", async () => {
