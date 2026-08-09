@@ -26,6 +26,7 @@
   "badgeKeyRequired": { "message": "要キー" },
   "badgeFree": { "message": "キー不要" },
   "optAutoTranslate": { "message": "全ページ自動翻訳" },
+  "optAutoTranslateDesc": { "message": "開いたページを自動で翻訳します。API の利用量が増えるので、必要なときだけ ON にしてください。" },
   "labelModel": { "message": "モデル" },
   "costUnknown": { "message": "—" },
   "costUnknownTitle": { "message": "価格不明" },

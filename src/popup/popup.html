@@ -7,7 +7,7 @@
 </head>
 <body>
   <header class="hdr">
-    <div class="mark" aria-hidden="true">訳</div>
+    <img class="mark" src="../../icons/icon128.png" alt="" aria-hidden="true" width="42" height="42">
     <div class="hdr-text">
       <h1 class="hdr-title" data-i18n="headerTitle">Replace AI Translator API</h1>
       <p class="hdr-sub" data-i18n="headerTagline">各社 LLM で、ページを置換翻訳</p>
@@ -23,11 +23,6 @@
   <main class="body">
     <!-- 翻訳タブ -->
     <section class="pane is-active" data-pane="translate">
-      <div class="auto-row">
-        <span class="auto-label" data-i18n="optAutoTranslate">全ページ自動翻訳</span>
-        <label class="switch"><input id="auto-translate" type="checkbox"><span class="track"></span></label>
-      </div>
-
       <div class="row two">
         <div class="col">
           <label class="lbl" for="source" data-i18n="labelSource">翻訳元</label>
@@ -37,45 +32,6 @@
         <div class="col">
           <label class="lbl" for="target" data-i18n="labelTarget">翻訳先</label>
           <select id="target" class="sel"></select>
-        </div>
-      </div>
-
-      <div class="opts">
-        <div class="switch-field">
-          <div class="switch-text">
-            <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
-            <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
-            <div class="sub-field" id="fab-opacity-row">
-              <span class="sub-label" data-i18n="optFabOpacity">不透明度</span>
-              <input id="fab-opacity" class="range" type="range" min="20" max="100" step="5" value="100">
-              <span class="range-val" id="fab-opacity-val">100%</span>
-            </div>
-          </div>
-          <input id="show-fab" type="checkbox">
-        </div>
-        <div class="switch-field">
-          <div class="switch-text">
-            <label class="switch-label" for="sel-translate" data-i18n="optSelectionTranslate">選択テキスト翻訳</label>
-            <div class="switch-desc">
-              <span data-i18n="optSelectionTranslateDesc">テキストを選択して Ctrl+Shift+L または右クリックで翻訳します。表示方法は下で選べます。</span>
-              <button id="sel-shortcut" class="link-btn" type="button" data-i18n="optSelShortcut">ショートカットを変更</button>
-            </div>
-            <div class="sub-field" id="sel-mode-row">
-              <span class="sub-label" data-i18n="optSelMode">表示方法</span>
-              <select id="sel-mode" class="sel sel-sm">
-                <option value="bubble" data-i18n="selModeBubble">バブル</option>
-                <option value="inline" data-i18n="selModeInline">インライン（対訳）</option>
-              </select>
-            </div>
-          </div>
-          <input id="sel-translate" type="checkbox">
-        </div>
-        <div class="switch-field">
-          <div class="switch-text">
-            <label class="switch-label" for="show-img-btn" data-i18n="optShowImageBtn">画像翻訳ボタン</label>
-            <div class="switch-desc" data-i18n="optShowImageBtnDesc">画像にカーソルを重ねたときに「訳」ボタンを表示します。</div>
-          </div>
-          <input id="show-img-btn" type="checkbox">
         </div>
       </div>
 
@@ -91,7 +47,7 @@
 
       <div id="status" class="status" aria-live="polite"></div>
 
-      <!-- クイック翻訳: ちょっとだけ訳したい人向け。上部の翻訳元⇄翻訳先を流用。既定で折りたたみ。 -->
+      <!-- クイック翻訳: ちょっとだけ訳したい人向け。上部の翻訳元⇄翻訳先を流用。 -->
       <div class="qt" id="qt">
         <div class="qt-head">
           <span class="qt-title" data-i18n="qtTitle">クイック翻訳</span>
@@ -115,6 +71,52 @@
               <button class="qt-mini copy" id="qt-copy" type="button" data-i18n="qtCopy">コピー</button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- 設定群: 自動翻訳 + 各機能の表示設定 (同じ操作子に揃えて 1 枠にまとめる) -->
+      <div class="opts">
+        <div class="switch-field">
+          <div class="switch-text">
+            <label class="switch-label" for="auto-translate" data-i18n="optAutoTranslate">全ページ自動翻訳</label>
+            <div class="switch-desc" data-i18n="optAutoTranslateDesc">開いたページを自動で翻訳します。API の利用量が増えるので、必要なときだけ ON にしてください。</div>
+          </div>
+          <input id="auto-translate" type="checkbox">
+        </div>
+        <div class="switch-field">
+          <div class="switch-text">
+            <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
+            <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
+            <div class="sub-field" id="fab-opacity-row">
+              <span class="sub-label" data-i18n="optFabOpacity">不透明度</span>
+              <input id="fab-opacity" class="range" type="range" min="20" max="100" step="5" value="100">
+              <span class="range-val" id="fab-opacity-val">100%</span>
+            </div>
+          </div>
+          <input id="show-fab" type="checkbox">
+        </div>
+        <div class="switch-field">
+          <div class="switch-text">
+            <div class="switch-label" data-i18n="optSelectionTranslate">選択テキスト翻訳</div>
+            <div class="switch-desc">
+              <span data-i18n="optSelectionTranslateDesc">テキストを選択して Ctrl+Shift+L または右クリックで翻訳します。表示方法は下で選べます。</span>
+              <button id="sel-shortcut" class="link-btn" type="button" data-i18n="optSelShortcut">ショートカットを変更</button>
+            </div>
+            <div class="sub-field" id="sel-mode-row">
+              <span class="sub-label" data-i18n="optSelMode">表示方法</span>
+              <select id="sel-mode" class="sel sel-sm">
+                <option value="bubble" data-i18n="selModeBubble">バブル</option>
+                <option value="inline" data-i18n="selModeInline">インライン（対訳）</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="switch-field">
+          <div class="switch-text">
+            <label class="switch-label" for="show-img-btn" data-i18n="optShowImageBtn">画像翻訳ボタン</label>
+            <div class="switch-desc" data-i18n="optShowImageBtnDesc">画像にカーソルを重ねたときに「訳」ボタンを表示します。</div>
+          </div>
+          <input id="show-img-btn" type="checkbox">
         </div>
       </div>
     </section>

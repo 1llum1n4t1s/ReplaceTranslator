@@ -63,7 +63,7 @@ if (typeof importScripts === "function") {
     // 非対応プロバイダ選択中はホバーの「訳」ボタンを出さない (クリックしても no_vision になるだけのため)。
     // selectionMode: 選択翻訳の表示方法 (bubble=浮遊バブル / inline=対訳差し込み)。content(selection-translator) が読む。
     // fabOpacity: フローティングボタンの不透明度 (乗数)。content(fab) が --fab-alpha に載せて透け具合を反映する。
-    return { autoTranslate: s.autoTranslate, showFab: s.showFab, showImageButton: s.showImageButton, imageCapable: Providers.supportsImage(s.provider), selectionTranslate: s.selectionTranslate, selectionMode: s.selectionMode, fabOpacity: s.fabOpacity };
+    return { autoTranslate: s.autoTranslate, showFab: s.showFab, showImageButton: s.showImageButton, imageCapable: Providers.supportsImage(s.provider), selectionMode: s.selectionMode, fabOpacity: s.fabOpacity };
   }
 
   // provider の API キーを取り出す (未設定は "")。複数ハンドラで使う共通アクセサ。

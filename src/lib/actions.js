@@ -203,7 +203,8 @@
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     showFab: false,              // ページ右下のフローティング翻訳ボタン (既定 OFF。popup/右クリックから翻訳できるため希望者だけ ON)
     showImageButton: false,      // 画像ホバー時の「訳」ボタン (既定 OFF。希望者だけ ON)
-    selectionTranslate: true,    // 選択テキスト翻訳 (ホットキー Ctrl+Shift+L / 右クリックで選択範囲を翻訳)
+    // 選択テキスト翻訳 (ホットキー Ctrl+Shift+L / 右クリック) は常時有効。ON/OFF フラグは持たない
+    // (明示操作でしか起きないため無効化の必要が無く、UI に出ない false が残ると無反応の原因になる)。
     selectionMode: "bubble",     // 選択翻訳の表示方法: "bubble"=浮遊バブル / "inline"=選択ブロック直後に対訳を差し込む(累積保持)
     fabOpacity: 1,               // フローティングボタンの不透明度 (乗数)。1=既定の見た目、下げるほど透ける (fab.css の --rest に掛ける)
   });
@@ -265,7 +266,6 @@
       autoTranslate: Boolean(r.autoTranslate),
       showFab: r.showFab === true, // 既定 OFF。明示的に ON にした保存値だけ有効 (キー欠損 = 既定の OFF に倒す)
       showImageButton: r.showImageButton === true, // 既定 OFF。明示的に ON にした保存値だけ有効 (showFab と同形)
-      selectionTranslate: r.selectionTranslate !== false, // 既定 ON。欠損設定でも選択翻訳が消えないよう !== false で判定 (showFab と同形)
       selectionMode: r.selectionMode === "inline" ? "inline" : "bubble", // 未知値は既定の "bubble" に倒す (後方互換)
       fabOpacity: clampFabOpacity(r.fabOpacity), // 0.2〜1.0 に丸める (欠損設定でも既定 1 に倒す)
     };

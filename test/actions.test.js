@@ -81,11 +81,11 @@ test("normalize defaults showImageButton to false when missing (image button is 
   assert.equal(SettingsSchema.normalize({ showImageButton: "x" }).showImageButton, false); // 厳密に true のときだけ有効 (showFab と同形)
 });
 
-test("normalize defaults selectionTranslate to true when missing (existing installs keep selection translate)", () => {
-  assert.equal(SettingsSchema.normalize({}).selectionTranslate, true);          // 欠損設定でも選択翻訳は有効
-  assert.equal(SettingsSchema.normalize({ selectionTranslate: false }).selectionTranslate, false);
-  assert.equal(SettingsSchema.normalize({ selectionTranslate: true }).selectionTranslate, true);
-  assert.equal(SettingsSchema.normalize({ selectionTranslate: "x" }).selectionTranslate, true); // 厳密に false のときだけ無効 (showFab と同形)
+test("normalize drops the retired selectionTranslate flag (selection translate is always enabled)", () => {
+  // 選択翻訳は明示操作でしか起きないので ON/OFF を持たない。旧インストールに残った false も
+  // 未知キーとして捨て、UI に出ない設定で無反応になるのを防ぐ。
+  assert.ok(!("selectionTranslate" in SettingsSchema.normalize({})));
+  assert.ok(!("selectionTranslate" in SettingsSchema.normalize({ selectionTranslate: false })));
 });
 
 test("normalize clamps fabOpacity to [0.2, 1] and defaults to 1 when missing/invalid", () => {

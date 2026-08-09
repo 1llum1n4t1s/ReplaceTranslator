@@ -26,6 +26,7 @@
   "badgeKeyRequired": { "message": "Key" },
   "badgeFree": { "message": "No key" },
   "optAutoTranslate": { "message": "Auto-translate every page" },
+  "optAutoTranslateDesc": { "message": "Translates every page you open. This uses more of your API quota, so turn it on only when you need it." },
   "labelModel": { "message": "Model" },
   "costUnknown": { "message": "—" },
   "costUnknownTitle": { "message": "Price unknown" },

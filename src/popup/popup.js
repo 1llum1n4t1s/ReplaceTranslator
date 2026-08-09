@@ -245,11 +245,8 @@
     $("fab-opacity").value = String(opPct);
     $("fab-opacity-val").textContent = opPct + "%";
     $("fab-opacity").disabled = !fabOn;
-    const selOn = state.settings.selectionTranslate !== false;
-    $("sel-translate").checked = selOn;
     $("show-img-btn").checked = state.settings.showImageButton === true;
     $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
-    $("sel-mode").disabled = !selOn; // 選択翻訳 OFF のときは表示方法を選べないよう淡くする
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -331,6 +328,9 @@
     const d = $("qt-dir");
     if (d && state.settings) d.textContent = `${langShort(state.settings.sourceLang)} → ${langShort(state.settings.targetLang)}`;
   }
+  // 翻訳元/翻訳先の変更でクイック翻訳を訳し直すフック (実体は setupQuickTranslate が差す)。
+  // 入力済みのまま言語を切り替えると、run() を呼ぶ経路が入力イベントしか無く旧言語の訳文が残るため。
+  let rerunQuickTranslate = () => {};
   function setupQuickTranslate() {
     const qt = $("qt"), inEl = $("qt-in"), outEl = $("qt-out");
     const countEl = $("qt-count"), copyBtn = $("qt-copy"), clearBtn = $("qt-clear");
@@ -377,6 +377,14 @@
       if (!inEl.value.trim()) { qt.classList.remove("busy"); reqId++; render(""); return; }
       timer = window.setTimeout(run, 550); // debounce
     }
+
+    // 言語切替は明示操作なので debounce せず即訳し直す (run 内の await pendingSave が保存確定を待つので
+    // 新しい言語で翻訳される。古い応答は reqId 世代ガードで捨てられる)。
+    rerunQuickTranslate = () => {
+      if (!inEl.value.trim()) return; // 未入力なら何もしない (空欄で無駄な API 呼び出しをしない)
+      window.clearTimeout(timer);
+      run();
+    };
 
     inEl.addEventListener("input", schedule);
     inEl.addEventListener("keydown", (e) => {
@@ -462,8 +470,8 @@
     });
     moveInk(document.querySelector(".tab.is-active"));
 
-    $("source").addEventListener("change", (e) => { save({ sourceLang: e.target.value }); updateQtDir(); });
-    $("target").addEventListener("change", (e) => { save({ targetLang: e.target.value }); updateQtDir(); });
+    $("source").addEventListener("change", (e) => { save({ sourceLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
+    $("target").addEventListener("change", (e) => { save({ targetLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
 
     $("translate").addEventListener("click", async () => {
       const tab = await getActiveTab();
@@ -502,7 +510,6 @@
     // 不透明度スライダー: input でラベルを即時更新 (保存はせず軽量に), change (ドラッグ確定) で保存する
     $("fab-opacity").addEventListener("input", (e) => { $("fab-opacity-val").textContent = e.target.value + "%"; });
     $("fab-opacity").addEventListener("change", (e) => save({ fabOpacity: Number(e.target.value) / 100 }));
-    $("sel-translate").addEventListener("change", (e) => { save({ selectionTranslate: e.target.checked }); $("sel-mode").disabled = !e.target.checked; });
     $("sel-mode").addEventListener("change", (e) => save({ selectionMode: e.target.value }));
     $("show-img-btn").addEventListener("change", (e) => save({ showImageButton: e.target.checked }));
     // ショートカット変更: ブラウザのコマンド設定ページを開く (Chrome=extensions/shortcuts / Firefox=about:addons)

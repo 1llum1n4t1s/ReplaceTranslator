@@ -23,7 +23,11 @@
   const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
   if (!A) return;
 
-  let enabled = true;      // selectionTranslate フラグ (CONTENT_FLAGS から読む。OFF なら起動しない)
+  // 選択テキストの最大長。Ctrl+A でページ全文を選択したまま起動すると巨大な 1 リクエストになり、
+  // LLM は context/output 上限で失敗・MyMemory は too_long と、いずれも課金と待ち時間だけ消えるため
+  // 送信前に弾く。上限値と文言は popup クイック翻訳 (MAX 5000 / qtTooLong) と共有する。
+  const MAX_SEL_CHARS = 5000;
+
   let mode = "bubble";     // 表示方法 "bubble"=浮遊バブル / "inline"=選択ブロック直後に対訳差し込み (CONTENT_FLAGS から読む)
   let inlineEls = [];      // 挿入済みインライン対訳要素 (累積保持。各 × / 原文復元 / リロードで除去)
   let dead = false;        // shutdown 済み
@@ -421,10 +425,19 @@
 
   // ホットキー/右クリックの合図で起動する。選択中テキストを訳してバブル表示する。
   function trigger() {
-    if (dead || !enabled) return;
+    if (dead) return;
     if (!contextAlive()) { shutdown(); return; }
     const sel = deepSelection();
     const text = selText(sel);
+    // 上限超過は API へ送らず理由を出す。インライン経路も含めてバブルで出す (インラインは累積保持で
+    // 消えないため、一時的なエラー表示をページへ残さない)。
+    if (text.length > MAX_SEL_CHARS) {
+      if (!rectFor(sel)) { removeBubble(); return; }
+      reqId++; // 進行中の応答があれば捨てる (この操作が最新の意図)
+      ensureBubble();
+      setState("error", tr("qtTooLong", "5,000 文字を超えています"));
+      return;
+    }
     // インラインモード: 選択ブロックの直後に対訳を差し込む (rect は不要。累積保持なので選択解除でも消さない)。
     // ただし編集領域 (contentEditable) 内の選択はページの編集内容を壊すので挿入せず、下のバブル表示へフォールバックする。
     if (mode === "inline" && text && !isEditableSelection(sel)) { triggerInline(text, sel); return; }
@@ -460,11 +473,10 @@
   // ---- 起動 ----
   try { chrome.runtime.onMessage.addListener(onRuntimeMessage); } catch (_e) { /* noop */ }
 
-  // 有効フラグを読む (非機密フラグのみ。API キーは読まない)。popup トグルの変更に storage.onChanged で即追従。
+  // 表示方法フラグを読む (非機密フラグのみ。API キーは読まない)。popup の変更に storage.onChanged で即追従。
   try {
     chrome.storage.local.get(CFLAGS_KEY, (d) => {
       const f = d && d[CFLAGS_KEY];
-      if (f && typeof f.selectionTranslate === "boolean") enabled = f.selectionTranslate;
       if (f && typeof f.selectionMode === "string") mode = f.selectionMode === "inline" ? "inline" : "bubble";
     });
   } catch (_e) { /* noop */ }
@@ -472,10 +484,6 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local" || !changes[CFLAGS_KEY]) return;
       const v = changes[CFLAGS_KEY].newValue;
-      if (v && typeof v.selectionTranslate === "boolean") {
-        enabled = v.selectionTranslate;
-        if (!enabled) removeBubble(); // OFF にしたら開いているバブルを閉じる (挿入済みインライン対訳は累積保持で残す)
-      }
       if (v && typeof v.selectionMode === "string") {
         mode = v.selectionMode === "inline" ? "inline" : "bubble";
         if (mode === "inline") removeBubble(); // インラインへ切替えたら開いているバブルを閉じる
