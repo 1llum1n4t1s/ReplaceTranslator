@@ -973,6 +973,11 @@ if (typeof importScripts === "function") {
       }
       // 念のため最終 URL も検証 (manual では通常 r.url === imageUrl だが二重防御)。
       if (r.url && r.url !== imageUrl && isForbiddenImageUrl(r.url)) return { ok: false, error: "forbidden_target" };
+      // 4xx/5xx は取得失敗。CDN が 402/403/429 等でプレースホルダ画像 (image/*) を返すと以降の MIME 判定を
+      // 通り抜け、エラー画像を vision へ送って課金し誤 OCR を焼き込むため、body を読む前に弾く
+      // (LLM 側 fetch が全て !res.ok で早期 return しているのと契約を揃える)。error 種別は既存の
+      // "http"+status を再利用し、imgErrorText の分岐と i18n を増やさない (メッセージ契約の drift 回避)。
+      if (!r.ok) return { ok: false, error: "http", status: r.status };
       const cl = Number(r.headers.get("content-length") || 0);
       if (cl && cl > MAX_IMAGE_BYTES) return { ok: false, error: "image_too_large", size: cl };
       // Content-Length が無い/詐称でも、body をストリームで読みつつ累積監視し上限超過で打ち切る

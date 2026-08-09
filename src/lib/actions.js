@@ -114,16 +114,19 @@
       endpoint: "https://openrouter.ai/api/v1/chat/completions",
       defaultModel: "google/gemini-2.5-flash",
       visionModel: "google/gemini-2.5-flash",  // 画像翻訳は bbox 精度の高い Gemini flash を OpenRouter 経由で使う
-      models: Object.freeze(["google/gemini-2.5-flash", "openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5", "deepseek/deepseek-chat"]),
+      // deepseek/deepseek-chat は退役済み。OpenRouter 側は無日付の公開版を配信しないため、
+      // Anthropic と同じ扱いで日付入りスナップショットを載せる (latest エイリアスは filterTranslationModels が弾く)。
+      models: Object.freeze(["google/gemini-2.5-flash", "openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5", "deepseek/deepseek-v4-flash-0731"]),
       keyUrl: "https://openrouter.ai/keys",
     }),
     deepseek: Object.freeze({
       id: "deepseek",
       label: "DeepSeek",
-      // DeepSeek は OpenAI 互換 (chat/completions・Bearer)。安価。deepseek-chat はテキストのみ (vision 無し)
+      // DeepSeek は OpenAI 互換 (chat/completions・Bearer)。安価。テキストのみ (vision 無し)。
+      // 旧エイリアス deepseek-chat / deepseek-reasoner は 2026-07-24 に退役し、公式 API は v4 系のみ。
       endpoint: "https://api.deepseek.com/v1/chat/completions",
-      defaultModel: "deepseek-chat",
-      models: Object.freeze(["deepseek-chat", "deepseek-reasoner"]),
+      defaultModel: "deepseek-v4-flash",
+      models: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
       keyUrl: "https://platform.deepseek.com/api_keys",
     }),
     groq: Object.freeze({
@@ -192,7 +195,7 @@
       gemini: "gemini-2.5-flash",
       xai: "grok-4.3",
       openrouter: "google/gemini-2.5-flash",
-      deepseek: "deepseek-chat",
+      deepseek: "deepseek-v4-flash",
       groq: "llama-3.3-70b-versatile",
       fugu: "fugu",
       mymemory: null,
@@ -224,6 +227,8 @@
     "grok-4-1-fast-non-reasoning", "grok-4-1-fast-reasoning",
     // Groq (kimi-k2 廃止)
     "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
+    // DeepSeek (旧エイリアスは 2026-07-24 廃止 → v4 系へ移行。OpenRouter 側の同名 ID も同時に消滅)
+    "deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-chat", "deepseek/deepseek-reasoner",
     // Anthropic (旧世代スナップショット ID。日付付きを保存していた稀ケース向けの防御)
     "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620",
     "claude-3-5-haiku-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229",
