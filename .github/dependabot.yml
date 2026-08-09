@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # ルートの Node/pnpm 依存 (package.json + pnpm-lock.yaml)。
+  # webstore/ は package.json ごと .gitignore 対象 (ad-hoc install 運用) のため対象外。
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # .github/workflows/*.yml で使う GitHub Actions (フル SHA 固定 + # vX.Y.Z コメント運用)。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
