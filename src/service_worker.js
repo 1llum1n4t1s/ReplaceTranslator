@@ -896,6 +896,9 @@ if (typeof importScripts === "function") {
     return false;
   }
 
+  // readImageDimensions が寸法を読める形式。ここに載る mime は「寸法が読めない = 実体が別物/不正」と断定できる。
+  const DIMENSION_READABLE_MIMES = new Set(["image/png", "image/gif", "image/jpeg", "image/webp"]);
+
   // 先頭バイト (マジックナンバー) から画像 mime を判定する。Content-Type 欠落時の安全弁。非画像は null。
   function sniffImageMime(b) {
     if (!b || b.length < 4) return null;
@@ -996,13 +999,21 @@ if (typeof importScripts === "function") {
       } else {
         return { ok: false, error: "not_image", mime: ctype };
       }
-      const dims = readImageDimensions(bytes, mime);
+      let dims = readImageDimensions(bytes, mime);
+      // 宣言 Content-Type とバイト実体が食い違う (誤設定サーバ / 非画像本文) と寸法が読めず、下のピクセル
+      // 上限ガードを黙って素通りする。マジックバイトで実体 mime を取り直して読み直す (誤設定サーバの画像は
+      // 実体 mime で正しく検査でき、以降の data URL も実体に合った mime で送れる)。
+      if (!dims) {
+        const sniffed = sniffImageMime(bytes);
+        if (sniffed && sniffed !== mime) { mime = sniffed; dims = readImageDimensions(bytes, mime); }
+      }
       if (dims && imageDimensionsTooLarge(dims.width, dims.height)) {
         return { ok: false, error: "image_too_large", width: dims.width, height: dims.height };
       }
-      // 標準的な WebP は VP8X/VP8/VP8L のいずれかで寸法が読める。読めないものは不正/未知形式であり、
-      // ピクセル上限を検証できないまま decoder (createImageBitmap) へ渡さない (展開爆弾の防御を貫通させない)
-      if (!dims && mime === "image/webp") return { ok: false, error: "not_image", mime };
+      // readImageDimensions が寸法を読める形式 (png/gif/jpeg/webp) なのに読めない = 不正/実体が別物であり、
+      // ピクセル上限を検証できないまま decoder (createImageBitmap) へ渡さない (展開爆弾の防御を貫通させない)。
+      // 寸法パーサを持たない形式 (bmp/avif/heic 等) は従来どおり素通しし、正常な画像の翻訳を止めない。
+      if (!dims && DIMENSION_READABLE_MIMES.has(mime)) return { ok: false, error: "not_image", mime };
       return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
@@ -1390,7 +1401,6 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.TRANSLATE_BATCH: {
-            const stored = await getSettingsCached();
             const tabId = sender.tab && sender.tab.id;
             const frameId = sender.frameId || 0;
             if (!msg.quick) await ensurePageSessions(); // SW 再起動後の後続バッチを stale_session で全滅させない
@@ -1405,7 +1415,11 @@ if (typeof importScripts === "function") {
               }
               settings = resolvePageSessionSettings(msg.settings, session);
             } else {
-              settings = resolveSettings(msg.settings, stored); // quick等は最新設定を使う
+              // quick (選択テキスト翻訳 / ホットキー) はページから直接来る = popup の pendingSave を待てないため、
+              // 進行中の APPLY_SETTINGS 保存を待ってから設定を読む。provider/target を変えた直後の 1 回目が
+              // 旧 provider・旧キー・旧言語で実行されるのを防ぐ (TRANSLATE_IMAGE と同じ理由)。
+              await settingsWriteChain;
+              settings = resolveSettings(msg.settings, await getSettingsCached()); // quick等は最新設定を使う
             }
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録する。ただし quick
             // (popup クイック翻訳 / 選択テキスト翻訳) は短い単発で、ページの復元/再翻訳 (abortTab) に
