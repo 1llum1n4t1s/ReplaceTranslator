@@ -456,3 +456,14 @@ body {
   .qt.busy .qt-spin { animation: none; }
   .qt.busy .qt-out::after { animation: none; opacity: .4; }
 }
+
+/* ── お問い合わせ / 評価 ──────────────────────────────────────────
+   Kagayoi.Support の共通部品 <kagayoi-support-footer> が描画する。
+   ここは置き場所と配色の受け渡しだけを持つ。 */
+.support-footer { margin-top: 4px; }
+
+kagayoi-support-footer {
+  --kgs-surface: var(--paper);
+  --kgs-border: var(--rule);
+  --kgs-accent: var(--vermilion);
+}
