@@ -27,6 +27,8 @@
   "badgeFree": { "message": "キー不要" },
   "optAutoTranslate": { "message": "全ページ自動翻訳" },
   "optAutoTranslateDesc": { "message": "開いたページを自動で翻訳します。API の利用量が増えるので、必要なときだけ ON にしてください。" },
+  "optPersistentCache": { "message": "永続翻訳キャッシュ" },
+  "optPersistentCacheDesc": { "message": "ON にするとページの原文と訳文を最大30日間この端末に保存し、ブラウザ再起動後も再利用します。OFF にすると保存済みキャッシュを削除します。" },
   "labelModel": { "message": "モデル" },
   "costUnknown": { "message": "—" },
   "costUnknownTitle": { "message": "価格不明" },

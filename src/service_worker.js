@@ -19,9 +19,12 @@ if (typeof importScripts === "function") {
 
 (function () {
   // ---- 設定の取得/保存 ----
+  let persistentTranslationCacheEnabled = false;
   async function getSettings() {
     const data = await chrome.storage.local.get(StorageKeys.SETTINGS);
-    return SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
+    const settings = SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
+    persistentTranslationCacheEnabled = settings.persistentTranslationCache === true;
+    return settings;
   }
 
   // 設定の SW メモリキャッシュ。TRANSLATE_BATCH/IMAGE で API キーを bg 側から引く際に使う
@@ -94,12 +97,19 @@ if (typeof importScripts === "function") {
 
   async function saveSettings(raw) {
     const normalized = SettingsSchema.normalize(raw);
+    const previousCachePreference = persistentTranslationCacheEnabled;
     await chrome.storage.local.set({
       [StorageKeys.SETTINGS]: normalized,
       // content script (fab/image-translator) が読む非機密フラグ。apiKeys を content 文脈に出さないため分離する。
       [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(normalized),
     });
+    // 設定保存が成功する前に true にすると、storage 書き込み失敗時でも in-flight 翻訳が原文を
+    // 永続化し得る。必ず保存成功後に preference を切り替える。
+    persistentTranslationCacheEnabled = normalized.persistentTranslationCache === true;
     settingsMem = normalized; // キャッシュを最新化 (onChanged より先に確定させる)
+    if (previousCachePreference !== persistentTranslationCacheEnabled) {
+      await syncPersistentTranslationCache(persistentTranslationCacheEnabled);
+    }
     return normalized;
   }
 
@@ -261,6 +271,175 @@ if (typeof importScripts === "function") {
       if (p && p.catch) p.catch(() => { /* noop */ });
     } catch (_e) { /* noop */ }
   }
+
+  // ---- 翻訳キャッシュ (browser-session + 明示 opt-in の永続層) ----
+  // content 側の Map は同じ frame/run だけで消えるため、同一 origin の再読込・別 tab/frame で同じ原文を再送する。
+  // storage.session の bounded L2 は常時、storage.local の同形コピーはユーザーが明示 ON にしたときだけ使う。
+  // raw text は HTTP(S) origin 内だけで共有し、provider/model/lang/prompt version を key に含めて設定変更時の
+  // 古い訳文利用を防ぐ。1文字でも変われば key が変わるため、誤字修正後に旧訳を返さない。
+  const TRANSLATION_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const TRANSLATION_CACHE_MAX_ENTRIES = 2000;
+  const TRANSLATION_CACHE_MAX_CHARS = 2000000;
+  const TRANSLATION_CACHE_MAX_ENTRY_CHARS = 50000;
+  const translationCache = new Map(); // key -> { translation, expiresAt, chars }
+  let translationCacheChars = 0;
+  let translationCacheLoaded = null;
+  let persistentTranslationCacheLoaded = null;
+  let translationCacheReady = false;
+  let translationCachePersistTimer = null;
+  let translationCacheWriteChain = Promise.resolve();
+
+  function trimTranslationCache() {
+    let trimmed = false;
+    while (translationCache.size > TRANSLATION_CACHE_MAX_ENTRIES || translationCacheChars > TRANSLATION_CACHE_MAX_CHARS) {
+      const oldest = translationCache.keys().next().value;
+      if (oldest === undefined) break;
+      const entry = translationCache.get(oldest);
+      translationCache.delete(oldest);
+      translationCacheChars -= entry ? entry.chars : 0;
+      trimmed = true;
+    }
+    return trimmed;
+  }
+
+  function importTranslationCacheRecords(stored) {
+    const normalized = TranslationBatch.normalizeCacheRecords(
+      stored, Date.now(), TRANSLATION_CACHE_MAX_ENTRY_CHARS, TRANSLATION_CACHE_TTL_MS
+    );
+    let changedMap = false;
+    for (const [key, translation, expiresAt] of normalized.records) {
+      const previous = translationCache.get(key);
+      // 同じ完全一致 key が両層にあるときは、後に保存された (expiry が遠い) 訳文を採用する。
+      if (previous && previous.expiresAt >= expiresAt) {
+        if (previous.expiresAt !== expiresAt || previous.translation !== translation) changedMap = true;
+        continue;
+      }
+      if (previous) translationCacheChars -= previous.chars;
+      const chars = key.length + translation.length;
+      translationCache.delete(key);
+      translationCache.set(key, { translation, expiresAt, chars });
+      translationCacheChars += chars;
+      changedMap = true;
+    }
+    return { needsRewrite: normalized.needsRewrite || trimTranslationCache(), changedMap };
+  }
+
+  async function ensureTranslationCache(includePersistent = false) {
+    if (!translationCacheLoaded) {
+      translationCacheLoaded = (async () => {
+        try {
+          const stored = (await chrome.storage.session.get(StorageKeys.TRANSLATION_CACHE))[StorageKeys.TRANSLATION_CACHE];
+          const imported = importTranslationCacheRecords(stored);
+          // TTL 切れ・不正・重複・上限超過を読み飛ばした場合は session 側も遅延清掃する。
+          if (imported.needsRewrite) scheduleTranslationCachePersist();
+        } catch (_e) { /* storage.session 不可なら SW の生存中だけ Map cache として動く */ }
+        translationCacheReady = true;
+      })();
+    }
+    await translationCacheLoaded;
+    if (includePersistent && !persistentTranslationCacheLoaded) {
+      persistentTranslationCacheLoaded = (async () => {
+        try {
+          const stored = (await chrome.storage.local.get(StorageKeys.PERSISTENT_TRANSLATION_CACHE))[StorageKeys.PERSISTENT_TRANSLATION_CACHE];
+          const imported = importTranslationCacheRecords(stored);
+          // browser 再起動直後は永続層だけにあるため session へも反映する。両層の差異/期限切れも同時清掃。
+          if (imported.needsRewrite || imported.changedMap) scheduleTranslationCachePersist();
+        } catch (_e) { /* storage.local 読み込み失敗時も session/Map cache は継続 */ }
+      })();
+    }
+    if (includePersistent && persistentTranslationCacheLoaded) await persistentTranslationCacheLoaded;
+  }
+
+  function persistTranslationCache() {
+    if (!translationCacheReady) return Promise.resolve();
+    const records = Array.from(translationCache, ([key, entry]) => [key, entry.translation, entry.expiresAt]);
+    const write = async () => {
+      try { await chrome.storage.session.set({ [StorageKeys.TRANSLATION_CACHE]: records }); } catch (_e) { /* noop */ }
+      // 実行時点の preference を見る。OFF と競合した古い予約書き込みが local を復活させないため。
+      if (persistentTranslationCacheEnabled) {
+        try { await chrome.storage.local.set({ [StorageKeys.PERSISTENT_TRANSLATION_CACHE]: records }); } catch (_e) { /* quota 等でも翻訳自体は継続 */ }
+      }
+    };
+    const next = translationCacheWriteChain.then(write, write);
+    translationCacheWriteChain = next.catch(() => {});
+    return next;
+  }
+
+  function scheduleTranslationCachePersist() {
+    if (translationCachePersistTimer) return;
+    translationCachePersistTimer = setTimeout(() => {
+      translationCachePersistTimer = null;
+      persistTranslationCache();
+    }, 2000);
+  }
+
+  async function syncPersistentTranslationCache(enabled) {
+    if (enabled) {
+      await ensureTranslationCache(true);
+      await persistTranslationCache(); // 現在の session cache も opt-in 時点で永続層へ反映する
+      return;
+    }
+    if (translationCachePersistTimer) {
+      clearTimeout(translationCachePersistTimer);
+      translationCachePersistTimer = null;
+    }
+    // 起動時 load / 既存 write の完了後に clear+remove し、古い非同期処理が永続 cache を復活させない。
+    if (translationCacheLoaded) await translationCacheLoaded.catch(() => {});
+    if (persistentTranslationCacheLoaded) await persistentTranslationCacheLoaded.catch(() => {});
+    await translationCacheWriteChain.catch(() => {});
+    translationCache.clear();
+    translationCacheChars = 0;
+    translationCacheReady = true;
+    const remove = async () => {
+      await Promise.allSettled([
+        chrome.storage.session.remove(StorageKeys.TRANSLATION_CACHE),
+        chrome.storage.local.remove(StorageKeys.PERSISTENT_TRANSLATION_CACHE),
+      ]);
+    };
+    const next = translationCacheWriteChain.then(remove, remove);
+    translationCacheWriteChain = next.catch(() => {});
+    await next;
+    persistentTranslationCacheLoaded = null;
+  }
+
+  function getCachedTranslation(key) {
+    const entry = key && translationCache.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      translationCache.delete(key);
+      translationCacheChars -= entry.chars;
+      scheduleTranslationCachePersist();
+      return undefined;
+    }
+    // Map の insertion order を LRU として使う。hit のたびの storage 書き込みは不要。
+    translationCache.delete(key);
+    translationCache.set(key, entry);
+    return entry.translation;
+  }
+
+  function putCachedTranslation(key, translation) {
+    if (!key || typeof translation !== "string" || !translation) return;
+    const chars = key.length + translation.length;
+    if (chars > TRANSLATION_CACHE_MAX_ENTRY_CHARS) return;
+    const old = translationCache.get(key);
+    if (old) translationCacheChars -= old.chars;
+    translationCache.delete(key);
+    translationCache.set(key, { translation, expiresAt: Date.now() + TRANSLATION_CACHE_TTL_MS, chars });
+    translationCacheChars += chars;
+    trimTranslationCache();
+    scheduleTranslationCachePersist();
+  }
+
+  function translationCacheScope(sender, quick) {
+    if (quick || (sender.tab && sender.tab.incognito)) return null;
+    try {
+      const url = new URL(sender.url || (sender.tab && sender.tab.url) || "");
+      // 同一 origin の別ページで孤立した同文ラベルを誤再利用しない。query/hash は一時値・個人識別子を
+      // 含みやすく cache を過分割するため除き、pathname までをページ範囲とする。
+      return url.protocol === "http:" || url.protocol === "https:" ? url.origin + url.pathname : null;
+    } catch (_e) { return null; }
+  }
+
   function bumpTabGen(tabId) {
     if (tabId == null) return 0;
     const g = (tabGen.get(tabId) || 0) + 1;
@@ -342,7 +521,7 @@ if (typeof importScripts === "function") {
   }
 
   // ---- 翻訳代理 fetch (核心) ----
-  async function translateBatch(settings, texts, signal, opts) {
+  async function translateBatch(settings, texts, contexts, signal, opts) {
     const providerId = settings.provider;
     const tune = !(opts && opts.tune === false); // quick translate (単発) は学習(BatchTuner)を汚さない
     const provider = Providers.get(providerId);
@@ -361,6 +540,7 @@ if (typeof importScripts === "function") {
     try {
       req = ProviderApi.buildRequest(providerId, {
         texts,
+        contexts,
         sourceLang: settings.sourceLang,
         targetLang: settings.targetLang,
         model,
@@ -387,11 +567,13 @@ if (typeof importScripts === "function") {
 
     if (!res.ok) {
       const detail = await readDetail(res);
-      if (res.status === 429 && tune) updateBatchTuning(providerId, texts.length, durationMs, true);
-      return {
+      const failure = {
         ok: false, error: "http", status: res.status, message: detail, provider: providerId,
-        nextBatchSize: currentBatchSizeFor(providerId),
       };
+      if (tune && (res.status === 429 || TranslationBatch.isOversize(failure))) {
+        updateBatchTuning(providerId, texts.length, durationMs, true);
+      }
+      return Object.assign(failure, { nextBatchSize: currentBatchSizeFor(providerId) });
     }
 
     let json;
@@ -424,7 +606,7 @@ if (typeof importScripts === "function") {
   // 戻り値: 非stream と同形の結果、stream 非対応時だけ null。送信後の通信失敗は配信結果不明として返し、
   // 同じ論理batchを非streamで二重送信しない。
   // 翻訳の真実は蓄積した完全 JSON の extractTranslations。partial がズレても最終結果が確定し直す。
-  async function translateBatchStream(settings, texts, signal, onPartial) {
+  async function translateBatchStream(settings, texts, contexts, signal, onPartial) {
     const providerId = settings.provider;
     if (!ProviderApi.supportsStream(providerId)) return null; // stream 対応は OpenAI 互換社のみ
     const apiKey = keyFor(settings, providerId);
@@ -433,7 +615,7 @@ if (typeof importScripts === "function") {
     let req;
     try {
       req = ProviderApi.buildRequest(providerId, {
-        texts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey, stream: true,
+        texts, contexts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey, stream: true,
       });
     } catch (_e) { return null; }
     await ensureMem();
@@ -449,8 +631,11 @@ if (typeof importScripts === "function") {
       // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
       // content 側のリトライ/バックオフ/サイズ縮小に委ねる (429 は学習サイズを縮小)。null フォールバックは stream 非対応時のみ。
       const detail = await readDetail(res);
-      if (res.status === 429) updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
-      return { ok: false, error: "http", status: res.status, message: detail, provider: providerId, nextBatchSize: currentBatchSizeFor(providerId) };
+      const failure = { ok: false, error: "http", status: res.status, message: detail, provider: providerId };
+      if (res.status === 429 || TranslationBatch.isOversize(failure)) {
+        updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
+      }
+      return Object.assign(failure, { nextBatchSize: currentBatchSizeFor(providerId) });
     }
     if (!res.body || typeof res.body.getReader !== "function") return null; // stream 非対応レスポンス → 非stream フォールバック
 
@@ -596,31 +781,6 @@ if (typeof importScripts === "function") {
       .replace(/-\d{8}$/, "")               // -20250929
       .replace(/-latest$/, "");
   }
-  function filterTranslationModels(providerId, models) {
-    const include = {
-      openai: /^(gpt-|o[1-9]|chatgpt-)/i,  // o1/o3 に限らず o4-mini 等 o 系全世代を拾う (buildRequest/tuneReasoning の /^o[1-9]/ と一致)
-      anthropic: /^claude-/i,
-      gemini: /gemini-/i,
-      xai: /^grok-/i,
-    }[providerId];
-    // 翻訳に使えない非テキスト系を除外する: 埋め込み(embed)/音声(whisper/tts/transcribe/audio/realtime)/
-    // 画像生成(dall-e/image/imagine)/動画生成(video/veo/sora)/モデレーション(moderation/guard)/検索(search)。
-    // ※ "imagine"(xAI grok-imagine 等の生成) は "image" の部分文字列でないため別途列挙が必要。
-    // ※ vision(画像入力チャット) は画像翻訳で使うので除外しない ("vision" は "image" にマッチしない)。
-    const exclude = /embed|whisper|tts|transcribe|dall-e|image|imagine|audio|realtime|moderation|search|guard|video|veo|sora/i;
-    // "latest" はローリングエイリアス (gpt-*-chat-latest / gemini-flash-latest 等)。中身が予告なく差し替わり
-    // 翻訳の挙動一貫性が保てないため、無日付の公開版 ID (gpt-5.6-sol / gemini-2.5-flash 等) に寄せて一覧から外す。
-    const rolling = /latest/i;
-    // 日付/版数が入った ID (例 -2024-08-06 / -20241022 / -0709) も除外し、無日付の公開版 ID に寄せる。
-    // ただし Anthropic は日付入りスナップショット ID しか配信しないため dated/rolling とも除外せず、
-    // 後段の normalizeModelList (anthropicAlias) が -latest/-日付 を剥がしてエイリアス化+重複排除する。
-    const dated = /\d{4}-\d{2}-\d{2}|\d{6,}|[-_]\d{4}$/;
-    return models.filter((m) =>
-      m && m.id &&
-      (!include || include.test(m.id)) &&
-      !exclude.test(m.id) &&
-      (providerId === "anthropic" || (!dated.test(m.id) && !rolling.test(m.id))));
-  }
   // ---- 動的価格の取得 (models.dev) ----
   // 同梱 model-pricing.js の TABLE は新モデルが出るたびに手更新が要る (更新漏れ = pickPriced が新モデルを
   // 一覧から隠す)。models.dev (オープンソースのモデルカタログ・全対象社を収録) の api.json から実勢価格を
@@ -731,7 +891,7 @@ if (typeof importScripts === "function") {
     if (!res.ok) return { ok: false, error: "http", status: res.status };
     let json;
     try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
-    const sorted = sortNewest(providerId, filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
+    const sorted = sortNewest(providerId, ProviderApi.filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
     const normalized = normalizeModelList(providerId, sorted);
     // 価格が引けるモデルだけに絞ってから上位 10 件 (圏外でも価格付きを優先して拾える)。
     const top = pickPriced(normalized.map((m) => m.id)).slice(0, 10);
@@ -794,123 +954,6 @@ if (typeof importScripts === "function") {
     return btoa(bin);
   }
 
-  // 代表的な画像形式のヘッダだけを読む。decoderへ渡す前にpixel数を検査するため、圧縮byte数とは別の上限を持つ。
-  function readImageDimensions(bytes, mime) {
-    if (!bytes || bytes.length < 10) return null;
-    if (mime === "image/png" && bytes.length >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50) {
-      const u32 = (i) => (((bytes[i] * 0x100 + bytes[i + 1]) * 0x100 + bytes[i + 2]) * 0x100 + bytes[i + 3]);
-      return { width: u32(16), height: u32(20) };
-    }
-    if (mime === "image/gif" && bytes[0] === 0x47 && bytes[1] === 0x49) {
-      return { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
-    }
-    if (mime === "image/webp" && bytes.length >= 30 && bytes[0] === 0x52 && bytes[8] === 0x57) {
-      const type = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
-      if (type === "VP8X") {
-        const w = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
-        const h = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
-        return { width: w, height: h };
-      }
-      // 非拡張 WebP もピクセル上限ガードに乗せる (VP8X だけだと一般的な VP8/VP8L が素通りする)
-      if (type === "VP8 " && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
-        // ロッシー VP8: frame tag 3B + start code (9d 01 2a) の後に 14bit ずつ width/height
-        return { width: (bytes[26] | (bytes[27] << 8)) & 0x3fff, height: (bytes[28] | (bytes[29] << 8)) & 0x3fff };
-      }
-      if (type === "VP8L" && bytes[20] === 0x2f) {
-        // ロスレス VP8L: signature 0x2f の後の 4B に width-1 (14bit) → height-1 (14bit)
-        const b = (bytes[21] | (bytes[22] << 8) | (bytes[23] << 16) | (bytes[24] << 24)) >>> 0;
-        return { width: (b & 0x3fff) + 1, height: ((b >>> 14) & 0x3fff) + 1 };
-      }
-    }
-    if (mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8) {
-      let i = 2;
-      while (i + 9 < bytes.length) {
-        if (bytes[i] !== 0xff) { i++; continue; }
-        const marker = bytes[i + 1];
-        i += 2;
-        if (marker === 0xd8 || marker === 0xd9) continue;
-        if (i + 1 >= bytes.length) break;
-        const size = (bytes[i] << 8) | bytes[i + 1];
-        if (size < 2 || i + size > bytes.length) break;
-        const isSof = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) ||
-          (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
-        if (isSof && i + 7 < bytes.length) {
-          return { height: (bytes[i + 3] << 8) | bytes[i + 4], width: (bytes[i + 5] << 8) | bytes[i + 6] };
-        }
-        i += size;
-      }
-    }
-    return null;
-  }
-
-  // IPv4 がループバック/プライベート/リンクローカル/CGNAT かどうか (先頭2オクテットで判定)
-  function isPrivateV4(a, b) {
-    return a === 0 || a === 127 || a === 10 ||
-      (a === 192 && b === 168) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 169 && b === 254) ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 198 && (b === 18 || b === 19)); // 198.18.0.0/15 ベンチマーク/特殊用途 (RFC2544。試験網/アプライアンス内で routed されうる)
-  }
-  // ページが任意に指定できる imageUrl を外部 LLM へ中継する前の SSRF/内部リソース流出対策。
-  // http/https 以外のスキームと、localhost / プライベート IP / リンクローカル宛先を拒否する。
-  function isForbiddenImageUrl(rawUrl) {
-    let u;
-    try { u = new URL(rawUrl); } catch (_e) { return true; }
-    // https のみ許可 (http を弾く)。MV3 に DNS 解決 API が無く公開ホスト名→プライベートIP の解決を検証できないため、
-    // plain-http の内部ターゲット (http://internal, http://127.0.0.1 等) を入口で遮断して DNS リバインディングを軽減する。
-    if (u.protocol !== "https:") return true;
-    let h = u.hostname.toLowerCase();
-    if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1); // IPv6 リテラル
-    if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
-    // IP リテラル以外の内部ホスト名も遮断する (例: https://nas/scan.jpg, https://printer.corp/status.png)。
-    // MV3 は DNS 解決 API を持たず公開名→プライベートIP を検証できないため、社内解決されうる名前を入口で弾く。
-    // 公開 CDN は公開 TLD の FQDN なので影響しない。
-    const looksIp = h.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
-    if (!looksIp && (!h.includes(".") || /\.(internal|intranet|corp|home|lan|private|test|example|invalid|localdomain)$/.test(h))) {
-      return true; // 単一ラベル名 (nas/printer/intranet) or 内部・予約 TLD
-    }
-    // IPv6 リテラル (":" を含む) のときだけ範囲判定する。fc/fd を裸の startsWith で見ると "fcbarcelona.com" 等の
-    // 通常ホストを誤ブロックするため、先頭ヘクステットを数値化して fe80::/10 と fc00::/7 全域を弾く。
-    if (h.includes(":")) {
-      if (h === "::1" || h === "::") return true;          // loopback / unspecified
-      const hx = parseInt(h.split(":")[0], 16);
-      if (Number.isFinite(hx)) {
-        if ((hx & 0xffc0) === 0xfe80) return true;         // fe80::/10 link-local (fe80–febf)
-        if ((hx & 0xfe00) === 0xfc00) return true;         // fc00::/7 ULA (fc00–fdff)
-      }
-    }
-    // IPv4-mapped IPv6 (::ffff:127.0.0.1 / ::ffff:7f00:1) は埋め込み IPv4 へ展開してプライベート判定する
-    const mapped = h.match(/^::ffff:(.+)$/i);
-    if (mapped) {
-      const tail = mapped[1];
-      const dq = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-      if (dq) { if (isPrivateV4(+dq[1], +dq[2])) return true; }
-      else {
-        const hx = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-        if (hx) { const hi = parseInt(hx[1], 16); if (isPrivateV4((hi >> 8) & 0xff, hi & 0xff)) return true; }
-      }
-    }
-    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (m && isPrivateV4(+m[1], +m[2])) return true;
-    return false;
-  }
-
-  // readImageDimensions が寸法を読める形式。ここに載る mime は「寸法が読めない = 実体が別物/不正」と断定できる。
-  const DIMENSION_READABLE_MIMES = new Set(["image/png", "image/gif", "image/jpeg", "image/webp"]);
-
-  // 先頭バイト (マジックナンバー) から画像 mime を判定する。Content-Type 欠落時の安全弁。非画像は null。
-  function sniffImageMime(b) {
-    if (!b || b.length < 4) return null;
-    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
-    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
-    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "image/gif";
-    if (b[0] === 0x42 && b[1] === 0x4d) return "image/bmp";
-    if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
-        b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
-    return null;
-  }
-
   // バイト列の先頭プレフィックスから ASCII マーカー (構造チャンクの FourCC/識別子) を探す。
   function hasMarker(bytes, marker, limit) {
     const lim = Math.min(bytes.length, limit), mlen = marker.length;
@@ -965,17 +1008,17 @@ if (typeof importScripts === "function") {
   // SSRF 防御 (forbidden 判定 / manual redirect / 最終 URL 再検証)・サイズ上限・MIME 確定を一括で行う。
   // 返り値: { ok:true, b64, mime } または { ok:false, error, ... }。
   async function fetchImageBytes(imageUrl, signal) {
-    if (isForbiddenImageUrl(imageUrl)) return { ok: false, error: "forbidden_target" };
+    if (ImageRequestPolicy.isForbiddenUrl(imageUrl)) return { ok: false, error: "forbidden_target" };
     try {
       // redirect:"manual" で 30x をフォローしない。公開 URL → 30x で内部ホスト (nas / 127.0.0.1 等) へ飛ばす
       // SSRF を、フォロー前=内部ホストへリクエストが飛ぶ前に遮断する。opaqueredirect は Location を読めないので
       // 検証不能 → 拒否 (img の src は通常リダイレクト解決済みの最終 URL なので実害は小さい)。
-      const r = await fetch(imageUrl, { signal: withTimeout(signal), redirect: "manual" });
+      const r = await fetch(imageUrl, { signal: withTimeout(signal), redirect: "manual", credentials: "omit" });
       if (r.type === "opaqueredirect" || r.status === 0 || (r.status >= 300 && r.status < 400)) {
         return { ok: false, error: "forbidden_target" };
       }
       // 念のため最終 URL も検証 (manual では通常 r.url === imageUrl だが二重防御)。
-      if (r.url && r.url !== imageUrl && isForbiddenImageUrl(r.url)) return { ok: false, error: "forbidden_target" };
+      if (r.url && r.url !== imageUrl && ImageRequestPolicy.isForbiddenUrl(r.url)) return { ok: false, error: "forbidden_target" };
       // 4xx/5xx は取得失敗。CDN が 402/403/429 等でプレースホルダ画像 (image/*) を返すと以降の MIME 判定を
       // 通り抜け、エラー画像を vision へ送って課金し誤 OCR を焼き込むため、body を読む前に弾く
       // (LLM 側 fetch が全て !res.ok で早期 return しているのと契約を揃える)。error 種別は既存の
@@ -987,33 +1030,13 @@ if (typeof importScripts === "function") {
       // (r.blob() は全body をバッファしてから size を見るので巨大/無限レスポンスでメモリを食う)。
       const bytes = await readCappedBytes(r, MAX_IMAGE_BYTES);
       if (!bytes) return { ok: false, error: "image_too_large" };
-      // Content-Type が image/* のときだけ送る。欠落時はマジックバイトで実体が画像と確認できたものだけ許可し、
-      // それ以外 (動画 / Content-Type 未設定の内部レスポンス等) は送らない (任意コンテンツの外部流出を防ぐ)。
+      // Content-Type が image/* のときだけ候補にする。欠落は許すが、最終的にはマジックバイト・寸法を
+      // ImageRequestPolicy で検証し、本拡張が画像入力として扱う PNG/JPEG/GIF/WebP だけを送る。
       const ctype = (r.headers.get("content-type") || "").toLowerCase().split(";")[0].trim();
-      let mime;
-      if (ctype.startsWith("image/")) {
-        mime = ctype;
-      } else if (!ctype) {
-        mime = sniffImageMime(bytes);
-        if (!mime) return { ok: false, error: "not_image", mime: "" };
-      } else {
-        return { ok: false, error: "not_image", mime: ctype };
-      }
-      let dims = readImageDimensions(bytes, mime);
-      // 宣言 Content-Type とバイト実体が食い違う (誤設定サーバ / 非画像本文) と寸法が読めず、下のピクセル
-      // 上限ガードを黙って素通りする。マジックバイトで実体 mime を取り直して読み直す (誤設定サーバの画像は
-      // 実体 mime で正しく検査でき、以降の data URL も実体に合った mime で送れる)。
-      if (!dims) {
-        const sniffed = sniffImageMime(bytes);
-        if (sniffed && sniffed !== mime) { mime = sniffed; dims = readImageDimensions(bytes, mime); }
-      }
-      if (dims && imageDimensionsTooLarge(dims.width, dims.height)) {
-        return { ok: false, error: "image_too_large", width: dims.width, height: dims.height };
-      }
-      // readImageDimensions が寸法を読める形式 (png/gif/jpeg/webp) なのに読めない = 不正/実体が別物であり、
-      // ピクセル上限を検証できないまま decoder (createImageBitmap) へ渡さない (展開爆弾の防御を貫通させない)。
-      // 寸法パーサを持たない形式 (bmp/avif/heic 等) は従来どおり素通しし、正常な画像の翻訳を止めない。
-      if (!dims && DIMENSION_READABLE_MIMES.has(mime)) return { ok: false, error: "not_image", mime };
+      if (ctype && !ctype.startsWith("image/")) return { ok: false, error: "not_image", mime: ctype };
+      const inspected = ImageRequestPolicy.inspectBytes(bytes, ctype);
+      if (!inspected.ok) return inspected;
+      const { mime } = inspected;
       return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
@@ -1038,14 +1061,10 @@ if (typeof importScripts === "function") {
     if (got.animated) return { ok: false, error: "animated" };
     const b64 = got.b64, mime = got.mime;
 
-    // 画像翻訳は速い vision モデルを優先 (無ければテキストと同じ選択モデルにフォールバック)。
-    // visionModel はコード固定値なので廃止されると 404 で全滅する → ページ翻訳と同じ 404 自己修復を vision にも適用。
-    // 先回り: 過去に 404 解決済みの vision モデルがあれば最初から現行へ差し替える (modelFallback はメモリキャッシュ)。
-    // text モデル選択を上書きする persistModelSwitch は vision には使わない (vision はコード固定値で別 state のため)。
-    const baseModel = provider.visionModel || settings.models[providerId];
-    let model = baseModel;
-    const cachedGood = modelFallback.get(providerId + ":" + baseModel);
-    if (cachedGood && cachedGood !== baseModel) model = cachedGood;
+    // 画像入力対応を明示した visionModel だけを使う。/models の通常一覧には modality 情報が無いため、
+    // 404 時に text 用 defaultModel/一覧先頭へ自動フォールバックすると画像非対応モデルへ再送してしまう。
+    // visionModel の更新は provider 定義を正本とし、404 はそのまま返して安全側に倒す。
+    const model = provider.visionModel;
 
     // 1 回ぶんの vision リクエスト。404 自己修復で 2 回呼べるよう関数化する。
     async function runVision(useModel) {
@@ -1074,12 +1093,7 @@ if (typeof importScripts === "function") {
       try { return { ok: true, json: await res.json() }; } catch (_e) { return { ok: false, error: "parse" }; }
     }
 
-    let r = await runVision(model);
-    // 廃止 vision モデル(404)を同プロバイダの現行モデルへ解決して 1 回だけ再試行する。
-    if (isModelGone(r)) {
-      const good = await resolveFallbackModel(providerId, model);
-      if (good && good !== model) { model = good; r = await runVision(model); }
-    }
+    const r = await runVision(model);
     if (!r.ok) return r;
 
     const blocks = ProviderApi.parseImageBlocks(providerId, r.json);
@@ -1348,7 +1362,7 @@ if (typeof importScripts === "function") {
   // ① キャッシュ済みの「死亡モデル→現行」があれば最初の呼び出し前に先回りで差し替える(以後のバッチ/行で無駄な 404 を出さない)。
   // ② 実際に 404 を食らったら resolveFallbackModel→persistModelSwitch(dead ガード付き)→同入力を 1 回再試行する。
   // TRANSLATE_BATCH(ページ/クイック)から呼び、廃止モデルの自己修復を共通化する。
-  async function translateWithHeal(settings, texts, signal, batchId, tabId, frameId, quick) {
+  async function translateWithHeal(settings, texts, contexts, signal, batchId, tabId, frameId, quick, indexMap) {
     if (settings.provider !== "mymemory") {
       const cur = (settings.models && settings.models[settings.provider]) || "";
       const cached = modelFallback.get(settings.provider + ":" + cur);
@@ -1356,38 +1370,108 @@ if (typeof importScripts === "function") {
         settings = Object.assign({}, settings, { models: Object.assign({}, settings.models, { [settings.provider]: cached }) });
       }
     }
-    let res = await translateWith(settings, texts, signal, batchId, tabId, frameId, quick);
+    let res = await translateWith(settings, texts, contexts, signal, batchId, tabId, frameId, quick, indexMap);
     if (isModelGone(res) && settings.provider !== "mymemory") {
       const dead = (settings.models && settings.models[settings.provider]) || "";
       const good = await resolveFallbackModel(settings.provider, dead);
       if (good && good !== dead) {
         await persistModelSwitch(settings.provider, good, dead); // 保存 → 以後のバッチ/popup 表示も現行に揃う
         settings = Object.assign({}, settings, { models: Object.assign({}, settings.models, { [settings.provider]: good }) });
-        res = await translateWith(settings, texts, signal, batchId, tabId, frameId, quick);
+        res = await translateWith(settings, texts, contexts, signal, batchId, tabId, frameId, quick, indexMap);
       }
     }
     return res;
   }
 
   // stream(OpenAI 互換のみ) → 非stream の順で 1 バッチ翻訳する (404 フォールバックで 2 回呼べるよう関数化)。
-  async function translateWith(settings, texts, signal, batchId, tabId, frameId, quick) {
+  function sendTranslationPartial(tabId, frameId, batchId, index, text) {
+    if (tabId == null || batchId == null) return Promise.resolve();
+    try {
+      const delivery = chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId, index, text }, { frameId });
+      return delivery && typeof delivery.catch === "function"
+        ? delivery.catch(() => { /* 受信端が無ければ無視 */ })
+        : Promise.resolve();
+    } catch (_e) { return Promise.resolve(); }
+  }
+
+  async function translateWith(settings, texts, contexts, signal, batchId, tabId, frameId, quick, indexMap) {
     let res = null;
     if (batchId != null && ProviderApi.supportsStream(settings.provider)) {
-      res = await translateBatchStream(settings, texts, signal, (index, text) => {
-        if (tabId != null) {
-          chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_PARTIAL, batchId, index, text }, { frameId })
-            .catch(() => { /* 受信端が無ければ無視 */ });
-        }
+      res = await translateBatchStream(settings, texts, contexts, signal, (index, text) => {
+        const originalIndex = Array.isArray(indexMap) && Number.isInteger(indexMap[index]) ? indexMap[index] : index;
+        sendTranslationPartial(tabId, frameId, batchId, originalIndex, text);
       });
     }
-    if (!res) res = await translateBatch(settings, texts, signal, { tune: !quick }); // stream 非対応レスポンスだけ非streamへ
+    if (!res) res = await translateBatch(settings, texts, contexts, signal, { tune: !quick }); // stream 非対応レスポンスだけ非streamへ
     return res;
+  }
+
+  async function translateWithCache(settings, texts, contexts, signal, batchId, tabId, frameId, quick, scope) {
+    if (!scope || batchId == null) {
+      return withProviderSlot(settings, signal, () =>
+        translateWithHeal(settings, texts, contexts, signal, batchId, tabId, frameId, quick)
+      );
+    }
+    await ensureTranslationCache(persistentTranslationCacheEnabled);
+    const translations = new Array(texts.length);
+    const missTexts = [];
+    const missContexts = [];
+    const missIndices = [];
+    const missKeys = [];
+    const cacheDeliveries = [];
+    for (let i = 0; i < texts.length; i++) {
+      const key = TranslationBatch.cacheKey(scope, settings, ProviderApi.promptVersion, texts[i], contexts[i]);
+      const cached = getCachedTranslation(key);
+      if (cached === undefined) {
+        missTexts.push(texts[i]);
+        missContexts.push(contexts[i]);
+        missIndices.push(i);
+        missKeys.push(key);
+      } else {
+        translations[i] = cached;
+        // cache hit は API miss の成否を待たず適用する。index は元 batch の位置のまま送る。
+        cacheDeliveries.push(sendTranslationPartial(tabId, frameId, batchId, i, cached));
+      }
+    }
+    // miss が no_api_key/HTTP エラー等で即時終了しても、hit の適用が sendResponse より後着して
+    // pendingBatches 削除に弾かれないよう、cache hit だけは content への配送完了を待つ。
+    if (cacheDeliveries.length) await Promise.all(cacheDeliveries);
+    if (missTexts.length === 0) {
+      return {
+        ok: true, translations, usage: { input: 0, output: 0 },
+        cacheHits: texts.length,
+      };
+    }
+    const res = await withProviderSlot(settings, signal, () =>
+      translateWithHeal(settings, missTexts, missContexts, signal, batchId, tabId, frameId, quick, missIndices)
+    );
+    if (res && Array.isArray(res.translations) && res.translations.length === missTexts.length) {
+      for (let i = 0; i < missTexts.length; i++) translations[missIndices[i]] = res.translations[i];
+      if (res.ok) {
+        for (let i = 0; i < missTexts.length; i++) putCachedTranslation(missKeys[i], res.translations[i]);
+      }
+      return Object.assign({}, res, {
+        translations,
+        cacheHits: texts.length - missTexts.length,
+        attemptedTextCount: missTexts.length,
+      });
+    }
+    return res && typeof res === "object"
+      ? Object.assign({}, res, { cacheHits: texts.length - missTexts.length, attemptedTextCount: missTexts.length })
+      : res;
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.action !== "string") return undefined;
-    // 自拡張由来のみ受理 (content / popup / options はいずれも sender.id が拡張 ID)
-    if (sender && sender.id && chrome.runtime.id && sender.id !== chrome.runtime.id) return undefined;
+    // sender.id を必須にして自拡張由来だけを受理し、さらに action ごとに content / 拡張ページの権限を分離する。
+    // content はページと同じ renderer にいる低信頼境界なので、設定変更・モデル取得・全 state 取得は許可しない。
+    const extensionId = chrome.runtime.id;
+    const extensionBase = chrome.runtime.getURL("");
+    if (!sender || !extensionId || sender.id !== extensionId) return undefined;
+    if (!MessagePolicy.canInvoke(msg.action, msg, sender, extensionBase)) {
+      sendResponse({ ok: false, error: "forbidden_sender" });
+      return false;
+    }
 
     (async () => {
       try {
@@ -1427,16 +1511,23 @@ if (typeof importScripts === "function") {
             const controller = new AbortController();
             const untrack = msg.quick ? () => {} : trackController(tabId, controller, "page");
             try {
-              const texts = msg.texts || [];
+              const texts = Array.isArray(msg.texts) ? msg.texts : [];
+              const provider = Providers.get(settings.provider);
+              const contexts = provider && provider.batch === false
+                ? TranslationBatch.normalizeContexts([], texts.length, TranslationBatch.CONTEXT_MAX_CHARS)
+                : TranslationBatch.normalizeContexts(msg.contexts, texts.length, TranslationBatch.CONTEXT_MAX_CHARS);
               // 廃止モデルの 404 は translateWithHeal が同プロバイダの現行モデルへ自動フォールバック + 1 回再試行する
               // (静的 RETIRED に依存せず未知の廃止も自己修復。キャッシュ先回りで 2 バッチ目以降の無駄な 404 も出さない)。
               let res;
               try {
-                res = await withProviderSlot(settings, controller.signal, () =>
-                  translateWithHeal(settings, texts, controller.signal, msg.batchId, tabId, frameId, msg.quick)
+                res = await translateWithCache(
+                  settings, texts, contexts, controller.signal, msg.batchId, tabId, frameId, msg.quick,
+                  translationCacheScope(sender, msg.quick)
                 );
               } catch (e) {
-                res = (e && e.error) ? e : { ok: false, error: "aborted" };
+                res = (e && e.error) ? e : {
+                  ok: false, error: "exception", message: String((e && e.message) || e),
+                };
               }
               sendResponse(res);
             } finally { untrack(); }
@@ -1469,14 +1560,15 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.TRANSLATE_PAGE: {
-            const tabId = msg.tabId || (sender.tab && sender.tab.id);
-            if (!tabId) { sendResponse({ ok: false, error: "no_tab" }); break; }
+            // content が別 tabId を偽装しても sender.tab.id へ固定。明示 tabId は popup 等の拡張ページだけ受理する。
+            const tabId = MessagePolicy.targetTabId(msg, sender, extensionBase);
+            if (tabId == null) { sendResponse({ ok: false, error: "no_tab" }); break; }
             sendResponse(await translatePage(tabId, msg.manual === true));
             break;
           }
           case Actions.RESTORE_PAGE: {
-            const tabId = msg.tabId || (sender.tab && sender.tab.id);
-            if (!tabId) { sendResponse({ ok: false, error: "no_tab" }); break; }
+            const tabId = MessagePolicy.targetTabId(msg, sender, extensionBase);
+            if (tabId == null) { sendResponse({ ok: false, error: "no_tab" }); break; }
             await restorePage(tabId);
             sendResponse({ ok: true });
             break;
@@ -1497,8 +1589,8 @@ if (typeof importScripts === "function") {
             const errTab = msg.tabId;
             const lastError = await getLastError(errTab);
             const stateSettings = await getSettings();
-            // content scriptには公開設定だけを返す。APIキーを含む全設定は拡張ページ専用にする。
-            sendResponse({ ok: true, settings: sender && sender.tab ? publicSettings(stateSettings) : stateSettings, lastError });
+            // MessagePolicy が拡張ページだけをこの case へ通す。content へは API キーを含む state を返さない。
+            sendResponse({ ok: true, settings: stateSettings, lastError });
             break;
           }
           case Actions.GET_MODELS: {
@@ -1582,7 +1674,28 @@ if (typeof importScripts === "function") {
   ensureContentFlags().catch(() => { /* noop */ }); // SW 起動ごとに content 用フラグの存在を保証
   // SW 起動時に翻訳ホットパスの設定/集計メモリをプリロードし、cold start 後の最初の TRANSLATE_BATCH の
   // storage 待ち (設定 + BATCH_TUNING + TOKEN_USAGE) を消す (warm 時は settingsMem/tuningMem が効くので無害)。
-  Promise.all([getSettingsCached(), ensureMem()]).catch(() => { /* noop */ });
+  const preloadSettings = getSettingsCached();
+  Promise.all([
+    preloadSettings,
+    ensureMem(),
+    preloadSettings.then(async (settings) => {
+      const enabled = settings.persistentTranslationCache === true;
+      await ensureTranslationCache(enabled);
+      // OFF が正本なら、以前の削除失敗等で残った永続コピーも SW 起動ごとに再清掃する。
+      if (!enabled) {
+        const cleanup = async () => {
+          // 起動中にユーザーが ON へ切り替えた場合は、新しい永続 cache を消さない。
+          if (!persistentTranslationCacheEnabled) {
+            try { await chrome.storage.local.remove(StorageKeys.PERSISTENT_TRANSLATION_CACHE); } catch (_e) { /* 次回起動で再試行 */ }
+          }
+        };
+        const next = translationCacheWriteChain.then(cleanup, cleanup);
+        translationCacheWriteChain = next.catch(() => {});
+        await next;
+      }
+    }),
+  ]).catch(() => { /* noop */ });
+  if (chrome.runtime.onSuspend) chrome.runtime.onSuspend.addListener(() => persistTranslationCache());
 
   if (chrome.contextMenus) {
     chrome.contextMenus.onClicked.addListener(async (info, tab) => {

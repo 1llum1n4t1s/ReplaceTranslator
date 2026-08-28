@@ -27,6 +27,8 @@
   "badgeFree": { "message": "No key" },
   "optAutoTranslate": { "message": "Auto-translate every page" },
   "optAutoTranslateDesc": { "message": "Translates every page you open. This uses more of your API quota, so turn it on only when you need it." },
+  "optPersistentCache": { "message": "Persistent translation cache" },
+  "optPersistentCacheDesc": { "message": "When on, page source text and translations are stored on this device for up to 30 days and reused after browser restarts. Turning it off deletes the saved cache." },
   "labelModel": { "message": "Model" },
   "costUnknown": { "message": "—" },
   "costUnknownTitle": { "message": "Price unknown" },

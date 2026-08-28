@@ -14,7 +14,9 @@ const ACTIONS_GLOBALS = {
   // src/lib/*.js が globalThis に公開する定数。
   // 新規 globalThis 公開を追加したら本リストにも追加すること。
   Actions: "readonly",          // src/lib/actions.js — メッセージアクション定数
-  ExtUtil: "readonly",          // src/lib/actions.js — 共有小物 (tr / contextAlive)
+  ExtUtil: "readonly",          // src/lib/actions.js — 共有小物 (tr / contextAlive / claimScript)
+  ImageRequestPolicy: "readonly", // src/lib/actions.js — 画像URLのSSRF境界
+  MessagePolicy: "readonly",    // src/lib/actions.js — runtime message送信元/対象tab境界
   RuntimeLimits: "readonly",    // src/lib/actions.js — decoder前の入力上限
   SettingsSchema: "readonly",   // src/lib/actions.js — 設定スキーマ + normalize
   StorageKeys: "readonly",      // src/lib/actions.js — storage キー
@@ -23,6 +25,7 @@ const ACTIONS_GLOBALS = {
   Lang: "readonly",             // src/lib/lang.js — 言語コード ⇔ 表示名テーブル
   ProviderApi: "readonly",      // src/lib/providers.js — buildRequest/parseResponse/parseUsage/parseModels
   BatchTuner: "readonly",       // src/lib/actions.js — バッチサイズ自動学習
+  TranslationBatch: "readonly", // src/lib/actions.js — exact dedupe/retry/session cache key
   ModelPricing: "readonly",     // src/lib/model-pricing.js — モデル別概算価格
   StreamParse: "readonly",      // src/lib/stream.js — ストリーミング JSON から translations を逐次抽出
 };

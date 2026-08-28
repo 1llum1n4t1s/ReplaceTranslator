@@ -12,8 +12,10 @@
  */
 
 (function () {
-  if (window.__rtFabLoaded) return;
-  window.__rtFabLoaded = true;
+  const SCRIPT_MARKER = "__rtFabLoaded";
+  if (!globalThis.ExtUtil || !ExtUtil.claimScript(SCRIPT_MARKER)) return;
+  const scriptOwner = globalThis[SCRIPT_MARKER];
+  const contextAlive = () => ExtUtil.contextAlive(SCRIPT_MARKER, scriptOwner);
   if (window.top !== window.self) return; // トップフレームのみ
   // 動画/音声ファイルを直接開いたメディアページは翻訳対象テキストが無いので出さない
   if (/^(video|audio)\//.test(document.contentType || "")) return;
@@ -33,6 +35,7 @@
         render();
       }
     };
+    if (!contextAlive()) { fail(); return; }
     try {
       const p = chrome.runtime.sendMessage(msg); // callback 省略時は Promise。受信側不在の reject も無視する
       if (p && typeof p.catch === "function") p.catch(fail);
@@ -225,6 +228,7 @@
   // coalesce してドラッグリサイズ中の reflow 連打を抑える (全ページ常駐コストの軽減)。
   let resizeRaf = 0;
   window.addEventListener("resize", () => {
+    if (!contextAlive()) return;
     if (resizeRaf) return;
     resizeRaf = window.requestAnimationFrame(() => {
       resizeRaf = 0;
@@ -234,6 +238,7 @@
 
   // translator の進捗で状態同期
   chrome.runtime.onMessage.addListener((m) => {
+    if (!contextAlive()) return;
     if (!m || m.action !== A.TRANSLATION_PROGRESS) return;
     if (m.state === "progress") { errText = ""; partialText = ""; state = "loading"; render(); }
     else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "一部未翻訳（フレーム遅延/レート制限）") : ""; state = "on"; render(); }
@@ -274,6 +279,7 @@
     fab.style.display = hidden ? "none" : "";
   }
   document.addEventListener("fullscreenchange", () => {
+    if (!contextAlive()) return;
     // 全画面化で FAB が非表示になる瞬間にドラッグ中だと、非表示要素への pointerup 配送がブラウザによっては
     // 行われず dragging=true が残留しうる (以後 pointermove が誤反応する) ため、先にドラッグを終了させる。
     if (dragging) endDrag({}, true); // pointerId 無しの空オブジェクト (e.pointerId は undefined になるだけで例外を投げない)
@@ -293,6 +299,8 @@
     applyOpacity(flags);
   }
   function mount() {
+    const staleFab = document.getElementById("__rt_fab");
+    if (staleFab && staleFab !== fab) staleFab.remove();
     (document.body || document.documentElement).appendChild(fab);
     applyRatio(posRatio); // mount 後は offsetHeight が取れるので縦位置を確定する
   }
@@ -300,6 +308,7 @@
   // 保存済みの縦位置比率を復元 (旧 {top}/{left,top} 形式なら現在のビューポートで ratio へ換算)。
   try {
     chrome.storage.local.get(POS_KEY, (d) => {
+      if (!contextAlive()) return;
       const pos = d && d[POS_KEY];
       if (pos && typeof pos.ratio === "number") posRatio = clamp01(pos.ratio);
       else if (pos && typeof pos.top === "number") posRatio = ratioFromTop(pos.top);
@@ -311,6 +320,7 @@
   // グローバル翻訳 ON (autoTranslate) なら開いたページを自動で翻訳する (FAB 非表示でも独立して動く)。
   try {
     chrome.storage.local.get(CFLAGS_KEY, (d) => {
+      if (!contextAlive()) return;
       const f = d && d[CFLAGS_KEY];
       applyVisibility(f);
       mount();
@@ -325,6 +335,7 @@
   // popup でトグルされたら開いているページにも即時反映する
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
+      if (!contextAlive()) return;
       if (area === "local" && changes[CFLAGS_KEY]) applyVisibility(changes[CFLAGS_KEY].newValue);
     });
   } catch (_e) { /* noop */ }

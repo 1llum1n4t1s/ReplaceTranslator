@@ -6,28 +6,66 @@
  * IIFE + globalThis 公開方式。background(SW) / content / popup / options から読まれ、
  * メッセージアクション・設定スキーマ・プロバイダ定義・トークン集計ヘルパーを共有する。
  * Node テストからは test/_load-actions.js が vm.runInThisContext で評価して globalThis から取り出す。
- * __rtActionsLoaded ガードで複数回評価されても再定義しない。
+ * runtime/version-aware な __rtActionsLoaded ガードで、同一 context 内の重複評価だけを抑止する。
  */
 
 (function () {
   // ---- 拡張共通ユーティリティ (content/popup 共有の小物・重複実装の一本化先) ----
-  // __rtActionsLoaded ガードより前に補完定義する: 旧版 actions.js を評価済みの isolated world へ
-  // 更新後の版が再注入された場合、ガードの早期 return だと新規追加の公開物が欠けたまま
-  // translator.js 等が ExtUtil 参照 (ReferenceError) で死ぬ。既存定義があれば触らない。
-  if (!globalThis.ExtUtil) {
-    globalThis.ExtUtil = Object.freeze({
-      // i18n 文言取得。取得失敗/未定義キーは fallback (fab/image-translator/selection-translator/popup で共有)
-      tr(key, fallback) {
-        try { return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback; } catch (_e) { return fallback; }
-      },
-      // 拡張 context が生きているか (リロード/更新で置き去りになった旧 content script の検出)
-      contextAlive() {
-        try { return Boolean(chrome.runtime && chrome.runtime.id); } catch (_e) { return false; }
-      },
-    });
+  // 古い extension context の ExtUtil 関数を再利用すると chrome.runtime 参照も失効したままになるため、
+  // actions.js の評価ごとに現行 context で作り直す。
+  function runtimeStamp() {
+    try {
+      const runtime = chrome.runtime;
+      const version = runtime && runtime.getManifest && runtime.getManifest().version;
+      return { runtime, version: (typeof version === "string" && version) ? version : "unknown" };
+    } catch (_e) {
+      return { runtime: null, version: "unavailable" };
+    }
   }
-  if (globalThis.__rtActionsLoaded) return;
-  globalThis.__rtActionsLoaded = true;
+
+  function claimScript(marker) {
+    if (typeof marker !== "string" || !marker) return false;
+    const current = runtimeStamp();
+    const previous = globalThis[marker];
+    if (previous && typeof previous === "object" &&
+        previous.runtime === current.runtime && previous.version === current.version) {
+      return false;
+    }
+    // 旧版の boolean marker、別 extension runtime、別 manifest version は stale とみなし再初期化する。
+    globalThis[marker] = Object.freeze(current);
+    return true;
+  }
+
+  globalThis.ExtUtil = Object.freeze({
+    // i18n 文言取得。取得失敗/未定義キーは fallback (fab/image-translator/selection-translator/popup で共有)
+    tr(key, fallback) {
+      try { return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback; } catch (_e) { return fallback; }
+    },
+    // 拡張 context が生きているか (リロード/更新で置き去りになった旧 content script の検出)
+    contextAlive(marker, owner) {
+      try {
+        if (!(chrome.runtime && chrome.runtime.id)) return false;
+        return !(marker && owner) || globalThis[marker] === owner;
+      } catch (_e) { return false; }
+    },
+    claimScript,
+  });
+
+  if (!globalThis.ExtUtil.claimScript("__rtActionsLoaded")) return;
+
+  // actions.js が stale marker を更新して再評価されたときは、公開 helper も現行コードへ更新する。
+  globalThis.TranslationBatch = Object.freeze({
+    CONTEXT_MAX_CHARS: 240,
+    groupExactTexts,
+    groupContextualTexts,
+    contextKey: translationContextKey,
+    normalizeContexts: normalizeTranslationContexts,
+    shouldRetry: shouldRetryTranslation,
+    isOversize: isOversizeTranslation,
+    cacheKey: translationCacheKey,
+    normalizeCacheRecords: normalizeTranslationCacheRecords,
+    attemptedTextCount,
+  });
 
   // ---- メッセージアクション定数 ----
   const Actions = Object.freeze({
@@ -59,6 +97,8 @@
     PRICING_CACHE: "pricingCache", // models.dev から取得した動的価格 {map: {modelId: {input, output}}, fetchedAt}
     BATCH_TUNING: "batchTuning",   // バッチサイズ自動学習の状態 {provider: {size, throughput, dir}}
     CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, showFab, imageCapable} (apiKeys を含めない)
+    TRANSLATION_CACHE: "translationCacheV1", // storage.session 限定の原文完全一致キャッシュ (ブラウザ終了で消去)
+    PERSISTENT_TRANSLATION_CACHE: "persistentTranslationCacheV1", // 明示 opt-in 時だけ storage.local に保存する翻訳キャッシュ
   });
 
   // ---- プロバイダ定義 ----
@@ -134,10 +174,11 @@
       label: "Groq",
       // Groq は OpenAI 互換 (chat/completions・Bearer)。超高速・無料枠あり
       endpoint: "https://api.groq.com/openai/v1/chat/completions",
-      defaultModel: "llama-3.3-70b-versatile",
-      visionModel: "meta-llama/llama-4-scout-17b-16e-instruct",  // 画像翻訳は vision 対応の Llama 4 Scout を使う (llama-3.3 はテキストのみ)
-      // moonshotai/kimi-k2-instruct は廃止のため除外。vision の llama-4-scout も選択肢に入れる。
-      models: Object.freeze(["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct"]),
+      // developer/free tier では llama-3.3 が 2026-08-16、Llama 4 Scout が 2026-07-17 に停止済み。
+      // テキストは公式移行先、画像は現行の vision 対応 Qwen を使う (enterprise の旧モデル選択は保存値として維持)。
+      defaultModel: "openai/gpt-oss-120b",
+      visionModel: "qwen/qwen3.6-27b",
+      models: Object.freeze(["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]),
       keyUrl: "https://console.groq.com/keys",
     }),
     fugu: Object.freeze({
@@ -196,11 +237,12 @@
       xai: "grok-4.3",
       openrouter: "google/gemini-2.5-flash",
       deepseek: "deepseek-v4-flash",
-      groq: "llama-3.3-70b-versatile",
+      groq: "openai/gpt-oss-120b",
       fugu: "fugu",
       mymemory: null,
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
+    persistentTranslationCache: false, // 原文/訳文の storage.local 永続キャッシュ (既定 OFF。明示 opt-in のみ)
     showFab: false,              // ページ右下のフローティング翻訳ボタン (既定 OFF。popup/右クリックから翻訳できるため希望者だけ ON)
     showImageButton: false,      // 画像ホバー時の「訳」ボタン (既定 OFF。希望者だけ ON)
     // 選択テキスト翻訳 (ホットキー Ctrl+Shift+L / 右クリック) は常時有効。ON/OFF フラグは持たない
@@ -264,6 +306,7 @@
       apiKeys,
       models,
       autoTranslate: Boolean(r.autoTranslate),
+      persistentTranslationCache: r.persistentTranslationCache === true, // 原文を永続保存するため厳密な明示 true だけ有効
       showFab: r.showFab === true, // 既定 OFF。明示的に ON にした保存値だけ有効 (キー欠損 = 既定の OFF に倒す)
       showImageButton: r.showImageButton === true, // 既定 OFF。明示的に ON にした保存値だけ有効 (showFab と同形)
       selectionMode: r.selectionMode === "inline" ? "inline" : "bubble", // 未知値は既定の "bubble" に倒す (後方互換)
@@ -336,8 +379,312 @@
     },
   });
 
+  // ---- 翻訳バッチ共通ヘルパー ----
+  // content と background の双方で使う「完全一致 + 文脈」判定・リトライ判定・session cache key を純粋関数へ集約する。
+  // 正規化や trim は行わない。空白・大文字小文字・Unicode 表現を含め 1 文字でも変われば別テキストとして扱い、
+  // 編集後の文字列へ古い訳文を当てないことを最優先にする。
+  function groupExactTexts(texts) {
+    return groupContextualTexts(texts, []).map(({ text, indices }) => ({ text, indices }));
+  }
+
+  function translationContextKey(text, context) {
+    if (typeof text !== "string") return null;
+    return JSON.stringify([text, typeof context === "string" ? context : ""]);
+  }
+
+  // content script から届く context はページ由来なので、件数を texts と揃え、1 件ごとの上限をここで強制する。
+  // trim/Unicode 正規化はせず、文脈内の誤字修正も cache miss として扱う。
+  function normalizeTranslationContexts(contexts, count, maxChars) {
+    const total = Number.isInteger(count) && count > 0 ? count : 0;
+    const requestedCap = Number.isInteger(maxChars) && maxChars > 0 ? maxChars : 240;
+    const cap = Math.min(requestedCap, 240);
+    const input = Array.isArray(contexts) ? contexts : [];
+    return Array.from({ length: total }, (_, index) =>
+      typeof input[index] === "string" ? input[index].slice(0, cap) : ""
+    );
+  }
+
+  function groupContextualTexts(texts, contexts) {
+    const groups = [];
+    const groupByKey = new Map();
+    const normalizedContexts = normalizeTranslationContexts(contexts, texts.length, 240);
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i];
+      const context = normalizedContexts[i];
+      const key = translationContextKey(text, context);
+      const known = groupByKey.get(key);
+      if (known !== undefined) {
+        groups[known].indices.push(i);
+      } else {
+        groupByKey.set(key, groups.length);
+        groups.push({ text, context, indices: [i] });
+      }
+    }
+    return groups;
+  }
+
+  function shouldRetryTranslation(res, options) {
+    if (!res || res.ok || res.ambiguous) return false;
+    const opts = options || {};
+    if (res.error === "network" || res.error === "runtime") return true;
+    if (res.error !== "http") return false;
+    if (Number(res.status) >= 500) return true;
+    return Number(res.status) === 429 && !opts.isNmt && opts.quotaScope !== "day";
+  }
+
+  function isOversizeTranslation(res) {
+    if (!res || res.error !== "http") return false;
+    if (Number(res.status) === 413) return true;
+    if (Number(res.status) !== 400) return false;
+    const message = String(res.message || "").toLowerCase();
+    return message.includes("context_length") || message.includes("context length") ||
+      message.includes("maximum context") || message.includes("too large") ||
+      message.includes("too long") || message.includes("request entity too large") ||
+      message.includes("reduce the length") || message.includes("string too long");
+  }
+
+  function translationCacheKey(scope, settings, promptVersion, text, context) {
+    if (typeof text !== "string") return null;
+    const s = settings && typeof settings === "object" ? settings : {};
+    const provider = typeof s.provider === "string" ? s.provider : "";
+    const model = s.models && typeof s.models[provider] === "string" ? s.models[provider] : "";
+    return JSON.stringify([
+      String(scope || ""), provider, model,
+      typeof s.sourceLang === "string" ? s.sourceLang : "",
+      typeof s.targetLang === "string" ? s.targetLang : "",
+      Number(promptVersion) || 0,
+      text,
+      typeof context === "string" ? context : "",
+    ]);
+  }
+
+  // storage はユーザー/旧版/同期競合で壊れた値を含み得るため、cache record を純粋関数で検証する。
+  // 文字列は完全一致のまま保持し、正規化・trim はしない。重複 key は保存順で後勝ち (LRU の新しい側) とする。
+  function normalizeTranslationCacheRecords(stored, now, maxEntryChars, maxTtlMs) {
+    const input = Array.isArray(stored) ? stored : [];
+    const currentTime = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const maxChars = Number.isFinite(Number(maxEntryChars)) && Number(maxEntryChars) > 0
+      ? Number(maxEntryChars)
+      : Number.POSITIVE_INFINITY;
+    const maxExpiry = Number.isFinite(Number(maxTtlMs)) && Number(maxTtlMs) > 0
+      ? currentTime + Number(maxTtlMs)
+      : Number.POSITIVE_INFINITY;
+    const byKey = new Map();
+    let needsRewrite = stored != null && !Array.isArray(stored);
+    for (const record of input) {
+      if (!Array.isArray(record) || record.length !== 3) { needsRewrite = true; continue; }
+      const [key, translation, expiresAt] = record;
+      const expiry = Number(expiresAt);
+      const valid = typeof key === "string" && key && typeof translation === "string" && translation &&
+        Number.isFinite(expiry) && expiry > currentTime && expiry <= maxExpiry &&
+        key.length + translation.length <= maxChars;
+      if (!valid) { needsRewrite = true; continue; }
+      if (byKey.has(key)) { byKey.delete(key); needsRewrite = true; }
+      byKey.set(key, [key, translation, expiry]);
+    }
+    if (byKey.size !== input.length) needsRewrite = true;
+    return { records: Array.from(byKey.values()), needsRewrite };
+  }
+
+  function attemptedTextCount(res, total) {
+    const count = res && Number(res.attemptedTextCount);
+    return Number.isInteger(count) && count > 0 && count <= total ? count : total;
+  }
+
+  const TranslationBatch = globalThis.TranslationBatch;
+
+  // runtime message の送信元を「content script」と「拡張ページ」へ分類する。
+  // sender.id の自拡張照合は chrome.runtime.id が必要なため SW 側で行い、ここでは分類と対象 tab 固定だけを純粋化する。
+  function isExtensionPageSender(sender, extensionBase) {
+    return Boolean(sender && typeof sender.url === "string" && typeof extensionBase === "string" && extensionBase &&
+      sender.url.startsWith(extensionBase));
+  }
+  function isContentScriptSender(sender, extensionBase) {
+    return Boolean(sender && !isExtensionPageSender(sender, extensionBase) && sender.tab &&
+      Number.isInteger(sender.tab.id) && sender.tab.id >= 0);
+  }
+  function runtimeTargetTabId(msg, sender, extensionBase) {
+    // 拡張ページだけが明示 tabId を指定できる。content の msg.tabId は信用せず sender.tab.id へ固定する。
+    if (isExtensionPageSender(sender, extensionBase)) {
+      return msg && Number.isInteger(msg.tabId) && msg.tabId >= 0 ? msg.tabId : null;
+    }
+    return isContentScriptSender(sender, extensionBase) ? sender.tab.id : null;
+  }
+  function canInvokeRuntimeAction(action, msg, sender, extensionBase) {
+    const fromExtensionPage = isExtensionPageSender(sender, extensionBase);
+    const fromContent = isContentScriptSender(sender, extensionBase);
+    switch (action) {
+      case Actions.APPLY_SETTINGS:
+      case Actions.GET_STATE:
+      case Actions.GET_MODELS:
+        return fromExtensionPage;
+      case Actions.TRANSLATION_PROGRESS:
+      case Actions.TRANSLATE_IMAGE:
+        return fromContent;
+      case Actions.TRANSLATE_BATCH:
+        // popup のクイック翻訳だけは拡張ページから直接 1 件送る。通常ページバッチは content 限定。
+        return fromContent || (fromExtensionPage && msg && msg.quick === true);
+      case Actions.TRANSLATE_PAGE:
+      case Actions.RESTORE_PAGE:
+        return fromContent || fromExtensionPage;
+      default:
+        // 未知 action は既知の自拡張 context だけ switch の unknown_action 応答へ通す。
+        return fromContent || fromExtensionPage;
+    }
+  }
+  const MessagePolicy = Object.freeze({
+    isExtensionPageSender,
+    isContentScriptSender,
+    targetTabId: runtimeTargetTabId,
+    canInvoke: canInvokeRuntimeAction,
+  });
+
+  // IPv4 がループバック/プライベート/リンクローカル/CGNAT かどうか (先頭2オクテットで判定)
+  function isPrivateV4(a, b) {
+    return a === 0 || a === 127 || a === 10 ||
+      (a === 192 && b === 168) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19));
+  }
+  function hasEmbeddedPrivateV4(hostname) {
+    const parts = hostname.split(/[.-]/u);
+    for (let i = 0; i <= parts.length - 4; i += 1) {
+      const raw = parts.slice(i, i + 4);
+      if (!raw.every((part) => /^\d{1,3}$/.test(part))) continue;
+      const octets = raw.map(Number);
+      if (octets.every((n) => n >= 0 && n <= 255) && isPrivateV4(octets[0], octets[1])) return true;
+    }
+    return false;
+  }
+  function isForbiddenImageUrl(rawUrl) {
+    let u;
+    try { u = new URL(rawUrl); } catch (_e) { return true; }
+    if (u.protocol !== "https:" || u.username || u.password) return true;
+    let h = u.hostname.toLowerCase();
+    if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+    // FQDN の終端ドットは DNS 上同じホストを表すため、ポリシー判定前に除く。
+    // URL parser が既に正規化する IPv4 リテラルにも同じ判定を適用できる。
+    h = h.replace(/\.+$/u, "");
+    if (!h || h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true;
+    // nip.io / sslip.io 型の wildcard DNS や任意ドメインに埋め込まれた private IPv4 を拒否する。
+    // Chrome stable には content script/SW から最終 DNS 解決先を検査する API が無いため、文字列表現で
+    // 判定できる rebinding helper をここで塞ぎ、リダイレクト先は SW 側の manual redirect ループで再検証する。
+    if (hasEmbeddedPrivateV4(h)) return true;
+    const privateDnsSuffixes = ["localtest.me", "lvh.me", "vcap.me", "nip.io", "sslip.io", "xip.io"];
+    if (privateDnsSuffixes.some((suffix) => h === suffix || h.endsWith(`.${suffix}`))) return true;
+    const looksIp = h.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
+    if (!looksIp && (!h.includes(".") || /\.(internal|intranet|corp|home|lan|private|test|example|invalid|localdomain)$/.test(h))) {
+      return true;
+    }
+    if (h.includes(":")) {
+      if (h === "::1" || h === "::") return true;
+      const hx = parseInt(h.split(":")[0], 16);
+      if (Number.isFinite(hx) && ((hx & 0xffc0) === 0xfe80 || (hx & 0xfe00) === 0xfc00)) return true;
+    }
+    const mapped = h.match(/^::ffff:(.+)$/i);
+    if (mapped) {
+      const tail = mapped[1];
+      const dq = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (dq) {
+        if (isPrivateV4(+dq[1], +dq[2])) return true;
+      } else {
+        const hx = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+        if (hx) { const hi = parseInt(hx[1], 16); if (isPrivateV4((hi >> 8) & 0xff, hi & 0xff)) return true; }
+      }
+    }
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    return Boolean(m && isPrivateV4(+m[1], +m[2]));
+  }
   // decoderへ渡す前に拒否する画像画素数上限。byte数だけでは高圧縮pixel bombを防げない。
-  const RuntimeLimits = Object.freeze({ MAX_IMAGE_PIXELS: 25000000 });
+  const MAX_IMAGE_PIXELS = 25000000;
+  const RuntimeLimits = Object.freeze({ MAX_IMAGE_PIXELS });
+
+  // 本拡張が画像入力として扱う PNG/JPEG/GIF/WebP だけをマジックバイトで確定する。
+  // SVG や寸法パーサを持たない形式は、展開後サイズを検証できないまま decoder/API へ渡さない。
+  function sniffSupportedImageMime(bytes) {
+    if (!bytes || bytes.length < 4) return null;
+    if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+        bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return "image/png";
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 &&
+        bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return "image/gif";
+    if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+    return null;
+  }
+
+  function readSupportedImageDimensions(bytes, mime) {
+    if (!bytes || bytes.length < 10) return null;
+    if (mime === "image/png" && bytes.length >= 24 && bytes[8] === 0x00 && bytes[9] === 0x00 &&
+        bytes[10] === 0x00 && bytes[11] === 0x0d && bytes[12] === 0x49 && bytes[13] === 0x48 &&
+        bytes[14] === 0x44 && bytes[15] === 0x52) {
+      const u32 = (i) => (((bytes[i] * 0x100 + bytes[i + 1]) * 0x100 + bytes[i + 2]) * 0x100 + bytes[i + 3]);
+      return { width: u32(16), height: u32(20) };
+    }
+    if (mime === "image/gif") {
+      return { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
+    }
+    if (mime === "image/webp" && bytes.length >= 16) {
+      const type = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+      if (type === "VP8X" && bytes.length >= 30) {
+        return {
+          width: 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16),
+          height: 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16),
+        };
+      }
+      if (type === "VP8 " && bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+        return { width: (bytes[26] | (bytes[27] << 8)) & 0x3fff, height: (bytes[28] | (bytes[29] << 8)) & 0x3fff };
+      }
+      if (type === "VP8L" && bytes.length >= 25 && bytes[20] === 0x2f) {
+        const b = (bytes[21] | (bytes[22] << 8) | (bytes[23] << 16) | (bytes[24] << 24)) >>> 0;
+        return { width: (b & 0x3fff) + 1, height: ((b >>> 14) & 0x3fff) + 1 };
+      }
+      return null;
+    }
+    if (mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      let i = 2;
+      while (i + 1 < bytes.length) {
+        if (bytes[i] !== 0xff) { i += 1; continue; }
+        while (i < bytes.length && bytes[i] === 0xff) i += 1;
+        if (i >= bytes.length) break;
+        const marker = bytes[i++];
+        if (marker === 0x00 || marker === 0xd8 || marker === 0xd9 || marker === 0x01 ||
+            (marker >= 0xd0 && marker <= 0xd7)) continue;
+        if (i + 1 >= bytes.length) break;
+        const size = (bytes[i] << 8) | bytes[i + 1];
+        if (size < 2 || i + size > bytes.length) break;
+        const isSof = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) ||
+          (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
+        if (isSof && size >= 7) {
+          return { height: (bytes[i + 3] << 8) | bytes[i + 4], width: (bytes[i + 5] << 8) | bytes[i + 6] };
+        }
+        if (marker === 0xda) break;
+        i += size;
+      }
+    }
+    return null;
+  }
+
+  function inspectImageBytes(bytes, declaredMime) {
+    const declared = String(declaredMime || "").toLowerCase().split(";")[0].trim();
+    const mime = sniffSupportedImageMime(bytes);
+    if (!mime) return { ok: false, error: "not_image", mime: declared };
+    const dims = readSupportedImageDimensions(bytes, mime);
+    if (!dims || !Number.isFinite(dims.width) || !Number.isFinite(dims.height) || dims.width <= 0 || dims.height <= 0) {
+      return { ok: false, error: "not_image", mime };
+    }
+    if (dims.width > MAX_IMAGE_PIXELS / dims.height) {
+      return { ok: false, error: "image_too_large", mime, width: dims.width, height: dims.height };
+    }
+    return { ok: true, mime, width: dims.width, height: dims.height };
+  }
+
+  const ImageRequestPolicy = Object.freeze({
+    isForbiddenUrl: isForbiddenImageUrl,
+    inspectBytes: inspectImageBytes,
+  });
 
   // ---- globalThis 公開 (ExtUtil は IIFE 冒頭・ガード前で定義済み) ----
   globalThis.Actions = Actions;
@@ -346,5 +693,8 @@
   globalThis.SettingsSchema = SettingsSchema;
   globalThis.TokenUsage = TokenUsage;
   globalThis.BatchTuner = BatchTuner;
+  globalThis.TranslationBatch = TranslationBatch;
+  globalThis.MessagePolicy = MessagePolicy;
+  globalThis.ImageRequestPolicy = ImageRequestPolicy;
   globalThis.RuntimeLimits = RuntimeLimits;
 })();

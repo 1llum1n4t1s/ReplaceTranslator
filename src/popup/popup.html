@@ -85,6 +85,13 @@
         </div>
         <div class="switch-field">
           <div class="switch-text">
+            <label class="switch-label" for="persistent-cache" data-i18n="optPersistentCache">永続翻訳キャッシュ</label>
+            <div class="switch-desc" data-i18n="optPersistentCacheDesc">ON にするとページの原文と訳文を最大30日間この端末に保存し、ブラウザ再起動後も再利用します。OFF にすると保存済みキャッシュを削除します。</div>
+          </div>
+          <input id="persistent-cache" type="checkbox">
+        </div>
+        <div class="switch-field">
+          <div class="switch-text">
             <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
             <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
             <div class="sub-field" id="fab-opacity-row">

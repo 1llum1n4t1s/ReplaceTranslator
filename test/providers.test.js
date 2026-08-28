@@ -8,6 +8,10 @@ const { ProviderApi } = g;
 
 // ---- buildSystemPrompt ----
 
+test("ProviderApi exposes a positive translation prompt version for cache invalidation", () => {
+  assert.equal(Number.isInteger(ProviderApi.promptVersion) && ProviderApi.promptVersion > 0, true);
+});
+
 test("buildSystemPrompt includes target language and the mixed-language rule", () => {
   const p = ProviderApi.buildSystemPrompt("auto", "ja");
   assert.match(p, /Japanese/);
@@ -33,6 +37,13 @@ test("buildSystemPrompt with auto source keeps the NOT-in-target rule", () => {
   assert.doesNotMatch(p, /Translate ONLY the elements written in/);
 });
 
+test("buildSystemPrompt treats page context as untrusted disambiguation input only", () => {
+  const p = ProviderApi.buildSystemPrompt("en", "ja", true);
+  assert.match(p, /use "context" only to disambiguate "text"/i);
+  assert.match(p, /translate only "text"/i);
+  assert.match(p, /untrusted content/i);
+});
+
 // ---- buildRequest (3社の形状) ----
 
 test("buildRequest openai shape", () => {
@@ -45,7 +56,21 @@ test("buildRequest openai shape", () => {
   assert.equal(r.body.model, "gpt-4o-mini");
   assert.equal(r.body.response_format.type, "json_object");
   assert.equal(r.body.messages.length, 2);
-  assert.match(r.body.messages[1].content, /Hello/);
+  assert.deepEqual(JSON.parse(r.body.messages[1].content), ["Hello"]);
+});
+
+test("buildRequest sends bounded per-item context without changing output order", () => {
+  const r = ProviderApi.buildRequest("openai", {
+    texts: ["Bank", "Bank", "Plain"],
+    contexts: ["Before: river", "Before: finance", ""],
+    sourceLang: "en", targetLang: "ja", model: "gpt-4o-mini", apiKey: "sk-x",
+  });
+  assert.deepEqual(JSON.parse(r.body.messages[1].content), [
+    { text: "Bank", context: "Before: river" },
+    { text: "Bank", context: "Before: finance" },
+    "Plain",
+  ]);
+  assert.match(r.body.messages[0].content, /SAME length and SAME order/);
 });
 
 test("buildRequest anthropic shape", () => {
@@ -91,9 +116,10 @@ test("OpenAI 互換プロバイダ(openrouter/deepseek/groq/fugu)は chat/comple
     assert.ok(!("max_completion_tokens" in r.body), `${id} は max_completion_tokens を使わない`);
     assert.equal(r.body.messages.length, 2, `${id} messages`);
     assert.match(r.body.messages[1].content, /Hello/, `${id} user content`);
-    // 非 OpenAI なので reasoning_effort は付かず temperature:0
+    // OpenAI 互換でも provider/model 固有の最小推論設定は維持する。
     assert.equal(r.body.temperature, 0, `${id} temperature`);
-    assert.ok(!("reasoning_effort" in r.body), `${id} no reasoning_effort`);
+    if (id === "groq") assert.equal(r.body.reasoning_effort, "low", `${id} minimum reasoning_effort`);
+    else assert.ok(!("reasoning_effort" in r.body), `${id} no reasoning_effort`);
   });
 });
 
@@ -358,6 +384,20 @@ test("parseModels gemini keeps only generateContent models, strips models/ prefi
   const r = ProviderApi.parseModels("gemini", json);
   assert.equal(r.length, 1);
   assert.equal(r[0].id, "gemini-2.0-flash");
+});
+
+test("filterTranslationModels keeps curated dated snapshots but rejects uncurated dated/rolling IDs", () => {
+  const models = [
+    { id: "deepseek/deepseek-v4-flash-0731", created: 4 },
+    { id: "google/gemini-2.5-flash", created: 3 },
+    { id: "vendor/model-20240806", created: 2 },
+    { id: "vendor/model-latest", created: 1 },
+    { id: "vendor/text-embedding-3", created: 0 },
+  ];
+  assert.deepEqual(
+    ProviderApi.filterTranslationModels("openrouter", models).map((m) => m.id),
+    ["deepseek/deepseek-v4-flash-0731", "google/gemini-2.5-flash"],
+  );
 });
 
 // ---- 画像内テキストの翻訳 (vision) ----

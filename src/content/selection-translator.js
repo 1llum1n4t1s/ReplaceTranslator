@@ -14,8 +14,9 @@
  */
 
 (function () {
-  if (window.__rtSelectionLoaded) return;
-  window.__rtSelectionLoaded = true;
+  const SCRIPT_MARKER = "__rtSelectionLoaded";
+  if (!globalThis.ExtUtil || !ExtUtil.claimScript(SCRIPT_MARKER)) return;
+  const scriptOwner = globalThis[SCRIPT_MARKER];
   if (window.top !== window.self) return; // トップフレームのみ (iframe 内選択は対象外。fab.js と同方針)
   if (/^(video|audio)\//.test(document.contentType || "")) return; // メディア直開きは翻訳対象テキスト無し
 
@@ -40,7 +41,7 @@
   let posRaf = 0;          // scroll/resize 再配置の rAF coalesce
   let lastSelRoot = null;  // 直近に選択が見つかった shadow root (scroll 連打での再走査を避けるキャッシュ)
 
-  const contextAlive = ExtUtil.contextAlive; // 拡張 context 生存判定 (actions.js の共有実装)
+  const contextAlive = () => ExtUtil.contextAlive(SCRIPT_MARKER, scriptOwner);
   const tr = ExtUtil.tr;                     // i18n 取得 (同上)
 
   // 翻訳失敗の理由を i18n に展開する (popup の errorText / fab の errSummary と同じキーを再利用)。
@@ -457,6 +458,7 @@
   }
 
   function onRuntimeMessage(m) {
+    if (!contextAlive()) { shutdown(); return; }
     if (!m) return;
     if (m.action === A.TRANSLATE_SELECTION_CS) { trigger(); return; }
     // FAB/popup の「原文に戻す」(RESTORE_PAGE→APPLY_RESTORE_CS) で、ページ翻訳と一緒にインライン対訳も撤去する。
@@ -476,12 +478,14 @@
   // 表示方法フラグを読む (非機密フラグのみ。API キーは読まない)。popup の変更に storage.onChanged で即追従。
   try {
     chrome.storage.local.get(CFLAGS_KEY, (d) => {
+      if (!contextAlive()) { shutdown(); return; }
       const f = d && d[CFLAGS_KEY];
       if (f && typeof f.selectionMode === "string") mode = f.selectionMode === "inline" ? "inline" : "bubble";
     });
   } catch (_e) { /* noop */ }
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
+      if (!contextAlive()) { shutdown(); return; }
       if (area !== "local" || !changes[CFLAGS_KEY]) return;
       const v = changes[CFLAGS_KEY].newValue;
       if (v && typeof v.selectionMode === "string") {

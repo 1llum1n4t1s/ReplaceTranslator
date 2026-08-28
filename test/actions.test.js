@@ -4,7 +4,10 @@ const test = require("node:test");
 const assert = require("node:assert");
 const g = require("./_load-actions.js");
 
-const { SettingsSchema, TokenUsage, Providers, BatchTuner, ModelPricing, RuntimeLimits } = g;
+const {
+  SettingsSchema, TokenUsage, Providers, BatchTuner, TranslationBatch, ModelPricing, RuntimeLimits,
+  MessagePolicy, ImageRequestPolicy, ExtUtil,
+} = g;
 
 // ---- SettingsSchema.normalize ----
 
@@ -181,6 +184,150 @@ test("BatchTuner.sizeOf falls back to DEFAULT for invalid state", () => {
   assert.equal(BatchTuner.sizeOf({ size: 30 }), 30);
 });
 
+test("Groq uses separate current text and vision models", () => {
+  const groq = Providers.get("groq");
+  assert.equal(groq.defaultModel, "openai/gpt-oss-120b");
+  assert.equal(SettingsSchema.DEFAULTS.models.groq, groq.defaultModel);
+  assert.equal(groq.visionModel, "qwen/qwen3.6-27b");
+  assert.notEqual(groq.defaultModel, groq.visionModel);
+});
+
+test("ExtUtil.claimScript upgrades stale guards and stays idempotent in one runtime", () => {
+  const marker = "__rtTestScriptLoaded";
+  const originalChrome = globalThis.chrome;
+  const originalMarker = globalThis[marker];
+  try {
+    globalThis.chrome = { runtime: { id: "test-extension", getManifest: () => ({ version: "1.0.0" }) } };
+    globalThis[marker] = true; // 旧版の boolean guard
+    assert.equal(ExtUtil.claimScript(marker), true);
+    const firstOwner = globalThis[marker];
+    assert.equal(ExtUtil.contextAlive(marker, firstOwner), true);
+    assert.equal(ExtUtil.claimScript(marker), false);
+
+    // 同じ version でも extension reload 後は runtime object が入れ替わるため stale 扱いにする。
+    globalThis.chrome = { runtime: { id: "test-extension", getManifest: () => ({ version: "1.0.0" }) } };
+    assert.equal(ExtUtil.claimScript(marker), true);
+    assert.equal(ExtUtil.contextAlive(marker, firstOwner), false);
+    assert.equal(ExtUtil.contextAlive(marker, globalThis[marker]), true);
+  } finally {
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalMarker === undefined) delete globalThis[marker];
+    else globalThis[marker] = originalMarker;
+  }
+});
+
+test("normalize defaults persistent translation cache to off and requires literal true", () => {
+  assert.equal(SettingsSchema.normalize({}).persistentTranslationCache, false);
+  assert.equal(SettingsSchema.normalize({ persistentTranslationCache: false }).persistentTranslationCache, false);
+  assert.equal(SettingsSchema.normalize({ persistentTranslationCache: true }).persistentTranslationCache, true);
+  assert.equal(SettingsSchema.normalize({ persistentTranslationCache: "yes" }).persistentTranslationCache, false);
+});
+
+// ---- TranslationBatch (exact dedupe / retry / session cache) ----
+
+test("TranslationBatch.groupExactTexts groups only exactly equivalent strings", () => {
+  assert.deepEqual(TranslationBatch.groupExactTexts(["Hello", "Hello", " hello", "Hello ", "Ｈello", "Hello"]), [
+    { text: "Hello", indices: [0, 1, 5] },
+    { text: " hello", indices: [2] },
+    { text: "Hello ", indices: [3] },
+    { text: "Ｈello", indices: [4] },
+  ]);
+  // NFC/NFD も勝手に正規化しない。文字が変わった可能性を cache hit で隠さないため。
+  assert.equal(TranslationBatch.groupExactTexts(["é", "e\u0301"]).length, 2);
+});
+
+test("TranslationBatch.groupContextualTexts separates the same source text in different contexts", () => {
+  assert.deepEqual(
+    TranslationBatch.groupContextualTexts(
+      ["Bank", "Bank", "Bank", "Bank!"],
+      ["Before: river", "Before: finance", "Before: river", "Before: river"],
+    ),
+    [
+      { text: "Bank", context: "Before: river", indices: [0, 2] },
+      { text: "Bank", context: "Before: finance", indices: [1] },
+      { text: "Bank!", context: "Before: river", indices: [3] },
+    ],
+  );
+  assert.notEqual(
+    TranslationBatch.contextKey("Bank", "Before: river"),
+    TranslationBatch.contextKey("Bank", "Before: finance"),
+  );
+});
+
+test("TranslationBatch.normalizeContexts aligns and caps untrusted page context", () => {
+  assert.deepEqual(TranslationBatch.normalizeContexts(["river", 123, "abcdef"], 4, 5), ["river", "", "abcde", ""]);
+  assert.equal(TranslationBatch.normalizeContexts(["x".repeat(500)], 1, 999)[0].length, TranslationBatch.CONTEXT_MAX_CHARS);
+  assert.deepEqual(TranslationBatch.normalizeContexts("not-an-array", 2), ["", ""]);
+});
+
+test("TranslationBatch.shouldRetry excludes incomplete and ambiguous responses", () => {
+  assert.equal(TranslationBatch.shouldRetry({ error: "network" }), true);
+  assert.equal(TranslationBatch.shouldRetry({ error: "runtime" }), true);
+  assert.equal(TranslationBatch.shouldRetry({ error: "http", status: 503 }), true);
+  assert.equal(TranslationBatch.shouldRetry({ error: "http", status: 413 }), false);
+  assert.equal(TranslationBatch.shouldRetry({ error: "incomplete" }), false);
+  assert.equal(TranslationBatch.shouldRetry({ error: "network", ambiguous: true }), false);
+  assert.equal(TranslationBatch.shouldRetry({ error: "http", status: 429 }, { isNmt: true }), false);
+  assert.equal(TranslationBatch.shouldRetry({ error: "http", status: 429 }, { quotaScope: "day" }), false);
+  assert.equal(TranslationBatch.shouldRetry({ error: "http", status: 429 }, { quotaScope: "minute" }), true);
+});
+
+test("TranslationBatch.isOversize distinguishes input-size 400 from request-shape 400", () => {
+  assert.equal(TranslationBatch.isOversize({ error: "http", status: 400, message: "maximum context length exceeded" }), true);
+  assert.equal(TranslationBatch.isOversize({ error: "http", status: 400, message: "unsupported parameter" }), false);
+  assert.equal(TranslationBatch.isOversize({ error: "http", status: 413, message: "" }), true);
+});
+
+test("TranslationBatch.cacheKey includes every translation variant but excludes API keys", () => {
+  const base = {
+    provider: "openai", sourceLang: "en", targetLang: "ja",
+    models: { openai: "gpt-x" }, apiKeys: { openai: "secret-a" },
+  };
+  const key = TranslationBatch.cacheKey("https://example.com", base, 1, "Hello");
+  assert.equal(key, TranslationBatch.cacheKey("https://example.com", Object.assign({}, base, { apiKeys: { openai: "secret-b" } }), 1, "Hello"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.net", base, 1, "Hello"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", base, 2, "Hello"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", base, 1, "Hello!"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", base, 1, "Hello", "Before: greeting"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com/other", base, 1, "Hello"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", Object.assign({}, base, { targetLang: "fr" }), 1, "Hello"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", Object.assign({}, base, { models: { openai: "gpt-y" } }), 1, "Hello"));
+  assert.equal(key.includes("secret-a"), false);
+});
+
+test("TranslationBatch.attemptedTextCount uses the actual cache-miss request size", () => {
+  assert.equal(TranslationBatch.attemptedTextCount({ attemptedTextCount: 1 }, 100), 1);
+  assert.equal(TranslationBatch.attemptedTextCount({ attemptedTextCount: 4 }, 4), 4);
+  assert.equal(TranslationBatch.attemptedTextCount({ attemptedTextCount: 0 }, 10), 10);
+  assert.equal(TranslationBatch.attemptedTextCount({ attemptedTextCount: 11 }, 10), 10);
+  assert.equal(TranslationBatch.attemptedTextCount(null, 10), 10);
+});
+
+test("TranslationBatch.normalizeCacheRecords rejects stale/corrupt entries and keeps the newest duplicate", () => {
+  const now = 1000;
+  const normalized = TranslationBatch.normalizeCacheRecords([
+    ["a", "old", 2000],
+    ["expired", "訳", 999],
+    ["a", "new", 3000],
+    ["far-future", "訳", 9000],
+    ["too-long", "123456", 3000],
+    ["empty", "", 3000],
+    ["bad"],
+  ], now, 12, 3000);
+  assert.deepEqual(normalized.records, [["a", "new", 3000]]);
+  assert.equal(normalized.needsRewrite, true);
+  assert.deepEqual(
+    TranslationBatch.normalizeCacheRecords([["a", "訳", 2000]], now, 12, 3000),
+    { records: [["a", "訳", 2000]], needsRewrite: false },
+  );
+});
+
+test("StorageKeys exposes separate session and opt-in persistent cache keys", () => {
+  assert.equal(g.StorageKeys.TRANSLATION_CACHE, "translationCacheV1");
+  assert.equal(g.StorageKeys.PERSISTENT_TRANSLATION_CACHE, "persistentTranslationCacheV1");
+});
+
 // ---- ModelPricing (相対コスト用の概算価格) ----
 
 test("ModelPricing.lookup matches known models with longest-match", () => {
@@ -236,4 +383,139 @@ test("ModelPricing.displayName returns official name from dynamic data, null oth
     ModelPricing.setDynamic(null);
   }
   assert.equal(ModelPricing.displayName("gpt-99.6-sol"), null); // 動的なしでも null
+});
+
+// ---- runtime message / image request security policy ----
+
+test("MessagePolicy separates extension-page and content-script privileges", () => {
+  const base = "chrome-extension://replace-translator/";
+  const popup = { id: "replace-translator", url: `${base}src/popup/popup.html` };
+  const content = { id: "replace-translator", url: "https://hostile.example/page", tab: { id: 7 } };
+  const extensionTab = { id: "replace-translator", url: `${base}options.html`, tab: { id: 8 } };
+
+  assert.equal(MessagePolicy.canInvoke("APPLY_SETTINGS", {}, popup, base), true);
+  assert.equal(MessagePolicy.canInvoke("APPLY_SETTINGS", {}, content, base), false);
+  assert.equal(MessagePolicy.canInvoke("GET_MODELS", {}, content, base), false);
+  assert.equal(MessagePolicy.canInvoke("GET_STATE", {}, content, base), false);
+  assert.equal(MessagePolicy.canInvoke("TRANSLATE_IMAGE", {}, content, base), true);
+  assert.equal(MessagePolicy.canInvoke("TRANSLATE_IMAGE", {}, popup, base), false);
+  assert.equal(MessagePolicy.canInvoke("TRANSLATE_BATCH", { quick: true }, popup, base), true);
+  assert.equal(MessagePolicy.canInvoke("TRANSLATE_BATCH", { quick: false }, popup, base), false);
+  assert.equal(MessagePolicy.canInvoke("TRANSLATE_PAGE", {}, content, base), true);
+  assert.equal(MessagePolicy.isExtensionPageSender(extensionTab, base), true);
+});
+
+test("MessagePolicy pins content actions to sender.tab and accepts explicit tab only from extension pages", () => {
+  const base = "moz-extension://replace-translator/";
+  const popup = { url: `${base}src/popup/popup.html` };
+  const content = { url: "https://example.com/", tab: { id: 12 } };
+  assert.equal(MessagePolicy.targetTabId({ tabId: 99 }, content, base), 12);
+  assert.equal(MessagePolicy.targetTabId({ tabId: 99 }, popup, base), 99);
+  assert.equal(MessagePolicy.targetTabId({ tabId: "99" }, popup, base), null);
+  assert.equal(MessagePolicy.targetTabId({ tabId: 99 }, { url: "https://example.com/" }, base), null);
+});
+
+test("ImageRequestPolicy rejects internal targets including terminal-dot FQDN forms", () => {
+  const forbidden = [
+    "http://example.com/image.png",
+    "https://localhost/image.png",
+    "https://localhost./image.png",
+    "https://printer.local./image.png",
+    "https://nas.corp./image.png",
+    "https://127.0.0.1./image.png",
+    "https://2130706433/image.png",
+    "https://[::1]/image.png",
+    "https://user:pass@example.com/image.png",
+    "https://127.0.0.1.nip.io/image.png",
+    "https://10-0-0-1.sslip.io/image.png",
+    "https://cdn.192.168.1.5.attacker.example.org/image.png",
+    "https://localtest.me/image.png",
+  ];
+  for (const url of forbidden) assert.equal(ImageRequestPolicy.isForbiddenUrl(url), true, url);
+  assert.equal(ImageRequestPolicy.isForbiddenUrl("https://cdn.example.org/image.png"), false);
+  assert.equal(ImageRequestPolicy.isForbiddenUrl("https://cdn.example.org./image.png"), false);
+});
+
+const pngHeader = (width, height) => {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  bytes[11] = 0x0d;
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  const writeU32 = (offset, value) => {
+    bytes[offset] = (value >>> 24) & 0xff;
+    bytes[offset + 1] = (value >>> 16) & 0xff;
+    bytes[offset + 2] = (value >>> 8) & 0xff;
+    bytes[offset + 3] = value & 0xff;
+  };
+  writeU32(16, width);
+  writeU32(20, height);
+  return bytes;
+};
+
+const gifHeader = (width, height) => {
+  return Uint8Array.from([
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+    width & 0xff, (width >>> 8) & 0xff, height & 0xff, (height >>> 8) & 0xff,
+  ]);
+};
+
+const webpVp8xHeader = (width, height) => {
+  const bytes = new Uint8Array(30);
+  bytes.set([0x52, 0x49, 0x46, 0x46], 0);
+  bytes.set([0x57, 0x45, 0x42, 0x50], 8);
+  bytes.set([0x56, 0x50, 0x38, 0x58], 12);
+  const w = width - 1, h = height - 1;
+  bytes.set([w & 0xff, (w >>> 8) & 0xff, (w >>> 16) & 0xff], 24);
+  bytes.set([h & 0xff, (h >>> 8) & 0xff, (h >>> 16) & 0xff], 27);
+  return bytes;
+};
+
+const jpegHeader = (width, height) => {
+  const bytes = new Uint8Array(21);
+  bytes.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08]);
+  bytes.set([(height >>> 8) & 0xff, height & 0xff, (width >>> 8) & 0xff, width & 0xff], 7);
+  return bytes;
+};
+
+test("ImageRequestPolicy accepts only supported images whose dimensions are readable", () => {
+  const samples = [
+    [pngHeader(640, 480), "image/png", 640, 480],
+    [jpegHeader(1024, 768), "image/jpeg", 1024, 768],
+    [gifHeader(320, 240), "image/gif", 320, 240],
+    [webpVp8xHeader(800, 600), "image/webp", 800, 600],
+  ];
+  for (const [bytes, mime, width, height] of samples) {
+    assert.deepEqual(ImageRequestPolicy.inspectBytes(bytes, mime), { ok: true, mime, width, height });
+  }
+});
+
+test("ImageRequestPolicy trusts supported magic bytes over a mismatched image content type", () => {
+  assert.deepEqual(ImageRequestPolicy.inspectBytes(pngHeader(40, 30), "image/svg+xml"), {
+    ok: true, mime: "image/png", width: 40, height: 30,
+  });
+});
+
+test("ImageRequestPolicy rejects SVG, BMP, AVIF and malformed supported images before decode", () => {
+  const unsupported = [
+    [Uint8Array.from([0x3c, 0x73, 0x76, 0x67, 0x3e]), "image/svg+xml"],
+    [Uint8Array.from([0x42, 0x4d, 0, 0]), "image/bmp"],
+    [Uint8Array.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]), "image/avif"],
+    [Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "image/png"],
+  ];
+  for (const [bytes, mime] of unsupported) {
+    assert.equal(ImageRequestPolicy.inspectBytes(bytes, mime).ok, false, mime);
+    assert.equal(ImageRequestPolicy.inspectBytes(bytes, mime).error, "not_image", mime);
+  }
+});
+
+test("ImageRequestPolicy enforces the pixel cap from image headers", () => {
+  assert.equal(ImageRequestPolicy.inspectBytes(pngHeader(5000, 5000), "image/png").ok, true);
+  assert.deepEqual(ImageRequestPolicy.inspectBytes(pngHeader(5001, 5000), "image/png"), {
+    ok: false,
+    error: "image_too_large",
+    mime: "image/png",
+    width: 5001,
+    height: 5000,
+  });
+  assert.equal(ImageRequestPolicy.inspectBytes(pngHeader(0, 100), "image/png").error, "not_image");
 });

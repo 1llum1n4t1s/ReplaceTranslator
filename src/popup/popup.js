@@ -238,6 +238,7 @@
   // ---- 共通 ----
   function reflect() {
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
+    $("persistent-cache").checked = state.settings.persistentTranslationCache === true;
     const fabOn = state.settings.showFab === true; // 既定 OFF (normalize 済みでも向きを合わせて明示 ON のみ点灯)
     $("show-fab").checked = fabOn;
     // 不透明度スライダー: 乗数(0.2〜1.0)→パーセント表示。FAB 非表示のときは操作不可にして淡くする
@@ -506,6 +507,13 @@
     });
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
+    $("persistent-cache").addEventListener("change", async (e) => {
+      const checkbox = e.target;
+      checkbox.disabled = true; // local cache の load/remove が完了するまで連打で状態を反転させない
+      await save({ persistentTranslationCache: checkbox.checked });
+      checkbox.checked = state.settings.persistentTranslationCache === true;
+      checkbox.disabled = false;
+    });
     $("show-fab").addEventListener("change", (e) => { save({ showFab: e.target.checked }); $("fab-opacity").disabled = !e.target.checked; });
     // 不透明度スライダー: input でラベルを即時更新 (保存はせず軽量に), change (ドラッグ確定) で保存する
     $("fab-opacity").addEventListener("input", (e) => { $("fab-opacity-val").textContent = e.target.value + "%"; });

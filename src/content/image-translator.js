@@ -10,8 +10,9 @@
  */
 
 (function () {
-  if (window.__rtImgLoaded) return;
-  window.__rtImgLoaded = true;
+  const SCRIPT_MARKER = "__rtImgLoaded";
+  if (!globalThis.ExtUtil || !ExtUtil.claimScript(SCRIPT_MARKER)) return;
+  const scriptOwner = globalThis[SCRIPT_MARKER];
   // 画像翻訳はホバー/右クリックの手動のみ (一括・後追い watcher・iframe 一括注入は廃止)。本スクリプトは
   // manifest の content_scripts で top フレームにのみ常駐する (all_frames 指定なし)。iframe 内画像は
   // 右クリック時に SW が info.frameId のフレームへ本スクリプトをオンデマンド注入して届ける (常駐はしない)。
@@ -33,7 +34,7 @@
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
-  const contextAlive = ExtUtil.contextAlive; // actions.js の共有実装
+  const contextAlive = () => ExtUtil.contextAlive(SCRIPT_MARKER, scriptOwner);
   // context 失効時などに、登録リスナーを解除し btn 除去・state クリアして、これ以上 chrome API / DOM を
   // 触らないよう静かに停止する。各操作は try/catch で例外を吸収する (translator.js の shutdown と同パターン)。
   function shutdown() {
@@ -278,6 +279,7 @@
     if (!imageCapable && btn && (!target || !isTranslated(target))) btn.style.display = "none";
   }
   function onStorageChanged(changes, area) {
+    if (!contextAlive()) { shutdown(); return; }
     if (area === "local" && changes[CFLAGS_KEY]) applyFlags(changes[CFLAGS_KEY].newValue);
   }
   try {
@@ -1133,6 +1135,7 @@
   // 画像翻訳はホバー/右クリックの手動のみ (一括は廃止)。ページ翻訳には連動せず、原文復元時にだけ
   // 付けたオーバーレイを消す (= ページを元に戻すと画像も元に戻る)。
   function onRuntimeMessage(msg) {
+    if (!contextAlive()) { shutdown(); return undefined; }
     if (!msg || typeof msg.action !== "string") return undefined;
     if (msg.action === A.APPLY_RESTORE_CS) clearAllImages();
     else if (msg.action === A.TRANSLATE_IMAGE_CS) translateImgFromContext(msg.srcUrl || "");

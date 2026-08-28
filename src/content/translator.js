@@ -4,7 +4,7 @@
  * translator.js — ページ「インプレース置換翻訳」エンジン (content script)
  *
  * scripting.executeScript で actions.js / lang.js と共にオンデマンド注入される。
- * __rtTranslatorLoaded ガードで再注入されても初期化は 1 回 (リスナー重複なし)。
+ * runtime/version-aware な __rtTranslatorLoaded ガードで同一 context の重複初期化だけを防ぐ。
  *
  * Immersive Translate の拾い方を参考にしたビューポート優先翻訳:
  *   テキストノードを「ブロック要素」単位にまとめ、IntersectionObserver で
@@ -22,8 +22,9 @@
  */
 
 (function () {
-  if (window.__rtTranslatorLoaded) return;
-  window.__rtTranslatorLoaded = true;
+  const SCRIPT_MARKER = "__rtTranslatorLoaded";
+  if (!globalThis.ExtUtil || !ExtUtil.claimScript(SCRIPT_MARKER)) return;
+  const scriptOwner = globalThis[SCRIPT_MARKER];
 
   const A = globalThis.Actions;
 
@@ -82,12 +83,12 @@
   let currentBatchSize = 0;
   let warmupLeft = 0;                   // 残り warm-up バッチ数 (>0 の間は小サイズで投げ TTF を縮める)
   let batchSeq = 0;                     // TRANSLATE_BATCH 連番 (streaming の partial を batchId で紐付ける)
-  const pendingBatches = new Map();     // batchId → batch ({node,text}[])。TRANSLATE_PARTIAL の逐次適用に使う
+  const pendingBatches = new Map();     // batchId → exact text group[]。TRANSLATE_PARTIAL の逐次 fan-out に使う
   const queue = [];                     // 翻訳待ち {node, text}
   let queuedNodes = new WeakSet();      // 同じノードをin-flight前に重複キューへ積まない
   let pageTextCount = 0;
   let pageCharCount = 0;
-  const INCOMPLETE_REQUEUE_MAX = 2;     // stream 出力切れ(incomplete)で未訳のまま残ったノードを再キューする上限 (無限ループ防止)
+  const INCOMPLETE_REQUEUE_MAX = 2;     // incomplete/oversize を小バッチへ分割して再キューする上限 (無限ループ防止)
   const ORIGINAL_REAPPLY_COOLDOWN_MS = 1000; // ページが直後に原文へ戻したノードではページ側を優先し、MO の相互書き換えを止める
   const SCOPE_WRITE_MAX_TEXTS = 128;    // 1 コンポーネントで保持する競合検知用原文数 (巨大 Web Component での増加を上限化)
 
@@ -124,6 +125,11 @@
   const WARMUP_BATCH_SIZE = 12;         // warm-up 中の 1 バッチのテキスト数
   // 1 バッチの一時エラー時の最大リトライ回数 (指数バックオフ)
   const MAX_RETRY = 2;
+  // 同じ短文でも会話・見出し等の周辺文脈が違えば別の訳になり得る。LLM へ添える文脈はトークン増を
+  // 抑えるため前後合わせてこの長さへ制限し、background 側でも同じ上限を再検証する。
+  const CONTEXT_MAX_CHARS = (globalThis.TranslationBatch && TranslationBatch.CONTEXT_MAX_CHARS) || 240;
+  const CONTEXT_SIDE_CHARS = 96;
+  const CONTEXT_SCAN_NODES = 200;
 
   // バッチ非対応プロバイダ (MyMemory 等の NMT) か。並列度・401/403 恒久エラー判定の単一ソース。
   function isNmtProvider() {
@@ -250,6 +256,83 @@
     return el || document.body;
   }
 
+  function sourceValue(node) {
+    const original = originalMap.get(node);
+    return typeof original === "string" ? original : String((node && node.nodeValue) || "");
+  }
+
+  function compactContextText(value, fromEnd) {
+    const text = String(value || "").replace(/\s+/gu, " ").trim();
+    if (text.length <= CONTEXT_SIDE_CHARS) return text;
+    return fromEnd ? text.slice(-CONTEXT_SIDE_CHARS) : text.slice(0, CONTEXT_SIDE_CHARS);
+  }
+
+  // 既に翻訳した隣接ノードは originalMap の原文へ戻して読む。動的再描画後も、訳文を文脈キーへ
+  // 混ぜて不要な cache miss を起こさないため。走査数と文字数は固定上限で抑える。
+  function elementContextPreview(root, fromEnd) {
+    if (!root) return "";
+    let walker;
+    try { walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); } catch (_e) { return ""; }
+    let combined = "";
+    let scanned = 0;
+    for (let node = walker.nextNode(); node && scanned++ < CONTEXT_SCAN_NODES; node = walker.nextNode()) {
+      if (node.parentElement && node.parentElement.closest(SKIP_CLOSEST)) continue;
+      const text = compactContextText(sourceValue(node), false);
+      if (!text) continue;
+      combined = fromEnd ? `${combined} ${text}`.slice(-CONTEXT_SIDE_CHARS) : `${combined} ${text}`;
+      if (!fromEnd && combined.length >= CONTEXT_SIDE_CHARS) break;
+    }
+    return compactContextText(combined, fromEnd);
+  }
+
+  function adjacentContextPreview(node, block, direction) {
+    let walker;
+    try {
+      walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      walker.currentNode = node;
+    } catch (_e) { return ""; }
+    for (let scanned = 0; scanned < CONTEXT_SCAN_NODES; scanned++) {
+      const candidate = direction < 0 ? walker.previousNode() : walker.nextNode();
+      if (!candidate) break;
+      if (candidate.parentElement && candidate.parentElement.closest(SKIP_CLOSEST)) continue;
+      const text = compactContextText(sourceValue(candidate), direction < 0);
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function blockContextSnapshot(block) {
+    return {
+      before: elementContextPreview(block && block.previousElementSibling, true),
+      after: elementContextPreview(block && block.nextElementSibling, false),
+    };
+  }
+
+  function translationContext(node, block, snapshot) {
+    if (isNmtProvider()) return ""; // MyMemory 等は文脈入力を受け取れないため従来の exact-text 経路を維持
+    const target = String((node && node.nodeValue) || "").replace(/\s+/gu, " ").trim();
+    const nearby = snapshot || blockContextSnapshot(block);
+    const inlineBefore = adjacentContextPreview(node, block, -1);
+    const inlineAfter = adjacentContextPreview(node, block, 1);
+    const before = inlineBefore || nearby.before;
+    const after = inlineAfter || nearby.after;
+    const parts = [];
+    if (before && before !== target) parts.push(`Before: ${before}`);
+    if (after && after !== target) parts.push(`After: ${after}`);
+    if (parts.length === 0) {
+      // 孤立したラベル等にも最低限のページ文脈を与える。query/hash は個人識別子や一時値を含みやすいので送らない。
+      let path = "";
+      try { path = location.pathname || ""; } catch (_e) { /* noop */ }
+      const page = compactContextText([path, document.title || ""].filter(Boolean).join(" — "), false);
+      if (page && page !== target) parts.push(`Page: ${page}`);
+    }
+    return parts.join("\n").slice(0, CONTEXT_MAX_CHARS);
+  }
+
+  function memoKey(text, context) {
+    return TranslationBatch.contextKey(text, isNmtProvider() ? "" : context);
+  }
+
   // root 配下の翻訳対象テキストノードを document 順に遅延列挙する。
   // TreeWalker は Shadow DOM を貫通しないので、開いた shadowRoot を辿る DFS で実装する
   // (Immersive 同様に Web コンポーネント内のテキストも翻訳対象にする)。子は document 順で積む。
@@ -315,6 +398,7 @@
     if (!io) return;
     const toObserve = new Set();
     const metaCache = new Map(); // block→{near,y}: 同一ブロックの getBoundingClientRect 重複読みを避ける
+    const contextCache = new Map(); // block→前後 block の原文 preview。同一 ingest 内の重複走査を避ける
     const metaOf = (block) => {
       let m = metaCache.get(block);
       if (m === undefined) { m = blockMeta(block); metaCache.set(block, m); }
@@ -331,17 +415,23 @@
       // 「無限に翻訳を繰り返す」ように見える (= GitHub issue ページの「4 days ago / 11 minutes ago」)。同一原文は
       // メモ適用なら API も reflow も無く、MO コールバック内の同期書き換えなのでペイント前に訳文へ戻りちらつかない。
       // 原文が実際に変化したとき (時刻が進んで "12 minutes ago" 等) はメモミス → 下の通常経路で訳す (翻訳を維持する)。
-      const memo = translationMemo.get(node.nodeValue);
+      const block = blockAncestor(node);
+      let context = "";
+      if (!isNmtProvider()) {
+        let snapshot = contextCache.get(block);
+        if (!snapshot) { snapshot = blockContextSnapshot(block); contextCache.set(block, snapshot); }
+        context = translationContext(node, block, snapshot);
+      }
+      const memo = translationMemo.get(memoKey(node.nodeValue, context));
       if (memo !== undefined) {
         // ページが訳文への反応として同じ custom element 内の Text ノードを原文で作り直した場合は、ページ側を優先する。
         // translatedNodes に残すため同じノードを再キューせず、別テキストやクールダウン後の更新は通常どおり翻訳できる。
         if (scopeWriteIsRecent(node, node.nodeValue)) translatedNodes.add(node);
-        else applyOne({ node, text: node.nodeValue }, memo);
+        else applyOne({ node, text: node.nodeValue, context }, memo);
         dc.memo++;
         continue;
       }
-      const block = blockAncestor(node);
-      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y); immediate = true; dc.flushedHit++; continue; }
+      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y, context); immediate = true; dc.flushedHit++; continue; }
       if (observedBlocks.has(block)) {
         // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外1: 初回 0×0 で observe した block は
         // 高さが付いて near 化したか毎回再評価する(0×0→サイズ付与の in-viewport 遷移は IO が発火しないことが
@@ -361,7 +451,7 @@
         // 既に可視(+先読み)圏内 → IO の初期通知に頼らず即翻訳に回す(スクロールしないと訳されない問題の解消)
         flushedBlocks.add(block);
         observedBlocks.add(block);
-        enqueue(node, meta.y);
+        enqueue(node, meta.y, context);
         immediate = true;
         dc.near++;
       } else {
@@ -387,7 +477,7 @@
 
   // collectNodes() が accept() 済みノードだけを返すため、ここでは再検証しない (二重 accept=closest 走査の回避)。
   // 全呼び出し元 (ingest / onIntersect) が collectNodes 経由なのが前提。
-  function enqueue(node, y) {
+  function enqueue(node, y, context) {
     if (!node || queuedNodes.has(node) || translatedNodes.has(node)) return;
     const text = String(node.nodeValue || "");
     if (text.length > PAGE_MAX_SINGLE_CHARS || pageTextCount >= PAGE_MAX_TEXTS || pageCharCount + text.length > PAGE_MAX_CHARS) {
@@ -399,12 +489,18 @@
     queuedNodes.add(node);
     pageTextCount++;
     pageCharCount += text.length;
-    queue.push({ node, text, _y: y || 0 }); // _y = 所属ブロックのページ絶対Y (sortTopDown 用)
+    const block = blockAncestor(node);
+    const resolvedContext = isNmtProvider()
+      ? ""
+      : typeof context === "string"
+      ? context
+      : translationContext(node, block, blockContextSnapshot(block));
+    queue.push({ node, text, context: resolvedContext, _y: y || 0 }); // _y = 所属ブロックのページ絶対Y (sortTopDown 用)
   }
 
   // 拡張 context が生きているか (リロード/更新後に置き去りになった古いスクリプトかの判定)。
   // 失効すると chrome.runtime.id が undefined になり、chrome API 呼び出しは例外を投げる。
-  const contextAlive = ExtUtil.contextAlive; // actions.js の共有実装 (translator は actions.js と共に注入される)
+  const contextAlive = () => ExtUtil.contextAlive(SCRIPT_MARKER, scriptOwner);
   // context 失効時などに翻訳を止め、observer/timer を後始末してこれ以上 chrome API を叩かないようにする。
   function shutdown() {
     translating = false;
@@ -419,9 +515,10 @@
     const batchId = ++batchSeq;
     pendingBatches.set(batchId, batch);
     const texts = batch.map((b) => b.text);
+    const contexts = batch.map((b) => b.context || "");
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ action: A.TRANSLATE_BATCH, texts, settings, batchId, sessionId }, (res) => {
+        chrome.runtime.sendMessage({ action: A.TRANSLATE_BATCH, texts, contexts, settings, batchId, sessionId }, (res) => {
           pendingBatches.delete(batchId);
           if (chrome.runtime.lastError) {
             resolve({ ok: false, error: "runtime", message: chrome.runtime.lastError.message });
@@ -454,12 +551,8 @@
   // 入力サイズ起因の 400 (context-length / request-too-large) はバッチ固有のエラー → BatchTuner がサイズを
   // 縮めれば通る。設定/リクエスト形状起因の 400 (モデル非対応パラメータ等) は全バッチ同型に必ず失敗するので
   // fatal のまま扱う。本文を見て両者を切り分け、サイズ 400 は per-batch の一時エラー (skip→partial) に倒す。
-  function isOversize400(res) {
-    if (!res || res.error !== "http" || res.status !== 400) return false;
-    const m = String(res.message || "").toLowerCase();
-    return m.includes("context_length") || m.includes("context length") || m.includes("maximum context") ||
-      m.includes("too large") || m.includes("too long") || m.includes("request entity too large") ||
-      m.includes("reduce the length") || m.includes("string too long");
+  function isOversizeRequest(res) {
+    return TranslationBatch.isOversize(res);
   }
 
   // 一時エラー (429 / 通信 / 5xx) は指数バックオフでリトライ。致命的/恒久エラーはそのまま返す。
@@ -468,13 +561,12 @@
       if (myRun !== runId) return { ok: false, error: "aborted" };
       const res = await sendBatch(batch);
       if (res && res.ok) return res;
-      const e = res && res.error;
       // MyMemory 等の NMT は無料枠で 429 を即返す。429 を数百ms 後にリトライしても解けず、
       // 指数バックオフ分(約2秒/バッチ)を丸ごと無駄にするだけなので、NMT の 429 は即諦める。
       const isNmt = isNmtProvider();
-      const transient = !(res && res.ambiguous) && (e === "network" || e === "runtime" || e === "incomplete" ||
-        (e === "http" && res.status >= 500) ||
-        (e === "http" && res.status === 429 && !isNmt && quotaScope(res) !== "day"));
+      // incomplete は同一 batch を再送しても入力/出力 token を重ねるだけなので、ここでは retry しない。
+      // flush が background の nextBatchSize を採用し、未訳分をより小さい batch へ分割して再キューする。
+      const transient = TranslationBatch.shouldRetry(res, { isNmt, quotaScope: quotaScope(res) });
       if (transient && attempt < MAX_RETRY) {
         // 429 時のバッチ縮小は background(BatchTuner) を単一ソースにし、res.nextBatchSize で反映する
         // (クライアント側の自前半減は廃止 = 二重管理の解消)。ジッタで 10 並列ワーカーの同時リトライを分散。
@@ -501,9 +593,35 @@
       noteScopeWrite(item.node, item.text);
     }
   }
+  function batchMembers(item) {
+    return item && Array.isArray(item.members) ? item.members : (item ? [item] : []);
+  }
+  function applyBatchItem(item, t) {
+    for (const member of batchMembers(item)) applyOne(member, t);
+  }
+  function groupBatchItems(items) {
+    return TranslationBatch.groupContextualTexts(
+      items.map((item) => item.text),
+      items.map((item) => isNmtProvider() ? "" : item.context || "")
+    ).map((group) => ({
+      text: group.text,
+      context: group.context,
+      members: group.indices.map((index) => items[index]),
+    }));
+  }
+  // in-flight 中にページ側が文字を直した場合、MutationObserver 時点では queuedNodes に阻まれていた新値を
+  // 応答解放時に再キューする。applyOne の exact current-value guard と組み合わせ、古い訳文は適用しない。
+  function releaseBatchItem(item) {
+    for (const member of batchMembers(item)) {
+      queuedNodes.delete(member.node);
+      if (member.node.isConnected && member.node.nodeValue !== member.text && !translatedNodes.has(member.node)) {
+        enqueue(member.node, member._y);
+      }
+    }
+  }
   // バッチ全体に適用 (最終確定)。streaming で既に適用済みのノードは nodeValue 不一致で applyOne がスキップする。
   function applyTranslations(batch, translations) {
-    for (let i = 0; i < batch.length; i++) applyOne(batch[i], translations[i]);
+    for (let i = 0; i < batch.length; i++) applyBatchItem(batch[i], translations[i]);
   }
   // 原文→訳文をメモに登録 (同一原文の再翻訳を API なしでキャッシュ適用するため)。上限超過後は新規登録のみ止める。
   // バッチ応答を原文→訳文メモに登録する。SPA 再レンダで Text ノード実体が差し替わっても、同一原文を
@@ -515,11 +633,12 @@
   function rememberTranslations(batch, translations, full) {
     for (let i = 0; i < batch.length; i++) {
       const src = batch[i] && batch[i].text;
+      const key = batch[i] && memoKey(src, batch[i].context || "");
       const t = translations[i];
       if (typeof src !== "string" || !src || typeof t !== "string" || !t) continue;
       if (t === src && !full) continue; // 部分失敗の原文返しはキャッシュしない (後で訳し直せるよう残す)
-      if (translationMemo.size >= MEMO_MAX && !translationMemo.has(src)) continue;
-      translationMemo.set(src, t);
+      if (translationMemo.size >= MEMO_MAX && !translationMemo.has(key)) continue;
+      translationMemo.set(key, t);
     }
   }
 
@@ -559,7 +678,7 @@
     // 繰り返し文言・原文書き戻しの「再翻訳」= 無駄な TRANSLATE_BATCH を防ぐ)。残りだけ API へ送る。
     const toSend = [];
     for (const x of pending) {
-      const cached = translationMemo.get(x.text);
+      const cached = translationMemo.get(memoKey(x.text, x.context || ""));
       if (cached !== undefined) { queuedNodes.delete(x.node); applyOne(x, cached); }
       else toSend.push(x);
     }
@@ -570,23 +689,26 @@
       return;
     }
     sortTopDown(toSend);
+    // 同一 flush 内の「完全一致原文 + 同一文脈」は 1 要素だけ API へ送り、結果を全 Text node へ fan-out する。
+    // 原文または文脈が 1 文字でも違えば統合しないため、会話上の意味が違う同じ短文へ別の訳を保持できる。
+    const groupedToSend = groupBatchItems(toSend);
     if (!announced) notifyProgress("progress");
 
     // 共有カーソルから「その時点の currentBatchSize」個ずつ取り出す。
     // → BatchTuner が育てたサイズが同一 flush 内のあとのバッチにも即反映される (旧: flush 開始時のサイズで固定)。
     let cursor = 0;
     async function worker() {
-      while (cursor < toSend.length) {
+      while (cursor < groupedToSend.length) {
         if (myRun !== runId || fatal || !translating) return;
         // 開始直後の数バッチは小サイズ (TTF 短縮 + 全ワーカーに分散)。以降は自動学習サイズ。
         let size;
         if (warmupLeft > 0) { warmupLeft--; size = WARMUP_BATCH_SIZE; }
         else size = Math.max(1, currentBatchSize);
-        const batch = toSend.slice(cursor, cursor + size);
+        const batch = groupedToSend.slice(cursor, cursor + size);
         cursor += batch.length;
         const res = await sendBatchWithRetry(batch, myRun);
         if (myRun !== runId) return;
-        for (const b of batch) queuedNodes.delete(b.node);
+        for (const b of batch) releaseBatchItem(b);
         // バッチサイズ自動学習は background(tuningMem) を単一ソースとし、ok/エラー問わず nextBatchSize を採用する。
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
         if (res && res.ok && Array.isArray(res.translations)) {
@@ -595,12 +717,12 @@
         } else if (res && res.error === "no_api_key") {
           fatal = res; // キーが無ければ何も訳せない → 全体中断
           return;
-        } else if (res && res.error === "http" && ((res.status === 400 && !isOversize400(res)) || res.status === 401 || res.status === 403 || res.status === 404) && !isNmtProvider()) {
+        } else if (res && res.error === "http" && ((res.status === 400 && !isOversizeRequest(res)) || res.status === 401 || res.status === 403 || res.status === 404) && !isNmtProvider()) {
           // LLM の恒久エラーは全体中断して popup/FAB に理由を通知する (NMT は per-text 制限なので除外):
           //  401/403 = キー無効/失効、400 = リクエスト不正 (モデル非対応パラメータ等)、404 = モデルが見つからない。
           // いずれもリクエスト形状/設定が原因で全バッチ同型 → 1 バッチ失敗なら残りも必ず失敗する。
           // skip して done にすると「未翻訳なのにエラーも出ない (理由不明で詰む)」ため、無言 skip せず原因を見せる。
-          // ただし入力サイズ起因の 400 (isOversize400) はバッチ固有 → 下の isTransientDrop へ流し、skip→partial で
+          // ただし入力サイズ起因の 400/413 (isOversizeRequest) はバッチ固有 → 小バッチ再キューへ流し、
           // 残りのバッチは訳し続ける (BatchTuner が縮めれば後続は通る。全体中断しない)。
           fatal = res;
           return;
@@ -620,19 +742,28 @@
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
           rememberTranslations(batch, res.translations, false); // 部分成功 → 原文返しは失敗かもしれずキャッシュしない
-        } else if (res && res.error === "incomplete") {
-          // ストリーミング出力が途中で切れた (truncated JSON)。確定済みの partial (nodeValue が訳文へ
+        } else if (res && (res.error === "incomplete" || isOversizeRequest(res))) {
+          // LLM 出力が途中で切れた/入力上限を超えた。確定済みの partial (nodeValue が訳文へ
           // 書き換わったノード) はそのまま残し、まだ原文のままのノードだけ能動的に queue へ戻す。
           // queue に積めば flush 末尾の queue.length>0 判定で再 flush され、BatchTuner が縮めたサイズで
           // 訳し直される。「将来の ingest/スクロール頼み」で done を誤announceし、手動再実行まで未訳放置に
           // なるのを防ぐ。無限ループ防止に再キュー回数を INCOMPLETE_REQUEUE_MAX で打ち切り、超えたら諦める。
-          for (const b of batch) {
-            if (!b.node.isConnected || b.node.nodeValue !== b.text || translatedNodes.has(b.node)) continue;
-            // 再キュー上限を超えて諦めたノードは未訳のまま残る。transient drop と同様に数え、
-            // done を partial で正直に通知する (「完了なのに一部未訳」の無言化を防ぐ)。
-            if ((b.incompleteRetry || 0) >= INCOMPLETE_REQUEUE_MAX) { translatedNodes.add(b.node); droppedTransient++; continue; }
-            b.incompleteRetry = (b.incompleteRetry || 0) + 1;
-            queue.push(b);
+          // nextBatchSize が BatchTuner.MIN で下げ止まる場合も、失敗した実 batch の半分以下へ必ず縮める。
+          // 1 要素はこれ以上分割できないため同じ入力を再送せず、partial として正直に終了する。
+          const attemptedCount = TranslationBatch.attemptedTextCount(res, batch.length);
+          if (attemptedCount > 1) currentBatchSize = Math.max(1, Math.min(currentBatchSize, Math.floor(attemptedCount / 2)));
+          for (const group of batch) {
+            for (const b of batchMembers(group)) {
+              if (!b.node.isConnected || b.node.nodeValue !== b.text || translatedNodes.has(b.node)) continue;
+              // 再キュー上限を超えて諦めたノードは未訳のまま残る。transient drop と同様に数え、
+              // done を partial で正直に通知する (「完了なのに一部未訳」の無言化を防ぐ)。
+              if (attemptedCount === 1 || (b.incompleteRetry || 0) >= INCOMPLETE_REQUEUE_MAX) {
+                translatedNodes.add(b.node); droppedTransient++; continue;
+              }
+              b.incompleteRetry = (b.incompleteRetry || 0) + 1;
+              queuedNodes.add(b.node);
+              queue.push(b);
+            }
           }
         } else {
           // 訳文を伴わない一時エラーで諦めたバッチは、再翻訳ループを防ぐため処理済み扱いで飛ばし、残りは続ける。
@@ -641,10 +772,12 @@
           // stale_session (SW 再起動でセッション復元に失敗した後続バッチ) も未訳のまま残るので数える
           // (通常は myRun ガード/ensurePageSessions で先に救済され、ここに来るのは縁ケースのみ)。
           const isTransientDrop = res && (res.error === "network" || res.error === "runtime" || res.error === "stale_session" ||
-            (res.error === "http" && (res.status === 429 || res.status >= 500)) || isOversize400(res));
-          for (const b of batch) {
-            translatedNodes.add(b.node);
-            if (isTransientDrop) droppedTransient++;
+            (res.error === "http" && (res.status === 429 || res.status >= 500)) || isOversizeRequest(res));
+          for (const group of batch) {
+            for (const b of batchMembers(group)) {
+              translatedNodes.add(b.node);
+              if (isTransientDrop) droppedTransient++;
+            }
           }
         }
       }
@@ -698,7 +831,11 @@
       // entry.boundingClientRect は IO 仕様上常に存在し追加読みなし。万一欠落時のみ block を実測フォールバック
       // (0 固定だと画面下部の block が y=sy で上位に誤ソートされるのを防ぐ)。
       const y = (entry.boundingClientRect ? entry.boundingClientRect.top : block.getBoundingClientRect().top) + sy;
-      for (const node of collectNodes(block)) { enqueue(node, y); added = true; }
+      const snapshot = isNmtProvider() ? null : blockContextSnapshot(block);
+      for (const node of collectNodes(block)) {
+        enqueue(node, y, snapshot ? translationContext(node, block, snapshot) : "");
+        added = true;
+      }
     }
     if (added) scheduleFlush();
   }
@@ -731,7 +868,11 @@
     if (io) { try { io.unobserve(block); } catch (_e) { /* noop */ } } // IO 後発火による二重取り込みを止める
     flushedBlocks.add(block);              // 以後この block 内の動的追加も即取り込み(冪等)
     let added = false;
-    for (const node of collectNodes(block)) { enqueue(node, m.y); added = true; } // collectNodes は既訳ノードを accept で弾く
+    const snapshot = isNmtProvider() ? null : blockContextSnapshot(block);
+    for (const node of collectNodes(block)) {
+      enqueue(node, m.y, snapshot ? translationContext(node, block, snapshot) : "");
+      added = true;
+    } // collectNodes は既訳ノードを accept で弾く
     return added;
   }
 
@@ -1072,12 +1213,13 @@
 
   // ---- メッセージ受信 ----
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!contextAlive()) { shutdown(); return undefined; }
     if (!msg || typeof msg.action !== "string") return undefined;
     if (msg.action === A.TRANSLATE_PARTIAL) {
       // streaming の早出し: 確定した訳文要素を該当ノードへ即適用 (最終 sendResponse でも整合確認される)。
       // 復元/再翻訳後は pendingBatches がクリアされ batchId が引けないので適用されない (stale 防止)。
       const batch = pendingBatches.get(msg.batchId);
-      if (translating && batch && batch[msg.index]) applyOne(batch[msg.index], msg.text);
+      if (translating && batch && batch[msg.index]) applyBatchItem(batch[msg.index], msg.text);
       return undefined;
     }
     if (msg.action === A.APPLY_TRANSLATE_CS) {

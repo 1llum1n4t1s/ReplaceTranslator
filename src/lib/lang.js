@@ -8,8 +8,7 @@
  */
 
 (function () {
-  if (globalThis.__rtLangLoaded) return;
-  globalThis.__rtLangLoaded = true;
+  if (!globalThis.ExtUtil || !ExtUtil.claimScript("__rtLangLoaded")) return;
 
   const LANGUAGES = [
     { code: "auto", en: "Detect language", native: "自動判定" },
