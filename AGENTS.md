@@ -2,7 +2,7 @@
 
 This file provides guidance to Codex when working in this repository.
 
-各社クラウド LLM / 無料 NMT でページをインプレース置換翻訳する Chrome / Firefox (MV3) 拡張機能。本ファイルは LLM 向けのアーキテクチャ・実装パターン集（肯定形で記述）。ビルドツール無しのネイティブ JS（`"type": "commonjs"`・ランタイム依存ゼロ・devDeps のみ）。
+各社クラウド LLM / 無料 NMT でページをインプレース置換翻訳する Chrome / Firefox (MV3) 拡張機能。本ファイルは LLM 向けの作業規約・実装パターン集（肯定形で記述）。全体の構造・責務・境界・データフロー・設計判断は [DESIGN.md](DESIGN.md)、機能別の実装詳細は [references/architecture.md](references/architecture.md) を正本とする。ビルドツール無しのネイティブ JS（`"type": "commonjs"`・ランタイム依存ゼロ・devDeps のみ）。
 
 ## ビルド / テスト / Lint コマンド
 - `pnpm test` — Node 標準テスト（`node --test`。純粋関数のみ: actions / providers / lang / stream）
