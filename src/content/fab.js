@@ -24,21 +24,35 @@
   const POS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.FAB_POSITION) || "fabPosition";
   // content には API キーを入れない: 全体 settings ではなく非機密フラグ (CONTENT_FLAGS) だけ読む
   const CFLAGS_KEY = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
+  const AUTO_ROUTE_POLL_MS = 250; // pushState/replaceState はイベントを発火しないため、自動翻訳ON中だけ軽量に URL を監視
   if (!A) return;
 
   // 拡張 context 失効時 (Extension context invalidated) は静かに無視する送信ラッパ
   function send(msg) {
+    const seq = ++sendSeq;
     const fail = () => {
+      if (seq !== sendSeq) return;
       if (msg && msg.action === A.TRANSLATE_PAGE) {
         state = "off";
         errText = tr("fabError", "翻訳を開始できませんでした");
         render();
       }
     };
+    const complete = (res) => {
+      if (seq !== sendSeq) return;
+      // 初回ページが除外対象、または自動翻訳OFFへの切替と競合した場合は translator から進捗が来ない。
+      // 応答を正本に loading を解除し、次の SPA URL 変化を再度自動翻訳できる状態へ戻す。
+      if (msg && msg.action === A.TRANSLATE_PAGE && msg.manual !== true && res && (res.blacklisted || res.autoTranslateDisabled)) {
+        state = "off";
+        errText = "";
+        partialText = "";
+        render();
+      }
+    };
     if (!contextAlive()) { fail(); return; }
     try {
       const p = chrome.runtime.sendMessage(msg); // callback 省略時は Promise。受信側不在の reject も無視する
-      if (p && typeof p.catch === "function") p.catch(fail);
+      if (p && typeof p.then === "function") p.then(complete, fail);
     } catch (_e) { fail(); }
   }
 
@@ -48,6 +62,7 @@
   let errText = ""; // 直近の翻訳エラーの理由 (FAB の title に出す。空なら通常表示。無言失敗の可視化)
   let partialText = ""; // 一部未翻訳の注記 (partial done)。エラーではないので __rt-error は付けず title にだけ出す
   let posRatio = 0.82; // 縦位置の比率 (0=最上 / 1=最下)。初期は右下寄り。保存値で上書きする
+  let sendSeq = 0; // 後発の進捗/操作後に古い自動翻訳応答が FAB 状態を巻き戻さないための世代
 
   const fab = document.createElement("button");
   fab.id = "__rt_fab";
@@ -240,6 +255,7 @@
   chrome.runtime.onMessage.addListener((m) => {
     if (!contextAlive()) return;
     if (!m || m.action !== A.TRANSLATION_PROGRESS) return;
+    sendSeq += 1; // progress は send() の応答より強い最新状態。遅着した抑止/失敗応答を無効化する
     if (m.state === "progress") { errText = ""; partialText = ""; state = "loading"; render(); }
     else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "一部を翻訳できませんでした") : ""; state = "on"; render(); }
     else if (m.state === "error") { errText = errSummary(m.detail); partialText = ""; state = "off"; render(); } // 失敗理由を title に出す
@@ -249,7 +265,42 @@
 
   render();
 
-  let lastFlags = null; // 直近の CONTENT_FLAGS (showFab 判定をフルスクリーン切替時にも再利用する)
+  let lastFlags = null; // 直近の CONTENT_FLAGS (showFab/autoTranslate 判定を再利用する)
+  let lastRouteHref = location.href;
+  let autoRouteInterval = null;
+
+  function checkAutoRoute() {
+    if (!contextAlive()) {
+      if (autoRouteInterval) window.clearInterval(autoRouteInterval);
+      autoRouteInterval = null;
+      return;
+    }
+    const href = location.href;
+    if (href === lastRouteHref) return;
+    lastRouteHref = href;
+    if (!(lastFlags && lastFlags.autoTranslate)) return;
+    errText = "";
+    partialText = "";
+    state = "loading";
+    render();
+    // SW が最新設定と blacklist を再評価し、許可URLだけを新しい page session として開始する。
+    send({ action: A.TRANSLATE_PAGE, routeChange: true });
+  }
+
+  function updateAutoRouteWatch(flags) {
+    lastRouteHref = location.href;
+    if (!(flags && flags.autoTranslate)) {
+      if (autoRouteInterval) window.clearInterval(autoRouteInterval);
+      autoRouteInterval = null;
+      return;
+    }
+    if (!autoRouteInterval) autoRouteInterval = window.setInterval(checkAutoRoute, AUTO_ROUTE_POLL_MS);
+  }
+
+  // 戻る/進む・hash は即時、pushState/replaceState は上の bounded polling で拾う。
+  window.addEventListener("popstate", checkAutoRoute);
+  window.addEventListener("hashchange", checkAutoRoute);
+
   // 動画 <video> がブラウザ全画面表示中はページ操作の妨げになるため隠す。標準 Fullscreen API ベースなので
   // YouTube/Twitch/U-NEXT/Prime Video 等、動画サイトを問わず汎用的に効く (サイト別の判定を持たない)。
   function isFullscreenVideo() {
@@ -295,6 +346,7 @@
   }
   function applyVisibility(flags) {
     lastFlags = flags;
+    updateAutoRouteWatch(flags);
     refreshVisibility();
     applyOpacity(flags);
   }

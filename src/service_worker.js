@@ -1145,15 +1145,20 @@ if (typeof importScripts === "function") {
   // ページ翻訳/復元はワンショット動作。全ページ自動翻訳 (autoTranslate) の永続フラグはここでは変更しない。
   // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
-  async function translatePage(tabId, manual = false) {
+  async function translatePage(tabId, manual = false, routeChange = false) {
     // ブラックリストは自動翻訳だけの gate。popup/FAB/右クリックの明示操作(manual=true)は常に通す。
     // 世代採番・既存翻訳のabortより先に判定し、対象外ページを開いただけで手動翻訳を中断しない。
     if (!manual) {
       await settingsWriteChain;
       const settings = await getSettingsCached();
+      // CONTENT_FLAGS の更新と URL 監視tickが競合しても、OFF 後に新しい自動翻訳を開始しない。
+      if (!settings.autoTranslate) return { ok: true, autoTranslateDisabled: true };
       let tabUrl = "";
       try { tabUrl = (await chrome.tabs.get(tabId)).url || ""; } catch (_e) { /* inject側の既存エラーへ委ねる */ }
       if (AutoTranslateBlacklist.matches(tabUrl, settings.autoTranslateBlacklist)) {
+        // 同じ document 上の SPA 遷移では旧 translator が生存している。除外URLへ移った場合は旧runも復元し、
+        // 先行翻訳・FABの前ルート状態・page session を残さない。初回gateは手動run競合を中断しない。
+        if (routeChange) await restorePage(tabId);
         return { ok: true, blacklisted: true };
       }
     }
@@ -1591,7 +1596,7 @@ if (typeof importScripts === "function") {
             // content が別 tabId を偽装しても sender.tab.id へ固定。明示 tabId は popup 等の拡張ページだけ受理する。
             const tabId = MessagePolicy.targetTabId(msg, sender, extensionBase);
             if (tabId == null) { sendResponse({ ok: false, error: "no_tab" }); break; }
-            sendResponse(await translatePage(tabId, msg.manual === true));
+            sendResponse(await translatePage(tabId, msg.manual === true, msg.routeChange === true));
             break;
           }
           case Actions.RESTORE_PAGE: {

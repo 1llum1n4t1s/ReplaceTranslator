@@ -27,6 +27,9 @@ test("Service Workerは自動翻訳だけをブラックリストで抑止する
   const worker = read("src/service_worker.js");
 
   assert.match(worker, /if \(!manual\)[\s\S]+AutoTranslateBlacklist\.matches\(tabUrl, settings\.autoTranslateBlacklist\)/);
+  assert.match(worker, /if \(!settings\.autoTranslate\) return \{ ok: true, autoTranslateDisabled: true \}/);
+  assert.match(worker, /if \(routeChange\) await restorePage\(tabId\)/);
+  assert.match(worker, /translatePage\(tabId, msg\.manual === true, msg\.routeChange === true\)/);
   assert.match(worker, /return \{ ok: true, blacklisted: true \}/);
   assert.match(worker, /id: AUTO_TRANSLATE_SITE_MENU_ID[\s\S]+contexts: \["all"\]/);
   assert.match(worker, /AutoTranslateBlacklist\.toggleSite\(url, base\.autoTranslateBlacklist\)/);

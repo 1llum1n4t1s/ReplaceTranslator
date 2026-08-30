@@ -63,6 +63,8 @@
   let runId = 0;                        // 翻訳セッション ID (復元/再開で中断判定)
   let sessionId = null;                 // background が固定した page-run の設定スナップショット ID
   let settings = null;
+  let requestedSettings = null;         // sourceLang:auto の検出結果で上書きする前の page-run 設定 (SPA 新runで再検出する)
+  let manualRun = false;                // 自動翻訳OFF時の SPA 遷移でも、明示翻訳なら新runとして継続する
   let io = null;                        // IntersectionObserver (ビューポート優先)
   let mo = null;                        // MutationObserver (動的追加)
   let ro = null;                        // ResizeObserver (初回 0×0 で observe した block の高さ確定を能動検知)
@@ -926,13 +928,33 @@
     return extractDisplayValue(oldVal) !== extractDisplayValue(newVal);
   }
 
+  function handleLocationChange() {
+    if (location.href === lastHref) return false;
+    lastHref = location.href;
+    const automatic = Boolean(settings && settings.autoTranslate);
+    if (automatic && window.top === window.self) {
+      // 自動翻訳は常駐 FAB → SW が最新設定/blacklist を再評価して新しい page session を開始する。
+      // 旧runはここで止め、遷移先が除外対象だった場合に本文を先行送信しない。
+      translating = false;
+      runId += 1;
+      stopObservers();
+      return true;
+    }
+    if (manualRun || automatic) {
+      // 手動翻訳中の SPA も従来どおり追従するが、単なる reingest ではなく新runへ入り直して
+      // ページ予算・announced・旧DOM参照・sourceLang:auto の検出結果を完全にリセットする。自動翻訳の
+      // サブフレーム内SPAはトップフレームFABからURLが見えないため、同じsession内でここから再開始する。
+      void startTranslate(requestedSettings || settings, sessionId, manualRun).catch(() => shutdown());
+    } else {
+      // グローバル自動翻訳をOFFにした別タブで旧auto runが残っていた場合は、新ルートへ持ち越さない。
+      restore();
+    }
+    return true;
+  }
+
   function onMutate(mutations) {
     if (!translating) return;
-    if (location.href !== lastHref) {   // SPA ナビゲーション(pushState 等)で URL が変わった → 新ページを取り込み直す
-      lastHref = location.href;
-      scheduleReingest();
-      return;
-    }
+    if (handleLocationChange()) return;
     for (const m of mutations) {
       if (m.type === "characterData") {
         // サイトが既存テキストノードを書き換えたケース (SPA/チャット等の文言差し替え)。
@@ -1028,7 +1050,7 @@
     );
   }
   function onPopState() {
-    if (translating && location.href !== lastHref) { lastHref = location.href; scheduleReingest(); }
+    if (translating) handleLocationChange();
   }
 
   function startObservers() {
@@ -1139,8 +1161,10 @@
   }
 
   async function startTranslate(newSettings, newSessionId, manual) {
+    requestedSettings = newSettings;
     settings = newSettings;
     sessionId = (newSessionId != null) ? newSessionId : null;
+    manualRun = manual === true;
     dbg("startTranslate BUILD", RT_BUILD, "top=", window.top === window.self, "src=", newSettings && newSettings.sourceLang, "tgt=", newSettings && newSettings.targetLang, "provider=", newSettings && newSettings.provider, "url=", location.href.slice(0, 80));
     // 再翻訳では前runのobserverが保持する旧DOMターゲットを先に切断する。
     // WeakSet/zeroSizedBlocksだけを作り直すと、削除済み要素がIO/RO側に残り続ける。
@@ -1222,11 +1246,24 @@
   function restore() {
     translating = false;
     sessionId = null;
+    requestedSettings = null;
+    manualRun = false;
     runId += 1; // 進行中ループを中断
     stopObservers();
     revertTranslations();
     notifyProgress("restored");
   }
+
+  // autoTranslate は popup から全タブへ CONTENT_FLAGS として同期される。page session の翻訳設定は固定したまま、
+  // SPA 遷移時に「自動としてSWへ再評価するか / 手動runを継続するか」だけを最新フラグへ追従させる。
+  const contentFlagsKey = (globalThis.StorageKeys && globalThis.StorageKeys.CONTENT_FLAGS) || "contentFlags";
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[contentFlagsKey]) return;
+    const flags = changes[contentFlagsKey].newValue;
+    const autoTranslate = Boolean(flags && flags.autoTranslate);
+    if (settings) settings = Object.assign({}, settings, { autoTranslate });
+    if (requestedSettings) requestedSettings = Object.assign({}, requestedSettings, { autoTranslate });
+  });
 
   // ---- メッセージ受信 ----
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

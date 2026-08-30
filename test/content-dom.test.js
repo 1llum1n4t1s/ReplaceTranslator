@@ -8,6 +8,7 @@ const vm = require("node:vm");
 
 const ROOT = path.join(__dirname, "..");
 const IMAGE_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/image-translator.js"), "utf8");
+const FAB_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/fab.js"), "utf8");
 const TRANSLATOR_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/translator.js"), "utf8");
 const WORKER_SOURCE = fs.readFileSync(path.join(ROOT, "src/service_worker.js"), "utf8");
 
@@ -131,6 +132,152 @@ test("遅延再走査の実装と設計契約が12秒まで一致する", () => 
 
   assert.deepEqual(delays, [350, 1200, 2500, 4500, 7500, 12000]);
   assert.match(architecture, /REINGEST_DELAYS=\[350,1200,2500,4500,7500,12000\]/);
+});
+
+test("SPA URL変化は新しいpage runとして自動再評価または手動再開始する", async () => {
+  const routeHandler = functionSource(TRANSLATOR_SOURCE, "handleLocationChange");
+  const startTranslate = functionSource(TRANSLATOR_SOURCE, "startTranslate");
+
+  assert.match(FAB_SOURCE, /const AUTO_ROUTE_POLL_MS = 250/);
+  assert.match(FAB_SOURCE, /send\(\{ action: A\.TRANSLATE_PAGE, routeChange: true \}\)/);
+  assert.match(FAB_SOURCE, /flags && flags\.autoTranslate/);
+  assert.match(FAB_SOURCE, /res\.blacklisted \|\| res\.autoTranslateDisabled/);
+  assert.match(routeHandler, /if \(automatic && window\.top === window\.self\)[\s\S]*?translating = false;[\s\S]*?runId \+= 1;[\s\S]*?stopObservers\(\)/);
+  assert.match(routeHandler, /if \(manualRun \|\| automatic\)[\s\S]*?startTranslate\(requestedSettings \|\| settings, sessionId, manualRun\)/);
+  assert.match(startTranslate, /pageTextCount = 0;[\s\S]*?pageCharCount = 0;/);
+  assert.match(startTranslate, /announced = false;[\s\S]*?droppedTransient = 0;/);
+
+  const fabRoute = vm.runInNewContext(`(() => {
+    const A = { TRANSLATE_PAGE: "TRANSLATE_PAGE" };
+    const location = { href: "https://example.test/one" };
+    const window = { clearInterval: () => {} };
+    const sent = [];
+    let autoRouteInterval = 1;
+    let lastRouteHref = location.href;
+    let lastFlags = { autoTranslate: true };
+    let state = "on";
+    let errText = "old error";
+    let partialText = "old partial";
+    let renders = 0;
+    const contextAlive = () => true;
+    const render = () => { renders += 1; };
+    const send = (message) => { sent.push(message); };
+    ${functionSource(FAB_SOURCE, "checkAutoRoute")}
+    return {
+      checkAutoRoute,
+      navigate: (href) => { location.href = href; },
+      setAuto: (enabled) => { lastFlags = { autoTranslate: enabled }; },
+      snapshot: () => ({ sent, state, errText, partialText, renders }),
+    };
+  })()`);
+
+  fabRoute.checkAutoRoute();
+  assert.equal(fabRoute.snapshot().sent.length, 0);
+  fabRoute.navigate("https://example.test/two");
+  fabRoute.checkAutoRoute();
+  assert.deepEqual(JSON.parse(JSON.stringify(fabRoute.snapshot())), {
+    sent: [{ action: "TRANSLATE_PAGE", routeChange: true }],
+    state: "loading",
+    errText: "",
+    partialText: "",
+    renders: 1,
+  });
+  fabRoute.checkAutoRoute();
+  assert.equal(fabRoute.snapshot().sent.length, 1, "同じURLをpollしても再送しない");
+  fabRoute.setAuto(false);
+  fabRoute.navigate("https://example.test/three");
+  fabRoute.checkAutoRoute();
+  assert.equal(fabRoute.snapshot().sent.length, 1, "自動翻訳OFFでは送らない");
+
+  const translatorRoute = vm.runInNewContext(`(() => {
+    const location = { href: "https://example.test/one" };
+    const topWindow = {};
+    const frameWindow = { top: topWindow };
+    topWindow.top = topWindow;
+    topWindow.self = topWindow;
+    frameWindow.self = frameWindow;
+    let window = topWindow;
+    let lastHref = location.href;
+    let settings = { autoTranslate: true };
+    let requestedSettings = { sourceLang: "auto", targetLang: "ja" };
+    let manualRun = false;
+    let translating = true;
+    let runId = 4;
+    let sessionId = 9;
+    let stopped = 0;
+    let restored = 0;
+    const starts = [];
+    const stopObservers = () => { stopped += 1; };
+    const restore = () => { restored += 1; };
+    const shutdown = () => {};
+    const startTranslate = (...args) => { starts.push(args); return Promise.resolve(); };
+    ${routeHandler}
+    return {
+      handleLocationChange,
+      navigate: (href) => { location.href = href; },
+      setMode: (autoTranslate, manual) => {
+        settings = { autoTranslate };
+        manualRun = manual;
+        translating = true;
+        lastHref = location.href;
+      },
+      setTopFrame: (top) => { window = top ? topWindow : frameWindow; },
+      snapshot: () => ({ translating, runId, stopped, restored, starts }),
+    };
+  })()`);
+
+  translatorRoute.navigate("https://example.test/auto");
+  assert.equal(translatorRoute.handleLocationChange(), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(translatorRoute.snapshot())), {
+    translating: false, runId: 5, stopped: 1, restored: 0, starts: [],
+  });
+  translatorRoute.setMode(true, false);
+  translatorRoute.setTopFrame(false);
+  translatorRoute.navigate("https://example.test/iframe-auto");
+  translatorRoute.handleLocationChange();
+  assert.equal(translatorRoute.snapshot().starts.length, 1, "iframe内SPAは同じsessionで自動再開始する");
+  assert.equal(translatorRoute.snapshot().starts[0][2], false);
+  translatorRoute.setMode(false, true);
+  translatorRoute.setTopFrame(true);
+  translatorRoute.navigate("https://example.test/manual");
+  translatorRoute.handleLocationChange();
+  assert.equal(translatorRoute.snapshot().starts.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(translatorRoute.snapshot().starts[1])), [
+    { sourceLang: "auto", targetLang: "ja" }, 9, true,
+  ]);
+  translatorRoute.setMode(false, false);
+  translatorRoute.navigate("https://example.test/off");
+  translatorRoute.handleLocationChange();
+  assert.equal(translatorRoute.snapshot().restored, 1);
+
+  const loadAutoGate = (autoTranslate, blacklisted) => vm.runInNewContext(`(() => {
+    const settingsWriteChain = Promise.resolve();
+    const getSettingsCached = async () => ({ autoTranslate, autoTranslateBlacklist: ["blocked.test"] });
+    const chrome = { tabs: { get: async () => ({ url: "https://blocked.test/route" }) } };
+    const AutoTranslateBlacklist = { matches: () => blacklisted };
+    let restores = 0;
+    const restorePage = async () => { restores += 1; };
+    ${functionSource(WORKER_SOURCE, "translatePage")}
+    return { translatePage, restores: () => restores };
+  })()`, { autoTranslate, blacklisted });
+
+  const disabledGate = loadAutoGate(false, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(await disabledGate.translatePage(1, false, true))), {
+    ok: true, autoTranslateDisabled: true,
+  });
+  assert.equal(disabledGate.restores(), 0);
+
+  const initialBlacklistGate = loadAutoGate(true, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(await initialBlacklistGate.translatePage(1, false, false))), {
+    ok: true, blacklisted: true,
+  });
+  assert.equal(initialBlacklistGate.restores(), 0, "初回gateは既存の手動runを中断しない");
+
+  const spaBlacklistGate = loadAutoGate(true, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(await spaBlacklistGate.translatePage(1, false, true))), {
+    ok: true, blacklisted: true,
+  });
+  assert.equal(spaBlacklistGate.restores(), 1, "SPAで除外URLへ移ったときだけ旧runを復元する");
 });
 
 test("NMT部分失敗は明示された要素だけを未翻訳として数える", () => {
