@@ -117,9 +117,14 @@ test("OpenAI 互換プロバイダ(openrouter/deepseek/groq/fugu)は chat/comple
     assert.equal(r.body.messages.length, 2, `${id} messages`);
     assert.match(r.body.messages[1].content, /Hello/, `${id} user content`);
     // OpenAI 互換でも provider/model 固有の最小推論設定は維持する。
-    assert.equal(r.body.temperature, 0, `${id} temperature`);
-    if (id === "groq") assert.equal(r.body.reasoning_effort, "low", `${id} minimum reasoning_effort`);
-    else assert.ok(!("reasoning_effort" in r.body), `${id} no reasoning_effort`);
+    if (id === "openrouter") assert.deepEqual(r.body.reasoning, { effort: "none" }, `${id} reasoning off`);
+    else if (id === "deepseek") {
+      assert.deepEqual(r.body.thinking, { type: "disabled" }, `${id} thinking off`);
+      assert.equal(r.body.temperature, 0, `${id} temperature`);
+    } else if (id === "groq") {
+      assert.equal(r.body.reasoning_effort, "low", `${id} minimum reasoning_effort`);
+      assert.equal(r.body.temperature, 0, `${id} temperature`);
+    } else if (id === "fugu") assert.deepEqual(r.body.reasoning, { effort: "high" }, `${id} minimum reasoning`);
   });
 });
 
@@ -141,6 +146,12 @@ test("OpenAI は reasoning_effort をモデル別の最小値に、旧モデル�
   const r50 = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5-mini", apiKey: "k" });
   assert.equal(r50.body.reasoning_effort, "minimal");
   assert.equal(r50.body.verbosity, "low");
+  const rPro = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5-pro", apiKey: "k" });
+  assert.equal(rPro.body.reasoning_effort, "high"); // pro は high のみ
+  const r56Pro = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.6-pro", apiKey: "k" });
+  assert.equal(r56Pro.body.reasoning_effort, "none"); // 5.6+ の pro mode と effort は独立
+  const roPro = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "o1-pro", apiKey: "k" });
+  assert.equal(roPro.body.reasoning_effort, "high");
   // o 系: none/minimal 非対応 → "low"。verbosity は付けない
   const ro = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "o4-mini", apiKey: "k" });
   assert.equal(ro.body.reasoning_effort, "low");
@@ -156,17 +167,40 @@ test("OpenAI は reasoning_effort をモデル別の最小値に、旧モデル�
   assert.ok(!("reasoning_effort" in rx.body));
 });
 
-test("各社とも reasoning/thinking を最小(low)に明示指定する", () => {
-  // Anthropic: 思考対応(4.x)は thinking:disabled、旧 3-5 系には付けない(400回避)
+test("各社とも reasoning/thinking をモデルが許す最小値に明示指定する", () => {
+  // Anthropic: 思考対応モデルは disabled、effort 対応モデルは output_config.low かつ temperature なし
   const a = ProviderApi.buildRequest("anthropic", { texts: ["x"], targetLang: "ja", model: "claude-haiku-4-5", apiKey: "k" });
   assert.deepEqual(a.body.thinking, { type: "disabled" });
+  assert.equal(a.body.temperature, 0);
+  const a46 = ProviderApi.buildRequest("anthropic", { texts: ["x"], targetLang: "ja", model: "claude-sonnet-4-6", apiKey: "k" });
+  assert.deepEqual(a46.body.thinking, { type: "disabled" });
+  assert.deepEqual(a46.body.output_config, { effort: "low" });
+  assert.ok(!("temperature" in a46.body));
+  const a48 = ProviderApi.buildRequest("anthropic", { texts: ["x"], targetLang: "ja", model: "claude-opus-4-8", apiKey: "k" });
+  assert.deepEqual(a48.body.output_config, { effort: "low" });
+  assert.ok(!("temperature" in a48.body));
+  for (const model of ["claude-fable-5", "claude-mythos-5", "claude-mythos-preview"]) {
+    const alwaysThinking = ProviderApi.buildRequest("anthropic", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.deepEqual(alwaysThinking.body.output_config, { effort: "low" }, model);
+    assert.ok(!("thinking" in alwaysThinking.body), `${model} cannot disable thinking`);
+    assert.ok(!("temperature" in alwaysThinking.body), `${model} omits sampling controls`);
+  }
   const a35 = ProviderApi.buildRequest("anthropic", { texts: ["x"], targetLang: "ja", model: "claude-3-5-haiku", apiKey: "k" });
   assert.ok(!("thinking" in a35.body));
-  // Gemini: 2.5 flash は thinkingBudget 0、pro は 128、思考非対応世代(2.0)には付けない
+  // Gemini: 2.5 は budget、3.x は thinkingLevel (minimal 非対応モデルは low)
   const gf = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-2.5-flash", apiKey: "k" });
   assert.equal(gf.body.generationConfig.thinkingConfig.thinkingBudget, 0);
   const gp = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-2.5-pro", apiKey: "k" });
   assert.equal(gp.body.generationConfig.thinkingConfig.thinkingBudget, 128);
+  const g35 = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-3.5-flash", apiKey: "k" });
+  assert.equal(g35.body.generationConfig.thinkingConfig.thinkingLevel, "minimal");
+  assert.ok(!("temperature" in g35.body.generationConfig));
+  const g37 = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-3.7-flash", apiKey: "k" });
+  assert.equal(g37.body.generationConfig.thinkingConfig.thinkingLevel, "low");
+  for (const model of ["gemini-3.1-pro-preview", "gemini-3.5-pro", "gemini-3.8-pro"]) {
+    const pro = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.equal(pro.body.generationConfig.thinkingConfig.thinkingLevel, "low", model);
+  }
   const g20 = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-2.0-flash", apiKey: "k" });
   assert.ok(!g20.body.generationConfig.thinkingConfig);
   // xAI: 旧 "reasoning" 名義スラグは effort:low、非 reasoning は temperature:0
@@ -179,10 +213,159 @@ test("各社とも reasoning/thinking を最小(low)に明示指定する", () =
   const x43 = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model: "grok-4.3", apiKey: "k" });
   assert.equal(x43.body.reasoning_effort, "none");
   assert.ok(!("temperature" in x43.body));
+  for (const model of ["grok-4.5", "grok-4.6", "grok-4.20", "grok-4.20-0309-reasoning"]) {
+    const x = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.equal(x.body.reasoning_effort, "low");
+    assert.ok(!("temperature" in x.body));
+  }
   // Groq: gpt-oss は none 非対応 (low/medium/high のみ) なので既定 medium を最小の low に明示する
   const goss = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "openai/gpt-oss-120b", apiKey: "k" });
   assert.equal(goss.body.reasoning_effort, "low");
   assert.equal(goss.body.temperature, 0);
+  const gqwen = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "qwen/qwen3.6-27b", apiKey: "k" });
+  assert.equal(gqwen.body.reasoning_effort, "none");
+  const safeguard = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "openai/gpt-oss-safeguard-20b", apiKey: "k" });
+  assert.ok(!("reasoning_effort" in safeguard.body));
+  assert.equal(safeguard.body.temperature, 0);
+  // DeepSeek v4: 既定 high の thinking を明示的に無効化する
+  for (const model of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+    const ds = ProviderApi.buildRequest("deepseek", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.deepEqual(ds.body.thinking, { type: "disabled" });
+    assert.equal(ds.body.temperature, 0);
+  }
+  // Fugu は high が API 上の最小値 (none/minimal/low は非対応)
+  for (const model of ["fugu", "fugu-ultra"]) {
+    const f = ProviderApi.buildRequest("fugu", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.deepEqual(f.body.reasoning, { effort: "high" });
+    assert.ok(!("temperature" in f.body));
+  }
+});
+
+test("OpenRouter はモデル系列ごとの最小 reasoning を使い未知モデルは安全にフォールバックする", () => {
+  const cases = [
+    ["google/gemini-2.5-flash", { effort: "none" }],
+    ["google/gemini-2.5-pro", { max_tokens: 128 }],
+    ["google/gemini-3.5-flash", { effort: "minimal" }],
+    ["google/gemini-3.5-pro", { effort: "low" }],
+    ["google/gemini-3.7-flash", { effort: "low" }],
+    ["anthropic/claude-haiku-4.5", { effort: "none" }],
+    ["anthropic/claude-fable-5", { effort: "low" }],
+    ["anthropic/claude-mythos-preview", { effort: "low" }],
+    ["deepseek/deepseek-v4-flash-0731", { effort: "none" }],
+    ["openai/gpt-5.4-mini", { effort: "none" }],
+    ["openai/gpt-5-pro", { effort: "high" }],
+    ["openai/gpt-5.6-pro", { effort: "none" }],
+    ["openai/o1-pro", { effort: "high" }],
+    ["openai/o4-mini", { effort: "low" }],
+    ["x-ai/grok-4.3", { effort: "none" }],
+    ["x-ai/grok-4.6", { effort: "low" }],
+    ["x-ai/grok-4.20", { effort: "low" }],
+  ];
+  for (const [model, expected] of cases) {
+    const r = ProviderApi.buildRequest("openrouter", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.deepEqual(r.body.reasoning, expected, model);
+    assert.ok(!("temperature" in r.body), `${model} reasoning request omits temperature`);
+  }
+  for (const model of [
+    "vendor/unknown-model",
+    "google/gemini-2.5-flashjunk",
+    "deepseek/deepseek-v4foo",
+    "x-ai/grok-4.5foo",
+    "openai/gpt-5.4foo",
+  ]) {
+    const unknown = ProviderApi.buildRequest("openrouter", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
+    assert.ok(!("reasoning" in unknown.body), `${model} is not classified as a known reasoning family`);
+    assert.equal(unknown.body.temperature, 0, `${model} fallback temperature`);
+  }
+  const nativeUnknown = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4foo", apiKey: "k" });
+  assert.ok(!("reasoning_effort" in nativeUnknown.body));
+  assert.equal(nativeUnknown.body.temperature, 0);
+  const geminiUnknown = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-3.5foo", apiKey: "k" });
+  assert.ok(!geminiUnknown.body.generationConfig.thinkingConfig);
+  assert.equal(geminiUnknown.body.generationConfig.temperature, 0);
+});
+
+test("reasoningProfile はモデルが受理する選択肢だけを UI 向けに返す", () => {
+  assert.deepEqual(ProviderApi.reasoningProfile("openai", "gpt-5.4-mini"), {
+    automatic: "none", options: ["none", "low", "medium", "high", "xhigh"], mode: "effort",
+  });
+  assert.deepEqual(ProviderApi.reasoningProfile("openai", "gpt-5.6-sol").options,
+    ["none", "low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("anthropic", "claude-sonnet-4-6").options,
+    ["low", "medium", "high", "max"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("anthropic", "claude-fable-5").options,
+    ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("gemini", "gemini-2.5-pro"), {
+    automatic: "minimal", options: ["budget:1024", "budget:4096", "budget:8192"], mode: "budget",
+  });
+  assert.deepEqual(ProviderApi.reasoningProfile("gemini", "gemini-3.1-flash-lite-image").options,
+    ["minimal", "high"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("groq", "qwen/qwen3.6-27b").options, ["none", "default"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("fugu", "fugu-ultra").options, ["high", "xhigh", "max"]);
+  assert.equal(ProviderApi.reasoningProfile("openai", "gpt-4.1-mini"), null);
+  assert.equal(ProviderApi.reasoningProfile("openrouter", "vendor/unknown"), null);
+});
+
+test("明示したモデル別 effort を各社のネイティブ request 形式へ変換する", () => {
+  const openai = ProviderApi.buildRequest("openai", {
+    texts: ["x"], targetLang: "ja", model: "gpt-5.4-mini", apiKey: "k", reasoningEffort: "xhigh",
+  });
+  assert.equal(openai.body.reasoning_effort, "xhigh");
+
+  const invalidForO = ProviderApi.buildRequest("openai", {
+    texts: ["x"], targetLang: "ja", model: "o4-mini", apiKey: "k", reasoningEffort: "none",
+  });
+  assert.equal(invalidForO.body.reasoning_effort, "low"); // unsupported は自動最小値へ
+
+  const anthropic = ProviderApi.buildRequest("anthropic", {
+    texts: ["x"], targetLang: "ja", model: "claude-opus-4-8", apiKey: "k", reasoningEffort: "max",
+  });
+  assert.deepEqual(anthropic.body.output_config, { effort: "max" });
+  const anthropicSonnet = ProviderApi.buildRequest("anthropic", {
+    texts: ["x"], targetLang: "ja", model: "claude-sonnet-4-6", apiKey: "k", reasoningEffort: "max",
+  });
+  assert.deepEqual(anthropicSonnet.body.output_config, { effort: "max" });
+
+  const gemini3 = ProviderApi.buildRequest("gemini", {
+    texts: ["x"], targetLang: "ja", model: "gemini-3.5-flash", apiKey: "k", reasoningEffort: "high",
+  });
+  assert.equal(gemini3.body.generationConfig.thinkingConfig.thinkingLevel, "high");
+
+  const gemini25 = ProviderApi.buildRequest("gemini", {
+    texts: ["x"], targetLang: "ja", model: "gemini-2.5-pro", apiKey: "k", reasoningEffort: "budget:4096",
+  });
+  const gemini25Auto = ProviderApi.buildRequest("gemini", {
+    texts: ["x"], targetLang: "ja", model: "gemini-2.5-pro", apiKey: "k",
+  });
+  assert.equal(gemini25.body.generationConfig.thinkingConfig.thinkingBudget, 4096);
+  assert.equal(gemini25.body.generationConfig.maxOutputTokens, gemini25Auto.body.generationConfig.maxOutputTokens + 4096);
+
+  const xai = ProviderApi.buildRequest("xai", {
+    texts: ["x"], targetLang: "ja", model: "grok-4.6", apiKey: "k", reasoningEffort: "xhigh",
+  });
+  assert.equal(xai.body.reasoning_effort, "xhigh");
+
+  const deepseek = ProviderApi.buildRequest("deepseek", {
+    texts: ["x"], targetLang: "ja", model: "deepseek-v4-pro", apiKey: "k", reasoningEffort: "max",
+  });
+  assert.deepEqual(deepseek.body.thinking, { type: "enabled" });
+  assert.equal(deepseek.body.reasoning_effort, "max");
+  assert.ok(!("temperature" in deepseek.body));
+
+  const groq = ProviderApi.buildRequest("groq", {
+    texts: ["x"], targetLang: "ja", model: "qwen/qwen3.6-27b", apiKey: "k", reasoningEffort: "default",
+  });
+  assert.equal(groq.body.reasoning_effort, "default");
+
+  const fugu = ProviderApi.buildRequest("fugu", {
+    texts: ["x"], targetLang: "ja", model: "fugu", apiKey: "k", reasoningEffort: "xhigh",
+  });
+  assert.deepEqual(fugu.body.reasoning, { effort: "xhigh" });
+
+  const openrouter = ProviderApi.buildRequest("openrouter", {
+    texts: ["x"], targetLang: "ja", model: "google/gemini-2.5-pro", apiKey: "k", reasoningEffort: "high",
+  });
+  assert.deepEqual(openrouter.body.reasoning, { effort: "high" });
 });
 
 test("buildRequest throws on unknown provider", () => {
@@ -298,9 +481,9 @@ test("buildRequest fugu (Sakana) is OpenAI-compatible (Bearer + chat completions
   assert.equal(r.headers.Authorization, "Bearer sakana-key");
   assert.equal(r.body.model, "fugu");
   assert.equal(r.body.response_format.type, "json_object");
-  // OpenAI/xAI/Groq の reasoning 分岐に当たらないので temperature:0 パススルー
-  assert.equal(r.body.temperature, 0);
-  assert.ok(!("reasoning_effort" in r.body));
+  // Fugu は high が API の受理する最小値 (none/minimal/low は拒否)
+  assert.deepEqual(r.body.reasoning, { effort: "high" });
+  assert.ok(!("temperature" in r.body));
   assert.ok(r.body.max_tokens > 0);                 // max_completion_tokens ではなく max_tokens
   assert.ok(!("max_completion_tokens" in r.body));
 });
@@ -410,6 +593,19 @@ test("buildImageRequest openai embeds a data URL image and uses json mode", () =
   assert.equal(r.body.response_format.type, "json_object");
 });
 
+test("buildImageRequest openrouter applies the same model-specific reasoning policy", () => {
+  const r = ProviderApi.buildImageRequest("openrouter", {
+    imageBase64: "AAA", mimeType: "image/png", targetLang: "ja", model: "google/gemini-2.5-flash", apiKey: "k",
+  });
+  assert.deepEqual(r.body.reasoning, { effort: "none" });
+  assert.ok(!("temperature" in r.body));
+  const high = ProviderApi.buildImageRequest("openrouter", {
+    imageBase64: "AAA", mimeType: "image/png", targetLang: "ja", model: "google/gemini-2.5-flash", apiKey: "k",
+    reasoningEffort: "high",
+  });
+  assert.deepEqual(high.body.reasoning, { effort: "high" });
+});
+
 test("buildImageRequest anthropic/gemini carry the base64 image", () => {
   const a = ProviderApi.buildImageRequest("anthropic", { imageBase64: "B", mimeType: "image/jpeg", targetLang: "ja", apiKey: "k" });
   const aImg = a.body.messages[0].content.find((c) => c.type === "image");
@@ -418,6 +614,11 @@ test("buildImageRequest anthropic/gemini carry the base64 image", () => {
   const g = ProviderApi.buildImageRequest("gemini", { imageBase64: "C", targetLang: "ja", model: "gemini-2.0-flash", apiKey: "k" });
   const part = g.body.contents[0].parts.find((p) => p.inline_data);
   assert.equal(part.inline_data.data, "C");
+  const a48 = ProviderApi.buildImageRequest("anthropic", {
+    imageBase64: "D", mimeType: "image/png", targetLang: "ja", model: "claude-opus-4-8", apiKey: "k",
+  });
+  assert.deepEqual(a48.body.output_config, { effort: "low" });
+  assert.ok(!("temperature" in a48.body));
 });
 
 test("buildImageRequest returns null for mymemory (no vision)", () => {

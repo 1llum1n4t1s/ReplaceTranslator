@@ -96,10 +96,58 @@
   }
 
   // ---- API設定タブ: 動的モデル一覧 (新しい順10件 + コスト相対バー) ----
+  function reasoningEffortLabel(value) {
+    if (/^budget:\d+$/.test(value)) {
+      return `${Number(value.slice("budget:".length)).toLocaleString()} ${msg("effortTokenUnit", "tokens")}`;
+    }
+    const labels = {
+      none: ["effortNone", "None"], minimal: ["effortMinimal", "Minimal"], low: ["effortLow", "Low"],
+      medium: ["effortMedium", "Medium"], high: ["effortHigh", "High"], xhigh: ["effortXHigh", "Extra high"],
+      max: ["effortMax", "Maximum"], default: ["effortDefault", "Provider default"],
+    };
+    const entry = labels[value];
+    return entry ? msg(entry[0], entry[1]) : value;
+  }
+
+  function hideReasoningEffort() {
+    const row = $("reasoning-effort-row");
+    row.classList.add("hidden");
+    row.dataset.provider = "";
+    row.dataset.model = "";
+    $("reasoning-effort").replaceChildren();
+  }
+
+  function renderReasoningEffort(providerId, modelId, modelName = modelId) {
+    const profile = ProviderApi.reasoningProfile(providerId, modelId);
+    if (!profile || !Array.isArray(profile.options)) {
+      hideReasoningEffort();
+      return;
+    }
+    const selectableEfforts = profile.options.filter((effort) => effort !== profile.automatic);
+    if (selectableEfforts.length === 0) {
+      hideReasoningEffort();
+      return;
+    }
+    const row = $("reasoning-effort-row");
+    const select = $("reasoning-effort");
+    const savedByProvider = state.settings.reasoningEfforts && state.settings.reasoningEfforts[providerId];
+    const saved = savedByProvider && selectableEfforts.includes(savedByProvider[modelId]) ? savedByProvider[modelId] : "";
+    select.replaceChildren(option("", `${msg("effortAuto", "Auto (recommended)")}: ${reasoningEffortLabel(profile.automatic)}`));
+    selectableEfforts.forEach((effort) => select.appendChild(option(effort, reasoningEffortLabel(effort))));
+    select.value = saved;
+    row.dataset.provider = providerId;
+    row.dataset.model = modelId;
+    row.dataset.modelName = modelName;
+    $("reasoning-effort-model").textContent = modelName;
+    row.classList.remove("hidden");
+  }
+
   function renderModelList(models, currentId) {
+    const providerId = state.settings.provider;
     const list = $("model-list");
     list.replaceChildren();
     let maxCost = 0;
+    let currentModelName = currentId;
     models.forEach((m) => { if (m.price && m.price.total > maxCost) maxCost = m.price.total; });
     models.forEach((m) => {
       const item = document.createElement("button");
@@ -108,7 +156,9 @@
 
       const name = document.createElement("span");
       name.className = "mi-name";
-      name.textContent = m.name || m.id; // 公式表示名 ("GPT-5.6 Sol") 優先。無ければ生 ID
+      const modelName = m.name || m.id; // 公式表示名 ("GPT-5.6 Sol") 優先。無ければ生 ID
+      name.textContent = modelName;
+      if (m.id === currentId) currentModelName = modelName;
 
       const cost = document.createElement("span");
       cost.className = "mi-cost";
@@ -129,11 +179,14 @@
 
       item.append(name, cost);
       item.addEventListener("click", () => {
-        const models2 = Object.assign({}, state.settings.models, { [state.settings.provider]: m.id });
-        save({ models: models2 }, () => renderModelList(models, m.id));
+        const models2 = Object.assign({}, state.settings.models, { [providerId]: m.id });
+        save({ models: models2 }, () => {
+          if (state.settings.provider === providerId) renderModelList(models, m.id);
+        });
       });
       list.appendChild(item);
     });
+    renderReasoningEffort(providerId, currentId, currentModelName);
   }
 
   function loadModels(force) {
@@ -142,6 +195,7 @@
     const row = $("model-row");
     if (!p || p.batch === false) { // MyMemory 等はモデル概念なし
       $("model-list").replaceChildren();
+      hideReasoningEffort();
       row.dataset.provider = requested;
       row.classList.add("hidden");
       return;
@@ -152,6 +206,7 @@
     // 同一 provider の再取得 (キー保存 / 更新ボタン) では消さない (正しい一覧がチラつくのを防ぐ)。
     if (row.dataset.provider !== requested) {
       $("model-list").replaceChildren();
+      hideReasoningEffort();
       row.classList.add("hidden");
     }
     // 取得 (API 通信) は force のときだけ走る = 「キー入力後」と「更新ボタン押下時」。
@@ -166,6 +221,7 @@
         row.dataset.provider = requested; // 表示中の provider を記録 (次回切替時の stale 判定に使う)
         row.classList.toggle("hidden", models.length === 0);
         if (models.length) renderModelList(models, state.settings.models[requested]);
+        else hideReasoningEffort();
       }
     );
   }
@@ -555,6 +611,18 @@
 
     // モデル更新ボタン: 明示的にこのときだけ最新モデルを取得する
     $("refresh-models").addEventListener("click", () => loadModels(true));
+    $("reasoning-effort").addEventListener("change", (e) => {
+      const row = $("reasoning-effort-row");
+      const providerId = row.dataset.provider;
+      const modelId = row.dataset.model;
+      if (!providerId || !modelId || state.settings.provider !== providerId || state.settings.models[providerId] !== modelId) return;
+      const all = Object.assign({}, state.settings.reasoningEfforts);
+      const byModel = Object.assign({}, all[providerId]);
+      if (e.target.value) byModel[modelId] = e.target.value;
+      else delete byModel[modelId];
+      all[providerId] = byModel;
+      save({ reasoningEfforts: all }, () => renderReasoningEffort(providerId, modelId, row.dataset.modelName || modelId));
+    });
 
     setupQuickTranslate();
     bindKeyAutosave();

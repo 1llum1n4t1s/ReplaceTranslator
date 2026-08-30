@@ -69,24 +69,137 @@
     return lines.filter(Boolean).join("\n");
   }
 
+  function makeReasoningProfile(automatic, options, mode) {
+    return { automatic, options: options.slice(), mode: mode || "effort" };
+  }
+
   /**
-   * OpenAI 系 chat/completions(OpenAI / xAI) の body に推論/温度パラメータを付与する。
-   * 翻訳は推論不要なので、推論を「各モデルが許す最小」に明示指定して高速化する(実測: none で ~1.8s / low で ~6.5s)。
-   * reasoning モデルは temperature が default(1)固定で 0 を送ると 400 になるため temperature は送らない。
-   * モデル別の最小値(実測で確認):
-   * - OpenAI gpt-5.1 以降(5.1/5.2/5.4/5.5): reasoning_effort:"none"(=推論OFF・最速)。
-   * - OpenAI gpt-5.0 系(gpt-5 / gpt-5-mini / gpt-5-nano): "none" 非対応 → "minimal"。
-   * - OpenAI o 系(o1/o3/o4): "none"/"minimal" 非対応 → "low"。
-   * - xAI(Grok) の reasoning モデル: "low"(none/minimal 非対応)。
-   * - 旧 OpenAI(gpt-4 系)等・xAI 非 reasoning: temperature:0。
+   * popup と request builder が共有するモデル別 effort 能力表。
+   * options はその API / モデル系列で受理確認できる値だけを返し、未知系列は null にして UI も request も推測しない。
+   * automatic は設定未指定時の翻訳向け最小値 (従来挙動) で、popup の「自動（推奨）」が使う。
    */
-  function tuneReasoning(providerId, model, body) {
+  function reasoningProfile(providerId, model) {
+    const m = String(model || "").toLowerCase();
+    if (!m) return null;
+
+    if (providerId === "openai") {
+      if (/^(?:gpt-5|o[1-9])-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("high", ["high"]);
+      if (/^gpt-5\.6(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("none", ["none", "low", "medium", "high", "xhigh", "max"]);
+      }
+      if (/^gpt-5\.(?:2|4|5)(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("none", ["none", "low", "medium", "high", "xhigh"]);
+      }
+      if (/^gpt-5\.1(?:$|[-:])/.test(m)) return makeReasoningProfile("none", ["none", "low", "medium", "high"]);
+      if (/^gpt-5(?:\.0)?(?:$|[-:])/.test(m)) return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
+      if (/^o[1-9](?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      return null;
+    }
+
+    if (providerId === "xai") {
+      if (/^grok-4\.3(?:$|[-:])/.test(m)) return makeReasoningProfile("none", ["none", "low", "medium", "high"]);
+      if (/^grok-4\.6(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high", "xhigh"]);
+      if (/^grok-4\.5(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^grok-4\.20(?:$|[-:])/.test(m) && !/non-reasoning|multi-agent/.test(m)) {
+        return makeReasoningProfile("low", ["low", "medium", "high", "xhigh"]);
+      }
+      if (/reasoning/.test(m) && !/non-reasoning/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      return null;
+    }
+
+    if (providerId === "openrouter") {
+      if (m.startsWith("openai/")) return reasoningProfile("openai", m.slice("openai/".length));
+      if (m.startsWith("x-ai/")) return reasoningProfile("xai", m.slice("x-ai/".length));
+      if (/^google\/gemini-2\.5-(?:flash-lite|flash)(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("none", ["none", "minimal", "low", "medium", "high"]);
+      }
+      if (/^google\/gemini-2\.5-pro(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
+      }
+      if (/^google\/gemini-(?:3\.7|[3-9](?:\.\d+)*-pro)(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("low", ["low", "medium", "high"]);
+      }
+      if (/^google\/gemini-[3-9](?:\.\d+)*(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
+      }
+      if (/^anthropic\/claude-(?:fable-5|mythos-(?:5|preview))(?:$|[-:.])/.test(m)) {
+        const options = /fable-5/.test(m)
+          ? ["low", "medium", "high", "xhigh", "max"]
+          : ["low", "medium", "high", "max"];
+        return makeReasoningProfile("low", options);
+      }
+      if (/^anthropic\/claude-(?:3[.-]7(?:$|[-:])|(?:opus|sonnet|haiku)-[4-9](?:\.\d+)*(?:$|[-:]))/.test(m)) {
+        return makeReasoningProfile("none", ["none", "low", "medium", "high"]);
+      }
+      if (/^deepseek\/deepseek-v4(?:$|[-:.])/.test(m)) return makeReasoningProfile("none", ["none", "low", "high", "max"]);
+      return null;
+    }
+
+    if (providerId === "anthropic") {
+      if (!/^claude-(?:opus-4-[5-8]|sonnet-4-6|(?:opus|sonnet)-5|fable-5|mythos-(?:5|preview))(?:$|[-:])/.test(m)) return null;
+      if (/^claude-(?:opus-4-[78]|(?:opus|sonnet)-5|fable-5)(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("low", ["low", "medium", "high", "xhigh", "max"]);
+      }
+      if (/^claude-(?:opus-4-6|sonnet-4-6|mythos-(?:5|preview))(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("low", ["low", "medium", "high", "max"]);
+      }
+      return makeReasoningProfile("low", ["low", "medium", "high"]);
+    }
+
+    if (providerId === "gemini") {
+      if (/^gemini-2\.5(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile(/-(?:flash-lite|flash)(?:$|[-:])/.test(m) ? "none" : "minimal",
+          ["budget:1024", "budget:4096", "budget:8192"], "budget");
+      }
+      if (/^gemini-3\.1-flash-lite-image(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("minimal", ["minimal", "high"]);
+      }
+      if (/^gemini-3\.7(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^gemini-3(?:$|-pro(?:$|[-:]))/.test(m)) return makeReasoningProfile("low", ["low", "high"]);
+      if (/^gemini-[3-9](?:\.\d+)*-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^gemini-[3-9](?:\.\d+)*(?:$|[-:])/.test(m)) return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
+      return null;
+    }
+
+    if (providerId === "deepseek" && /^deepseek-v4(?:$|[-:.])/.test(m)) {
+      return makeReasoningProfile("none", ["none", "low", "high", "max"]);
+    }
+    if (providerId === "groq") {
+      if (/^openai\/gpt-oss-(?:20b|120b)(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^qwen\/qwen3\.6-/.test(m)) return makeReasoningProfile("none", ["none", "default"]);
+      if (/^qwen\/qwen3\.8-/.test(m)) return makeReasoningProfile("none", ["none", "default", "low", "medium", "high"]);
+      return null;
+    }
+    if (providerId === "fugu" && /^fugu(?:-|$)/.test(m)) {
+      return makeReasoningProfile("high", /ultra/.test(m) ? ["high", "xhigh", "max"] : ["high", "xhigh"]);
+    }
+    return null;
+  }
+
+  function chosenReasoningEffort(profile, requested) {
+    return profile && profile.options.includes(requested) ? requested : (profile && profile.automatic);
+  }
+
+  // OpenRouter は reasoning.effort を各社形式へ変換する。ただし mandatory モデルへ none を送ると拒否されるため、
+  // モデル系列ごとの能力表を通す。Gemini 2.5 Pro の自動値だけは gateway effort ではなく実最小 128 tokens を維持する。
+  function openRouterReasoning(model, requested) {
+    const m = String(model || "").toLowerCase();
+    const profile = reasoningProfile("openrouter", m);
+    if (!profile) return null;
+    if (!profile.options.includes(requested) && /^google\/gemini-2\.5-pro(?:$|[-:])/.test(m)) return { max_tokens: 128 };
+    return { effort: chosenReasoningEffort(profile, requested) };
+  }
+
+  /**
+   * OpenAI 互換 chat/completions の body に推論/温度パラメータを付与する。
+   * 翻訳は推論不要なので、推論を「各モデルが許す最小」に明示指定して高速化する(実測: none で ~1.8s / low で ~6.5s)。
+   * reasoning モデルは temperature:0 で 400 になる場合があるためAPI別に併用可否を分け、非対応分岐では送らない。
+   */
+  function tuneReasoning(providerId, model, body, requested) {
     const m = String(model || "");
-    if (providerId === "openai" && /^(gpt-5|o[1-9])/i.test(m)) {
-      let effort = "minimal";                      // gpt-5.0 系 (none 非対応)
-      if (/^gpt-5\.\d/i.test(m)) effort = "none";  // gpt-5.1 以降 (推論OFF)
-      else if (/^o[1-9]/i.test(m)) effort = "low"; // o 系 (none/minimal 非対応)
-      body.reasoning_effort = effort;
+    const profile = reasoningProfile(providerId, m);
+    if (providerId === "openai" && profile) {
+      body.reasoning_effort = chosenReasoningEffort(profile, requested);
       // gpt-5 系は verbosity:"low" で出力を簡潔化 (翻訳は前置き不要・出力トークン削減で生成短縮)。o 系には付けない。
       if (/^gpt-5/i.test(m)) body.verbosity = "low";
       return body;
@@ -94,32 +207,86 @@
     // xAI: ドット版 grok-4.x (grok-4.3 等) は推論モデルで未指定だと既定 reasoning_effort:"low" を取るため、翻訳では
     // "none" で推論を切る (grok-4.x は none 対応)。旧来の "reasoning" 名義スラグ (none 非対応) だけ "low" を維持する。
     // 素の grok-4 / grok-4-1-fast-non-reasoning は非 reasoning 扱いで下の temperature:0 に落ちる。
-    if (providerId === "xai" && (/^grok-4\.\d/i.test(m) || (/reasoning/i.test(m) && !/non-reasoning/i.test(m)))) {
-      body.reasoning_effort = /^grok-4\.\d/i.test(m) ? "none" : "low";
+    if (providerId === "xai" && profile) {
+      body.reasoning_effort = chosenReasoningEffort(profile, requested);
       return body;
     }
-    // Groq gpt-oss は未指定だと既定 reasoning_effort:"medium"。翻訳に推論は不要なので最小の "low" へ (Groq は none 非対応＝low/medium/high のみ)。
-    if (providerId === "groq" && /gpt-oss/i.test(m)) {
-      body.reasoning_effort = "low";
+    if (providerId === "openrouter") {
+      const reasoning = openRouterReasoning(m, requested);
+      if (reasoning) {
+        body.reasoning = reasoning;
+        return body;
+      }
+    }
+    if (providerId === "deepseek" && profile) {
+      const effort = chosenReasoningEffort(profile, requested);
+      body.thinking = { type: effort === "none" ? "disabled" : "enabled" };
+      if (effort === "none") body.temperature = 0;
+      else body.reasoning_effort = effort;
+      return body;
+    }
+    if (providerId === "groq" && profile) {
+      body.reasoning_effort = chosenReasoningEffort(profile, requested);
       body.temperature = 0;
+      return body;
+    }
+    if (providerId === "fugu" && profile) {
+      body.reasoning = { effort: chosenReasoningEffort(profile, requested) };
       return body;
     }
     body.temperature = 0;
     return body;
   }
 
-  // Anthropic は reasoning_effort を持たず既定で拡張思考オフ。思考対応(3.7 / 4.x)には
-  // thinking:{type:"disabled"} を明示して「思考オフ(=最小)」を確定させる(実測 200・既定と同速)。
+  // Anthropic は思考自体を disabled にし、effort 対応モデルでは既定 high を output_config.low へ下げる。
+  // 4.7+ は temperature:0 を受け付けないため、effort 対応分岐では temperature を付けない。
   function anthropicThinking(model) {
-    return /claude-(3-7|(opus|sonnet|haiku)-[4-9])/i.test(String(model || "")) ? { type: "disabled" } : null;
+    return /^claude-(?:3-7(?:$|[-:])|(?:opus|sonnet|haiku)-[4-9](?:-\d+)*(?:$|[-:]))/i.test(String(model || ""))
+      ? { type: "disabled" }
+      : null;
   }
 
-  // Gemini 2.5+ は既定で動的に思考して遅くなりうる。翻訳は思考不要なので最小化する。
-  // flash/lite は 0(無効化)、pro 等は最小 128。思考非対応世代(2.0/1.5)には付けない(400回避)。
-  function geminiThinkingConfig(model) {
+  function tuneAnthropic(model, body, requested) {
     const m = String(model || "");
-    if (!/gemini-(2\.5|[3-9])/i.test(m)) return null;
-    return { thinkingBudget: /flash|lite/i.test(m) ? 0 : 128 };
+    const think = anthropicThinking(m);
+    if (think) body.thinking = think;
+    const profile = reasoningProfile("anthropic", m);
+    if (profile) {
+      const effort = chosenReasoningEffort(profile, requested);
+      body.output_config = { effort };
+      // Opus 5 は xhigh/max と thinking:disabled の併用を拒否する。高 effort を明示したときはモデル既定の思考を使う。
+      if (/^claude-opus-[5-9](?:$|[-:])/i.test(m) && (effort === "xhigh" || effort === "max")) delete body.thinking;
+    } else {
+      body.temperature = 0;
+    }
+    return body;
+  }
+
+  // Gemini 2.5 は thinkingBudget、3+ は thinkingLevel が正規の制御。翻訳では各モデルの最小値を使う。
+  function geminiThinkingConfig(model, requested) {
+    const m = String(model || "");
+    const profile = reasoningProfile("gemini", m);
+    if (!profile) return null;
+    if (profile.mode === "budget") {
+      if (profile.options.includes(requested)) return { thinkingBudget: Number(requested.slice("budget:".length)) };
+      return { thinkingBudget: /-(?:flash-lite|flash)(?:$|[-:])/i.test(m) ? 0 : 128 };
+    }
+    return { thinkingLevel: chosenReasoningEffort(profile, requested) };
+  }
+
+  function geminiGenerationConfig(model, base, requested) {
+    const config = Object.assign({}, base);
+    const thinking = geminiThinkingConfig(model, requested);
+    if (thinking) config.thinkingConfig = thinking;
+    // Gemini 2.5 の思考 token は maxOutputTokens に含まれる。明示 budget 分だけ上限を広げ、
+    // JSON 訳文用の従来枠を思考だけで食い切らないようにする（自動最小値は従来上限を維持）。
+    if (/^budget:\d+$/.test(String(requested || "")) && thinking && thinking.thinkingBudget > 0 &&
+        Number.isFinite(config.maxOutputTokens)) {
+      config.maxOutputTokens += thinking.thinkingBudget;
+    }
+    // Gemini 3.x は temperature/top-p 等を推奨せず、一部モデルは受け付けない。
+    if (/^gemini-[3-9](?:\.\d+)*(?:$|[-:])/i.test(String(model || ""))) delete config.temperature;
+    return config;
   }
 
   /**
@@ -170,7 +337,7 @@
           { role: "system", content: system },
           { role: "user", content: userContent },
         ],
-      }, cap));
+      }, cap), o.reasoningEffort);
       // ストリーミング (SSE) 要求。最後の chunk に usage を含めてもらう。
       if (o.stream) { body.stream = true; body.stream_options = { include_usage: true }; }
       return {
@@ -185,15 +352,12 @@
     }
 
     if (providerId === "anthropic") {
-      const body = {
+      const body = tuneAnthropic(model, {
         model,
         max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: 0,
         system,
         messages: [{ role: "user", content: userContent }],
-      };
-      const think = anthropicThinking(model);
-      if (think) body.thinking = think; // 思考対応モデルは明示的に思考オフ(=最小)
+      }, o.reasoningEffort);
       return {
         url: provider.endpoint,
         method: "POST",
@@ -222,11 +386,11 @@
         body: {
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: "user", parts: [{ text: userContent }] }],
-          generationConfig: Object.assign({
+          generationConfig: geminiGenerationConfig(model, {
             temperature: 0,
             responseMimeType: "application/json",
             maxOutputTokens: MAX_OUTPUT_TOKENS,
-          }, geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
+          }, o.reasoningEffort),
         },
       };
     }
@@ -451,7 +615,7 @@
           { type: "text", text: prompt },
           { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
         ] }],
-      }, cap));
+      }, cap), o.reasoningEffort);
       return {
         url: provider.endpoint, method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -459,15 +623,13 @@
       };
     }
     if (providerId === "anthropic") {
-      const body = {
-        model, max_tokens: IMAGE_MAX_OUTPUT_TOKENS, temperature: 0,
+      const body = tuneAnthropic(model, {
+        model, max_tokens: IMAGE_MAX_OUTPUT_TOKENS,
         messages: [{ role: "user", content: [
           { type: "text", text: prompt },
           { type: "image", source: { type: "base64", media_type: mime, data: b64 } },
         ] }],
-      };
-      const think = anthropicThinking(model);
-      if (think) body.thinking = think;
+      }, o.reasoningEffort);
       return {
         url: provider.endpoint, method: "POST",
         headers: {
@@ -502,8 +664,8 @@
             { text: buildImagePromptGemini(o.sourceLang, o.targetLang) },
             { inline_data: { mime_type: mime, data: b64 } },
           ] }],
-          generationConfig: Object.assign({ temperature: 0, responseMimeType: "application/json", responseSchema, maxOutputTokens: IMAGE_MAX_OUTPUT_TOKENS },
-            geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
+          generationConfig: geminiGenerationConfig(model,
+            { temperature: 0, responseMimeType: "application/json", responseSchema, maxOutputTokens: IMAGE_MAX_OUTPUT_TOKENS }, o.reasoningEffort),
         },
       };
     }
@@ -550,6 +712,7 @@
   const ProviderApi = Object.freeze({
     promptVersion: TRANSLATION_PROMPT_VERSION,
     buildSystemPrompt,
+    reasoningProfile,
     buildRequest,
     extractContent,
     extractTranslations,

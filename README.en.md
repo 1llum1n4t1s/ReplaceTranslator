@@ -7,6 +7,7 @@ A Chrome / Firefox extension that translates the page you are viewing **in place
 ## ✨ Features
 - **In-place replacement** — replace the original text with the translation, toggle back to the original
 - **Multiple LLM providers** — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
+- **Per-model reasoning control** — remember reasoning effort or thinking-budget choices for each supported model; Auto keeps translation fast and inexpensive with the model-safe minimum
 - **No-key option** — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - **Page-language aware** — detects the page's main language and translates only that language; pages already in the target language are left alone (English menu items on a Japanese page are no longer swept up)
 - **Auto-translate exclusions** — enter URLs, hosts, or wildcard rules on separate lines to stop auto-translate only on matching sites
@@ -48,7 +49,7 @@ Install from [Firefox Add-ons (AMO)](https://addons.mozilla.org/firefox/addon/re
 3. Click "Load unpacked" and select this folder
 
 ## 🚀 Usage
-1. Open the toolbar icon, pick a service in the **"API settings" tab** and enter your API key (auto-saved on blur; MyMemory needs no key)
+1. Open the toolbar icon, pick a service in the **"API settings" tab** and enter your API key (auto-saved on blur; MyMemory needs no key). Pick a model to adjust its reasoning effort directly below the model list when supported
 2. In the **"Translate" tab**, pick a target language, then "Translate". Use "Restore" to go back
 3. Add one URL, host, or wildcard per line in the "Exclusions" tab for sites where auto-translate should stay off. You can also add or remove the current site from the right-click menu
 4. Turn on **"Persistent translation cache"** in the "Translate" tab only if you want translations reused after browser restarts (up to 30 days; turning it off deletes the saved cache)

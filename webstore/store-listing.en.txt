@@ -18,6 +18,7 @@ Translate the web page you are viewing in place using the cloud LLM of your choi
 [Features]
 - In-place replacement — replace the original text with the translation, toggle back to the original
 - Multiple LLM providers — switch between providers such as OpenAI / Anthropic / Google Gemini / xAI using your own API key
+- Per-model reasoning control — remember reasoning effort or thinking-budget choices for each supported model; Auto uses the translation-optimized minimum
 - No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
 - Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule

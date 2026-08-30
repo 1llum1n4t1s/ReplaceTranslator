@@ -314,6 +314,14 @@
           </button>
         </div>
         <div id="model-list" class="model-list"></div>
+        <div id="reasoning-effort-row" class="reasoning-effort hidden">
+          <div class="reasoning-effort-head">
+            <label class="lbl" for="reasoning-effort" data-i18n="labelReasoningEffort">推論 effort</label>
+            <span id="reasoning-effort-model" class="reasoning-effort-model"></span>
+          </div>
+          <select id="reasoning-effort" class="sel reasoning-effort-select" aria-describedby="reasoning-effort-help"></select>
+          <p id="reasoning-effort-help" class="reasoning-effort-help" data-i18n="reasoningEffortHelp">このモデル専用に保存します。「自動」は翻訳向けの最小値です。高くすると品質と引き換えに遅延・料金が増えます。</p>
+        </div>
       </div>
     </section>
 
@@ -338,6 +346,7 @@
   <script src="../lib/actions.js"></script>
   <script src="../lib/lang.js"></script>
   <script src="../lib/model-pricing.js"></script>
+  <script src="../lib/providers.js"></script>
   <script src="popup.js"></script>
   <script type="module" src="../shared/kagayoi-support-popup.js"></script>
   <script type="module" src="../shared/kagayoi-support-footer.js"></script>

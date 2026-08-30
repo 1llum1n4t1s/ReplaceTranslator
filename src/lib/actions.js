@@ -224,6 +224,38 @@
 
   const PROVIDER_IDS = Providers.ids;
 
+  // モデル別 reasoning effort の保存値。API へ送れる値だけを通し、popup から未知値や巨大な辞書を
+  // SETTINGS に持ち込ませない。Gemini 2.5 は named effort ではなく thinkingBudget なので、
+  // UI の明示プリセットだけ budget:<tokens> として保存する。
+  const REASONING_EFFORT_VALUES = Object.freeze(new Set([
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "default",
+    "budget:1024", "budget:4096", "budget:8192",
+  ]));
+  const REASONING_EFFORT_MAX_MODELS = 50;
+  const REASONING_EFFORT_MAX_MODEL_CHARS = 300;
+
+  function normalizeReasoningEfforts(value) {
+    const source = value && typeof value === "object" ? value : {};
+    const result = {};
+    for (const providerId of PROVIDER_IDS) {
+      const providerSource = source[providerId] && typeof source[providerId] === "object"
+        ? source[providerId]
+        : {};
+      const providerResult = {};
+      let count = 0;
+      for (const [model, effort] of Object.entries(providerSource)) {
+        if (count >= REASONING_EFFORT_MAX_MODELS) break;
+        if (!model || model.length > REASONING_EFFORT_MAX_MODEL_CHARS ||
+            model === "__proto__" || model === "constructor" || model === "prototype") continue;
+        if (!REASONING_EFFORT_VALUES.has(effort)) continue;
+        providerResult[model] = effort;
+        count++;
+      }
+      result[providerId] = providerResult;
+    }
+    return result;
+  }
+
   // ---- 自動翻訳ブラックリスト ----
   // popup の複数行入力・SW の自動翻訳 gate・右クリック切替で同じ判定を共有する。
   const AUTO_BLACKLIST_MAX_ENTRIES = 500;
@@ -310,6 +342,9 @@
   });
 
   // ---- 設定スキーマ ----
+  const EMPTY_REASONING_EFFORTS = Object.freeze(Object.fromEntries(
+    PROVIDER_IDS.map((id) => [id, Object.freeze({})])
+  ));
   const DEFAULT_SETTINGS = Object.freeze({
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
     sourceLang: "auto",          // auto = ページの主要言語を検出して翻訳元にする (検出不能時は target 以外を翻訳)
@@ -326,6 +361,7 @@
       fugu: "fugu",
       mymemory: null,
     }),
+    reasoningEfforts: EMPTY_REASONING_EFFORTS, // provider → model ID → 明示 effort。欠損は翻訳向け自動最小値
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     autoTranslateBlacklist: Object.freeze([]), // 自動翻訳だけを抑止する URL/host glob の複数行リスト
     persistentTranslationCache: false, // 原文/訳文の storage.local 永続キャッシュ (既定 OFF。明示 opt-in のみ)
@@ -391,6 +427,7 @@
       targetLang: (typeof r.targetLang === "string" && r.targetLang) ? r.targetLang : DEFAULT_SETTINGS.targetLang,
       apiKeys,
       models,
+      reasoningEfforts: normalizeReasoningEfforts(r.reasoningEfforts),
       autoTranslate: Boolean(r.autoTranslate),
       autoTranslateBlacklist: normalizeAutoTranslateBlacklist(r.autoTranslateBlacklist),
       persistentTranslationCache: r.persistentTranslationCache === true, // 原文を永続保存するため厳密な明示 true だけ有効
@@ -535,8 +572,10 @@
     const s = settings && typeof settings === "object" ? settings : {};
     const provider = typeof s.provider === "string" ? s.provider : "";
     const model = s.models && typeof s.models[provider] === "string" ? s.models[provider] : "";
+    const reasoningEffort = s.reasoningEfforts && s.reasoningEfforts[provider] &&
+      typeof s.reasoningEfforts[provider][model] === "string" ? s.reasoningEfforts[provider][model] : "";
     return JSON.stringify([
-      String(scope || ""), provider, model,
+      String(scope || ""), provider, model, reasoningEffort,
       typeof s.sourceLang === "string" ? s.sourceLang : "",
       typeof s.targetLang === "string" ? s.targetLang : "",
       Number(promptVersion) || 0,

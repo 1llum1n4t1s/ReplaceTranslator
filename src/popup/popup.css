@@ -310,6 +310,21 @@ body {
 /* コストの相対バーだけは階調に意味がある (安い=藍 → 高い=朱) ためグラデーションを残す */
 .mi-bar { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--free), var(--coral), var(--vermilion)); }
 
+/* 選択モデル専用の reasoning effort。モデル一覧の各行へ select を詰め込まず、選択中だけを1段で編集する。 */
+.reasoning-effort {
+  display: flex; flex-direction: column; gap: 7px;
+  margin-top: 8px; padding: 10px 11px;
+  border: 1px solid var(--hair); border-radius: var(--r-sm);
+  background: var(--paper-3); box-shadow: inset 0 1px 0 var(--sheen);
+}
+.reasoning-effort-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.reasoning-effort-model {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink-soft); font: 10px ui-monospace, "SF Mono", monospace; text-align: right;
+}
+.reasoning-effort-select { padding-block: 8px; font-size: 12px; }
+.reasoning-effort-help { margin: 0; color: var(--ink-soft); font-size: 10.5px; line-height: 1.55; }
+
 /* ---- 設定群 (全ページ自動翻訳 / FAB / 選択翻訳 / 画像翻訳ボタン) ---- */
 .opts {
   display: flex; flex-direction: column;

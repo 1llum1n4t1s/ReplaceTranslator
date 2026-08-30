@@ -77,6 +77,11 @@ if (typeof importScripts === "function") {
     return (settings.apiKeys && settings.apiKeys[providerId]) || "";
   }
 
+  function reasoningEffortFor(settings, providerId, model) {
+    const byProvider = settings.reasoningEfforts && settings.reasoningEfforts[providerId];
+    return byProvider && typeof byProvider[model] === "string" ? byProvider[model] : undefined;
+  }
+
   // content が送ってきた設定の apiKeys は信用せず、必ず bg 保管値で上書きする (キー漏洩防止)。
   // この不変条件を 1 箇所に集約し、TRANSLATE_BATCH / TRANSLATE_IMAGE での書き忘れ事故を防ぐ。
   function resolveSettings(incoming, stored) {
@@ -548,6 +553,7 @@ if (typeof importScripts === "function") {
         targetLang: settings.targetLang,
         model,
         apiKey,
+        reasoningEffort: reasoningEffortFor(settings, providerId, model),
       });
     } catch (e) {
       return { ok: false, error: "build", message: String((e && e.message) || e) };
@@ -618,7 +624,8 @@ if (typeof importScripts === "function") {
     let req;
     try {
       req = ProviderApi.buildRequest(providerId, {
-        texts, contexts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey, stream: true,
+        texts, contexts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey,
+        reasoningEffort: reasoningEffortFor(settings, providerId, model), stream: true,
       });
     } catch (_e) { return null; }
     await ensureMem();
@@ -1083,6 +1090,7 @@ if (typeof importScripts === "function") {
           imageBase64: b64, mimeType: mime,
           sourceLang: settings.sourceLang, targetLang: settings.targetLang,
           model: useModel, apiKey,
+          reasoningEffort: reasoningEffortFor(settings, providerId, useModel),
         });
       } catch (e) {
         return { ok: false, error: "build", message: String((e && e.message) || e) };

@@ -38,6 +38,20 @@ test("normalize preserves provided apiKeys/models and fills the rest", () => {
   assert.equal(s.models.openai, "gpt-5.4-mini"); // default
 });
 
+test("normalize preserves only bounded model-specific reasoning efforts", () => {
+  const s = SettingsSchema.normalize({
+    reasoningEfforts: {
+      openai: { "gpt-5.4-mini": "high", "gpt-5.5": "bogus", "__proto__": "low" },
+      gemini: { "gemini-2.5-pro": "budget:4096" },
+      unknown: { model: "max" },
+    },
+  });
+  assert.deepEqual(s.reasoningEfforts.openai, { "gpt-5.4-mini": "high" });
+  assert.deepEqual(s.reasoningEfforts.gemini, { "gemini-2.5-pro": "budget:4096" });
+  assert.ok(!("unknown" in s.reasoningEfforts));
+  assert.deepEqual(SettingsSchema.normalize({}).reasoningEfforts.mymemory, {});
+});
+
 test("normalize migrates retired models to the provider default (404 復旧)", () => {
   // Google が 2026-06-01 に廃止した gemini-2.0-flash が保存設定に残っていると 404 で詰む → 既定へ移行
   const s = SettingsSchema.normalize({ models: { gemini: "gemini-2.0-flash" } });
@@ -322,6 +336,9 @@ test("TranslationBatch.cacheKey includes every translation variant but excludes 
   assert.notEqual(key, TranslationBatch.cacheKey("https://example.com/other", base, 1, "Hello"));
   assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", Object.assign({}, base, { targetLang: "fr" }), 1, "Hello"));
   assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", Object.assign({}, base, { models: { openai: "gpt-y" } }), 1, "Hello"));
+  assert.notEqual(key, TranslationBatch.cacheKey("https://example.com", Object.assign({}, base, {
+    reasoningEfforts: { openai: { "gpt-x": "high" } },
+  }), 1, "Hello"));
   assert.equal(key.includes("secret-a"), false);
 });
 
