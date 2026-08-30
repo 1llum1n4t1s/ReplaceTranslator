@@ -21,7 +21,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 | `src/popup/` | 翻訳・復元、言語とプロバイダの選択、APIキーや表示設定、クイック翻訳を提供する |
 | `src/service_worker.js` | 設定とAPIキーの管理、プロバイダへの代理通信、タブへの注入、進捗集約、モデル取得、右クリック・コマンド処理を担う |
 | `src/content/translator.js` | ページ言語判定、対象テキストの収集と優先付け、バッチ送信、DOM置換、原文復元、動的DOM追従を担う |
-| `src/content/fab.*` | トップフレームに常駐し、翻訳・復元操作と進捗表示をページ上に提供する |
+| `src/content/fab.*` | トップフレームに常駐し、翻訳・復元操作、進捗表示、同一document内のURL変化検知をページ上で担う |
 | `src/content/selection-translator.*` | 明示操作された選択テキストを翻訳し、バブルまたはインラインで表示する |
 | `src/content/image-translator.*` | 明示操作された画像を取得し、vision対応プロバイダの結果をオーバーレイ描画する |
 | `src/shared/kagayoi-support-*` | 設定画面の問い合わせ・評価UIを提供する、共通パッケージから同期した同梱資産 |
@@ -38,10 +38,10 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 
 ### ページ翻訳
 
-1. ポップアップ、FAB、右クリック、または自動翻訳が `TRANSLATE_PAGE` を Service Worker へ送る。自動翻訳だけは、保存済みのURL・ホストブラックリストに一致した場合、この境界で注入前に終了する。
+1. ポップアップ、FAB、右クリック、または自動翻訳が `TRANSLATE_PAGE` を Service Worker へ送る。自動翻訳ではトップフレームのFABが初回表示とSPAのURL変化を検知し、Service Workerがその時点の自動翻訳設定とURL・ホストブラックリストを注入前に再評価する。SPAの遷移先が対象外なら旧実行を停止して原文へ戻す。
 2. Service Worker は `actions.js`、`lang.js`、`translator.js` を対象タブの全フレームへ注入し、翻訳開始を指示する。
 3. translator はページ主要言語を判定し、除外規則を満たすテキストノードを収集する。可視領域とその近傍を優先し、同じ原文と周辺文脈の組をまとめ、プロバイダ別の並列上限と学習済みバッチサイズに従って処理する。
-4. content script は原文と曖昧さ解消用の限定された周辺文脈を `TRANSLATE_BATCH` で Service Worker へ渡す。Service Worker はプロバイダ、モデル、言語、origin、文脈、プロンプト版を含む完全一致キーで翻訳キャッシュを照合し、未一致分だけ選択プロバイダへAPIキー付きで送信する。
+4. content script は原文と曖昧さ解消用の限定された周辺文脈を `TRANSLATE_BATCH` で Service Worker へ渡す。Service Worker はプロバイダ、モデル、モデル別の推論量、言語、origin、文脈、プロンプト版を含む完全一致キーで翻訳キャッシュを照合し、未一致分だけ選択プロバイダへAPIキー付きで送信する。
 5. Service Worker は応答を共通の文字列配列へ変換し、成功した未一致分をキャッシュへ保存して同じ入力を待つノードへ展開する。ストリーミング対応経路では確定済み要素を逐次contentへ中継し、完了時にusageとバッチ調整状態を更新する。
 6. translator は応答の個数と順序を対応付けてDOMを書き換え、原文をノード単位で保持する。全フレームの進捗はService Workerがタブ単位に集約してポップアップとFABへ中継する。
 7. `RESTORE_PAGE` では進行中処理を中断し、保持していた原文へ戻す。タブ世代番号により、古い非同期翻訳開始が後から復元操作を上書きすることを防ぐ。
@@ -104,7 +104,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 
 ### 動的DOM追従と復元可能な置換
 
-MutationObserver、IntersectionObserver、ResizeObserverと遅延再走査を組み合わせ、SPA、無限スクロール、open Shadow DOM、遅延描画を追跡する。原文と拡張機能が書いた訳文を区別し、仮想DOMによる書き戻しと実際の文言更新を別処理にする。closed Shadow DOMと小さなiframeは対象外という境界を持つ。
+MutationObserver、IntersectionObserver、ResizeObserverと遅延再走査を組み合わせ、SPA、無限スクロール、open Shadow DOM、遅延描画を追跡する。SPAのURL変化はルートごとの新しいページ実行として扱い、言語判定、件数・文字数予算、進捗、observer、旧DOM参照を再初期化する。原文と拡張機能が書いた訳文を区別し、仮想DOMによる書き戻しと実際の文言更新を別処理にする。closed Shadow DOMと小さなiframeは対象外という境界を持つ。
 
 ### Chrome manifestを単一ソースにするクロスブラウザ配布
 
