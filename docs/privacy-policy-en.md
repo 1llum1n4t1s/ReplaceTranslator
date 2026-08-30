@@ -1,6 +1,6 @@
 # Privacy Policy — Replace AI Translator API
 
-Last updated: 2026-08-29
+Last updated: 2026-08-30
 
 ## Information we collect
 Replace AI Translator API's developer does not collect, store, or receive any of your data through the translation features, and the extension uses no analytics and no tracking. The text you translate — and, if you enable image translation, the images — are sent only to the translation provider you choose (see "Page text" and "Image translation" below).
@@ -10,6 +10,10 @@ The only exception is the contact form you submit yourself. Only then are the em
 ## API keys
 - Your API keys for each LLM provider (OpenAI / Anthropic / Google / xAI) are stored only inside your browser (`chrome.storage.local`). MyMemory needs no key.
 - A key is sent only to its own provider's API for authentication when you translate. It is never sent to the extension's developer or any other third party.
+
+## Auto-translate exclusions
+- URL, host, and wildcard rules you add are stored only inside your browser (`chrome.storage.local`).
+- These rules are used only to decide on-device whether to auto-translate the current page. They are never sent to the developer or a translation provider.
 
 ## Page text
 - When you click "Translate", the text on the page is sent only to the provider's API you selected, in order to receive the translation.
@@ -35,9 +39,9 @@ The only exception is the contact form you submit yourself. Only then are the em
 - Page text, images, API keys, and token usage are never sent.
 
 ## Why each permission is used
-- `storage`: store settings, API keys, token usage, and the translation cache on-device
+- `storage`: store settings (including auto-translate exclusions), API keys, token usage, and the translation cache on-device
 - `scripting` / `activeTab` / `host_permissions`: inject the translator into the target page and talk to the provider API you selected
-- `contextMenus`: right-click menu actions — translate page / translate selection / translate image / restore original
+- `contextMenus`: right-click menu actions — translate page / translate selection / translate image / restore original / add or remove an auto-translate exclusion
 
 ## Contact
 GitHub Issues: https://github.com/1llum1n4t1s/ReplaceTranslator/issues

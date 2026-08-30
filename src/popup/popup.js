@@ -1,10 +1,11 @@
 "use strict";
 
 /**
- * popup.js — ポップアップ UI (2タブ: 翻訳 / API設定)
+ * popup.js — ポップアップ UI (3タブ: 翻訳 / API設定 / 自動翻訳除外)
  *
  * - 翻訳タブ: 自動翻訳トグル / 言語(元・先) / オプション / 翻訳・復元 / status / クイック翻訳
  * - API設定タブ: サービス切替(状態) + キー入力 + 動的モデル一覧(新しい順10件 + コスト相対バー)
+ * - 除外リストタブ: 自動翻訳しないURL/ホストglobを複数行で編集
  * モデルは GET_MODELS で動的取得し、選択中が消えていれば background がマイグレーションする。
  */
 
@@ -21,6 +22,10 @@
     document.querySelectorAll("[data-i18n-title]").forEach((el) => {
       const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-title"));
       if (m) el.title = m;
+    });
+    document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-placeholder"));
+      if (m) el.placeholder = m;
     });
   }
 
@@ -248,6 +253,7 @@
     $("fab-opacity").disabled = !fabOn;
     $("show-img-btn").checked = state.settings.showImageButton === true;
     $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
+    $("auto-translate-blacklist").value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -258,6 +264,7 @@
   }
 
   let pendingSave = Promise.resolve(); // 直近の save() の storage 確定を待つための promise
+  let blacklistSaveTimer = null;
   function save(patch, after) {
     state.settings = Object.assign({}, state.settings, patch); // 楽観更新 (UI 即応)
     // 全体ではなく patch (変更分) だけ送り、background が保管値にマージする (他経路の変更を巻き戻さない)
@@ -269,6 +276,19 @@
       });
     });
     return pendingSave;
+  }
+
+  function saveBlacklist() {
+    if (blacklistSaveTimer) { window.clearTimeout(blacklistSaveTimer); blacklistSaveTimer = null; }
+    const input = $("auto-translate-blacklist");
+    $("blacklist-save-state").textContent = msg("blacklistSaving", "保存中…");
+    save({ autoTranslateBlacklist: input.value }, () => {
+      // blur後だけ正規化済みの表示へ揃える。入力中はカーソル位置を動かさない。
+      if (document.activeElement !== input) {
+        input.value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
+      }
+      $("blacklist-save-state").textContent = msg("blacklistSaved", "保存しました");
+    });
   }
 
   async function getActiveTab() {
@@ -520,6 +540,12 @@
     $("fab-opacity").addEventListener("change", (e) => save({ fabOpacity: Number(e.target.value) / 100 }));
     $("sel-mode").addEventListener("change", (e) => save({ selectionMode: e.target.value }));
     $("show-img-btn").addEventListener("change", (e) => save({ showImageButton: e.target.checked }));
+    $("auto-translate-blacklist").addEventListener("input", () => {
+      $("blacklist-save-state").textContent = msg("blacklistSaving", "保存中…");
+      if (blacklistSaveTimer) window.clearTimeout(blacklistSaveTimer);
+      blacklistSaveTimer = window.setTimeout(saveBlacklist, 450);
+    });
+    $("auto-translate-blacklist").addEventListener("blur", saveBlacklist);
     // ショートカット変更: ブラウザのコマンド設定ページを開く (Chrome=extensions/shortcuts / Firefox=about:addons)
     $("sel-shortcut").addEventListener("click", () => {
       const ff = typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent || "");
@@ -546,7 +572,7 @@
       if (sender && sender.tab) return; // content フレーム直送(生)は無視。background が集約した進捗のみ受ける
       // auto-translate トグルは永続 autoTranslate 設定を表す。ワンショット翻訳の進捗で勝手に切り替えない。
       if (m.state === "progress") setStatus("");          // 進捗は FAB のシマーで示すので popup は無表示
-      else if (m.state === "done") setStatus(m.partial ? msg("statusPartial", "Partly untranslated (rate limit / overload). Wait and retry.") : msg("statusDone", "Done"));
+      else if (m.state === "done") setStatus(m.partial ? msg("statusPartial", "Some text could not be translated. Shorten it or wait and retry.") : msg("statusDone", "Done"));
       else if (m.state === "error") setStatus(errorText(m.detail));
       else if (m.state === "restored") setStatus("");
       else if (m.state === "skipped") setStatus(msg("statusSameLang", "Page is already in the target language"));

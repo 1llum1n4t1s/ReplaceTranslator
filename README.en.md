@@ -9,6 +9,7 @@ A Chrome / Firefox extension that translates the page you are viewing **in place
 - **Multiple LLM providers** — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
 - **No-key option** — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - **Page-language aware** — detects the page's main language and translates only that language; pages already in the target language are left alone (English menu items on a Japanese page are no longer swept up)
+- **Auto-translate exclusions** — enter URLs, hosts, or wildcard rules on separate lines to stop auto-translate only on matching sites
 - **Infinite scroll friendly** — content loaded later is translated automatically
 - **Token-saving cache** — exact text matches in the same page scope and context are reused from an on-device cache; persistence across browser restarts is stored only when you explicitly opt in
 - **Image text translation (experimental)** — hover an image and click 訳 to translate the text inside it and overlay the result (vision-capable LLMs)
@@ -49,10 +50,11 @@ Install from [Firefox Add-ons (AMO)](https://addons.mozilla.org/firefox/addon/re
 ## 🚀 Usage
 1. Open the toolbar icon, pick a service in the **"API settings" tab** and enter your API key (auto-saved on blur; MyMemory needs no key)
 2. In the **"Translate" tab**, pick a target language, then "Translate". Use "Restore" to go back
-3. Turn on **"Persistent translation cache"** in the "Translate" tab only if you want translations reused after browser restarts (up to 30 days; turning it off deletes the saved cache)
-4. You can also toggle translate/restore with the **floating button (訳 / 原) at the bottom-right of the page** (drag it anywhere you like, or hide it from the "Translate" tab)
-5. The right-click menu also offers "Translate this page" / "Restore original"
-6. With a vision-capable LLM selected, hover an image and click 訳 to translate text inside it (experimental)
+3. Add one URL, host, or wildcard per line in the "Exclusions" tab for sites where auto-translate should stay off. You can also add or remove the current site from the right-click menu
+4. Turn on **"Persistent translation cache"** in the "Translate" tab only if you want translations reused after browser restarts (up to 30 days; turning it off deletes the saved cache)
+5. You can also toggle translate/restore with the **floating button (訳 / 原) at the bottom-right of the page** (drag it anywhere you like, or hide it from the "Translate" tab)
+6. The right-click menu also offers "Translate this page" / "Restore original"
+7. With a vision-capable LLM selected, hover an image and click 訳 to translate text inside it (experimental)
 
 ### Source / target
 - **Source** — leave it on "Detect language" and the extension detects the page's main language and translates only that language. Pages already in the target language are left untouched (stray fragments in other languages are not swept up). You can also pin a specific source language.
@@ -63,6 +65,7 @@ Japanese, English, Chinese (Simplified / Traditional), Korean, Spanish, French, 
 
 ## 🔒 Privacy
 - API keys are stored **only inside your browser**
+- Auto-translate exclusion rules are stored only inside your browser and are never transmitted
 - Page text is sent **only to the provider API you selected** when translating (never to the extension developer's servers)
 - Source text and translations are cached on-device for the browser session. They are stored for up to 30 days only when you enable "Persistent translation cache", and are deleted when you turn it off
 - See the [Privacy Policy](docs/privacy-policy-en.md) for details

@@ -36,7 +36,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 
 ### ページ翻訳
 
-1. ポップアップ、FAB、右クリック、または自動翻訳が `TRANSLATE_PAGE` を Service Worker へ送る。
+1. ポップアップ、FAB、右クリック、または自動翻訳が `TRANSLATE_PAGE` を Service Worker へ送る。自動翻訳だけは、保存済みのURL・ホストブラックリストに一致した場合、この境界で注入前に終了する。
 2. Service Worker は `actions.js`、`lang.js`、`translator.js` を対象タブの全フレームへ注入し、翻訳開始を指示する。
 3. translator はページ主要言語を判定し、除外規則を満たすテキストノードを収集する。可視領域とその近傍を優先し、同じ原文と周辺文脈の組をまとめ、プロバイダ別の並列上限と学習済みバッチサイズに従って処理する。
 4. content script は原文と曖昧さ解消用の限定された周辺文脈を `TRANSLATE_BATCH` で Service Worker へ渡す。Service Worker はプロバイダ、モデル、言語、origin、文脈、プロンプト版を含む完全一致キーで翻訳キャッシュを照合し、未一致分だけ選択プロバイダへAPIキー付きで送信する。

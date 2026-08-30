@@ -5,7 +5,7 @@ const assert = require("node:assert");
 const g = require("./_load-actions.js");
 
 const {
-  SettingsSchema, TokenUsage, Providers, BatchTuner, TranslationBatch, ModelPricing, RuntimeLimits,
+  SettingsSchema, AutoTranslateBlacklist, TokenUsage, Providers, BatchTuner, TranslationBatch, ModelPricing, RuntimeLimits,
   MessagePolicy, ImageRequestPolicy, ExtUtil,
 } = g;
 
@@ -182,6 +182,35 @@ test("BatchTuner.sizeOf falls back to DEFAULT for invalid state", () => {
   assert.equal(BatchTuner.sizeOf(null), BatchTuner.DEFAULT);
   assert.equal(BatchTuner.sizeOf({ size: 999 }), BatchTuner.DEFAULT);
   assert.equal(BatchTuner.sizeOf({ size: 30 }), 30);
+});
+
+test("normalize accepts a multiline auto-translate blacklist and removes invalid duplicates", () => {
+  const s = SettingsSchema.normalize({
+    autoTranslateBlacklist: " x.com \n192.168.*\n\nx.com\nhttps://photos.google.com/",
+  });
+  assert.deepEqual(s.autoTranslateBlacklist, ["x.com", "192.168.*", "https://photos.google.com/"]);
+  assert.deepEqual(SettingsSchema.normalize({ autoTranslateBlacklist: 42 }).autoTranslateBlacklist, []);
+});
+
+test("AutoTranslateBlacklist matches host globs and URL prefixes", () => {
+  const rules = ["192.168.*", "https://photos.google.com/", "x.com"];
+  assert.equal(AutoTranslateBlacklist.matches("http://192.168.10.20/admin", rules), true);
+  assert.equal(AutoTranslateBlacklist.matches("https://photos.google.com/u/0/", rules), true);
+  assert.equal(AutoTranslateBlacklist.matches("https://x.com/home", rules), true);
+  assert.equal(AutoTranslateBlacklist.matches("https://sub.x.com/home", rules), false);
+  assert.equal(AutoTranslateBlacklist.matches("https://photos.google.com.evil.example/", rules), false);
+});
+
+test("AutoTranslateBlacklist toggles the current site and removes every matching rule", () => {
+  const added = AutoTranslateBlacklist.toggleSite("https://news.example.com/story", ["x.com"]);
+  assert.deepEqual(added, { patterns: ["x.com", "news.example.com"], excluded: true });
+
+  const removed = AutoTranslateBlacklist.toggleSite(
+    "https://news.example.com/story",
+    ["*.example.com", "https://news.example.com/", "x.com"],
+  );
+  assert.deepEqual(removed, { patterns: ["x.com"], excluded: false });
+  assert.equal(AutoTranslateBlacklist.sitePattern("file:///C:/local.html"), null);
 });
 
 test("Groq uses separate current text and vision models", () => {
@@ -425,6 +454,11 @@ test("ImageRequestPolicy rejects internal targets including terminal-dot FQDN fo
     "https://127.0.0.1./image.png",
     "https://2130706433/image.png",
     "https://[::1]/image.png",
+    "https://[::127.0.0.1]/image.png",
+    "https://[64:ff9b::7f00:1]/image.png",
+    "https://[2002:7f00:1::]/image.png",
+    "https://[64:ff9b:1::1]/image.png",
+    "https://[fec0::1]/image.png",
     "https://user:pass@example.com/image.png",
     "https://127.0.0.1.nip.io/image.png",
     "https://10-0-0-1.sslip.io/image.png",
@@ -434,6 +468,9 @@ test("ImageRequestPolicy rejects internal targets including terminal-dot FQDN fo
   for (const url of forbidden) assert.equal(ImageRequestPolicy.isForbiddenUrl(url), true, url);
   assert.equal(ImageRequestPolicy.isForbiddenUrl("https://cdn.example.org/image.png"), false);
   assert.equal(ImageRequestPolicy.isForbiddenUrl("https://cdn.example.org./image.png"), false);
+  assert.equal(ImageRequestPolicy.isForbiddenUrl("https://[2606:4700:4700::1111]/image.png"), false);
+  assert.equal(ImageRequestPolicy.isForbiddenUrl("https://[64:ff9b::808:808]/image.png"), false);
+  assert.equal(ImageRequestPolicy.isForbiddenUrl("https://[2002:808:808::]/image.png"), false);
 });
 
 const pngHeader = (width, height) => {

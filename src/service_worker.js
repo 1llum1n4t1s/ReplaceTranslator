@@ -36,7 +36,10 @@ if (typeof importScripts === "function") {
   }
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes[StorageKeys.SETTINGS]) settingsMem = null;
+      if (area === "local" && changes[StorageKeys.SETTINGS]) {
+        settingsMem = null;
+        refreshActiveAutoTranslateSiteMenu();
+      }
     });
   } catch (_e) { /* noop */ }
 
@@ -692,6 +695,7 @@ if (typeof importScripts === "function") {
     const maxBytes = provider.maxBytes || Infinity;
     const encoder = new TextEncoder();
     const translations = new Array(texts.length);
+    const failedIndices = [];
     const CONCURRENCY = 8;  // MyMemory(無料 NMT)の実効同時リクエスト数。translator 側はこのとき直列(1)
     let cursor = 0;
     let firstError = null;     // 表示用 (最初に起きた種別)
@@ -705,11 +709,12 @@ if (typeof importScripts === "function") {
         const text = texts[i];
         // 既に provider 全体失敗(429/403)を検知済み → 送らず原文で埋める。同じキー/IP が rate-limit/拒否されている以上
         // 残りノードに GET を撃っても全て失敗するだけで、無駄リクエストが制限を悪化させ復帰を遅らせる(C2-N3)。
-        if (giveUp) { translations[i] = text; continue; }
+        if (giveUp) { failedIndices.push(i); translations[i] = text; continue; }
         // 長すぎるテキストは送れない。原文を返すと「翻訳成功」に見えてしまうため too_long エラーを立てる
         // (Quick Translate は原文を成功表示せずエラー文言を出す。ページ翻訳は部分適用で原文のまま残る)。
         if (encoder.encode(text).length > maxBytes) {
           firstError = firstError || { error: "too_long", maxBytes };
+          failedIndices.push(i);
           translations[i] = text;
           continue;
         }
@@ -721,18 +726,20 @@ if (typeof importScripts === "function") {
         } catch (e) {
           const err = { error: "build", message: String((e && e.message) || e) };
           providerError = providerError || err; firstError = firstError || err;
+          failedIndices.push(i);
           translations[i] = text;
           continue;
         }
         try {
           const res = await fetch(req.url, { method: req.method, headers: req.headers, signal: withTimeout(signal) });
-          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; translations[i] = text; if (res.status === 429 || res.status === 403) giveUp = true; continue; }
+          if (!res.ok) { const err = { error: "http", status: res.status }; providerError = providerError || err; firstError = firstError || err; failedIndices.push(i); translations[i] = text; if (res.status === 429 || res.status === 403) giveUp = true; continue; }
           const json = await res.json();
           // MyMemory は本文 200 でも responseStatus に実ステータス (403/429 等) を入れる
           const rs = Number(json && json.responseStatus);
           if (rs && rs !== 200) {
             const err = { error: "quota", status: rs, message: String((json && json.responseDetails) || "") };
             providerError = providerError || err; firstError = firstError || err;
+            failedIndices.push(i);
             translations[i] = text;
             if (rs === 429 || rs === 403 || rs >= 500) giveUp = true; // 共有キー/IP の rate-limit/拒否は残り全件で再発 → 打ち切り
             continue;
@@ -743,6 +750,7 @@ if (typeof importScripts === "function") {
         } catch (e) {
           const err = { error: "network", message: String((e && e.message) || e) };
           providerError = providerError || err; firstError = firstError || err;
+          failedIndices.push(i);
           translations[i] = text;
         }
       }
@@ -756,7 +764,8 @@ if (typeof importScripts === "function") {
       // 成功は okCount (API が応答した件数) で判定する。translation!==input で推測すると、同一文字列が返る
       // 正当な成功 (固有名詞/既に target 言語) を取りこぼし、別 item の失敗で誤って allFailed (=ページ全停止) になる。
       if (okCount === 0 && providerError) return Object.assign({ ok: false, allFailed: true }, providerError);
-      return Object.assign({ ok: false, translations }, firstError);
+      failedIndices.sort((a, b) => a - b);
+      return Object.assign({ ok: false, translations, failedIndices }, firstError);
     }
     return { ok: true, translations, usage: { input: 0, output: 0 } };
   }
@@ -1129,6 +1138,17 @@ if (typeof importScripts === "function") {
   // (翻訳ボタン/FAB/右クリックで 1 ページ訳しただけで、以後開く全ページが自動翻訳され課金枠を食うのを防ぐ。)
   // autoTranslate の保存は popup の「全ページ自動翻訳」トグル (APPLY_SETTINGS) でのみ行う。
   async function translatePage(tabId, manual = false) {
+    // ブラックリストは自動翻訳だけの gate。popup/FAB/右クリックの明示操作(manual=true)は常に通す。
+    // 世代採番・既存翻訳のabortより先に判定し、対象外ページを開いただけで手動翻訳を中断しない。
+    if (!manual) {
+      await settingsWriteChain;
+      const settings = await getSettingsCached();
+      let tabUrl = "";
+      try { tabUrl = (await chrome.tabs.get(tabId)).url || ""; } catch (_e) { /* inject側の既存エラーへ委ねる */ }
+      if (AutoTranslateBlacklist.matches(tabUrl, settings.autoTranslateBlacklist)) {
+        return { ok: true, blacklisted: true };
+      }
+    }
     await ensurePageSessions(); // SW 再起動後でも旧セッション/世代を踏まえてから採番する (persist が他タブ分を消さないようにも必要)
     const myGen = bumpTabGen(tabId); // この翻訳指示の世代を採番 (await 中に restore が割り込んだら陳腐化する)
     abortGroup(tabId, "page"); // 再翻訳: 前回のページfetchだけ中断 (手動画像OCRは継続)
@@ -1609,6 +1629,51 @@ if (typeof importScripts === "function") {
   });
 
   // ---- contextMenus (右クリックメニュー) ----
+  const AUTO_TRANSLATE_SITE_MENU_ID = "rt-auto-translate-site";
+
+  function autoTranslateSiteMenuTitle(excluded) {
+    const key = excluded ? "ctxAutoTranslateAllow" : "ctxAutoTranslateBlock";
+    const fallback = excluded ? "Remove this site from auto-translate exclusions" : "Exclude this site from auto-translate";
+    return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback;
+  }
+
+  async function refreshAutoTranslateSiteMenu(tab) {
+    if (!chrome.contextMenus) return;
+    const url = tab && tab.url;
+    const site = AutoTranslateBlacklist.sitePattern(url);
+    let excluded = false;
+    if (site) {
+      const settings = await getSettingsCached();
+      excluded = AutoTranslateBlacklist.matches(url, settings.autoTranslateBlacklist);
+    }
+    await new Promise((resolve) => {
+      chrome.contextMenus.update(AUTO_TRANSLATE_SITE_MENU_ID, {
+        enabled: Boolean(site),
+        title: autoTranslateSiteMenuTitle(excluded),
+      }, () => {
+        void chrome.runtime.lastError; // menu 未作成直後等の非致命エラーを回収
+        resolve();
+      });
+    });
+    if (typeof chrome.contextMenus.refresh === "function") {
+      try { await chrome.contextMenus.refresh(); } catch (_e) { /* Chrome等の未対応実装は無視 */ }
+    }
+  }
+
+  async function refreshActiveAutoTranslateSiteMenu() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await refreshAutoTranslateSiteMenu(tab);
+    } catch (_e) { /* menu 更新失敗は翻訳機能へ影響させない */ }
+  }
+
+  async function toggleAutoTranslateSite(url) {
+    if (!AutoTranslateBlacklist.sitePattern(url)) return;
+    await applySettingsPatch((base) => ({
+      autoTranslateBlacklist: AutoTranslateBlacklist.toggleSite(url, base.autoTranslateBlacklist).patterns,
+    }));
+  }
+
   function setupContextMenus() {
     if (!chrome.contextMenus) return;
     chrome.contextMenus.removeAll(() => {
@@ -1632,6 +1697,12 @@ if (typeof importScripts === "function") {
         title: (chrome.i18n && chrome.i18n.getMessage("ctxRestore")) || "Restore original",
         contexts: ["page"],
       });
+      chrome.contextMenus.create({
+        id: AUTO_TRANSLATE_SITE_MENU_ID,
+        title: autoTranslateSiteMenuTitle(false),
+        contexts: ["all"],
+      });
+      refreshActiveAutoTranslateSiteMenu();
     });
   }
 
@@ -1698,12 +1769,28 @@ if (typeof importScripts === "function") {
   if (chrome.runtime.onSuspend) chrome.runtime.onSuspend.addListener(() => persistTranslationCache());
 
   if (chrome.contextMenus) {
+    if (chrome.contextMenus.onShown) {
+      chrome.contextMenus.onShown.addListener((_info, tab) => {
+        refreshAutoTranslateSiteMenu(tab).catch(() => { /* noop */ });
+      });
+    }
     chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       if (!tab || !tab.id) return;
       if (info.menuItemId === "rt-translate") await translatePage(tab.id, true);
       else if (info.menuItemId === "rt-restore") await restorePage(tab.id);
       else if (info.menuItemId === "rt-translate-selection") triggerSelectionTranslate(tab.id);
       else if (info.menuItemId === "rt-translate-image") triggerImageTranslate(tab.id, info.srcUrl, info.frameId);
+      else if (info.menuItemId === AUTO_TRANSLATE_SITE_MENU_ID) {
+        await toggleAutoTranslateSite(tab.url || info.pageUrl || "");
+        await refreshAutoTranslateSiteMenu(tab);
+      }
+    });
+  }
+
+  if (chrome.tabs) {
+    chrome.tabs.onActivated.addListener(() => { refreshActiveAutoTranslateSiteMenu(); });
+    chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+      if (changeInfo.url || changeInfo.status === "complete") refreshAutoTranslateSiteMenu(tab).catch(() => { /* noop */ });
     });
   }
 

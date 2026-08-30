@@ -224,6 +224,91 @@
 
   const PROVIDER_IDS = Providers.ids;
 
+  // ---- 自動翻訳ブラックリスト ----
+  // popup の複数行入力・SW の自動翻訳 gate・右クリック切替で同じ判定を共有する。
+  const AUTO_BLACKLIST_MAX_ENTRIES = 500;
+  const AUTO_BLACKLIST_MAX_PATTERN_CHARS = 1000;
+
+  function normalizeAutoTranslateBlacklist(value) {
+    const source = Array.isArray(value) ? value : (typeof value === "string" ? [value] : []);
+    const result = [];
+    const seen = new Set();
+    for (const item of source) {
+      if (typeof item !== "string") continue;
+      for (const raw of item.split(/\r?\n/)) {
+        const pattern = raw.trim();
+        if (!pattern || pattern.length > AUTO_BLACKLIST_MAX_PATTERN_CHARS || seen.has(pattern)) continue;
+        seen.add(pattern);
+        result.push(pattern);
+        if (result.length >= AUTO_BLACKLIST_MAX_ENTRIES) return result;
+      }
+    }
+    return result;
+  }
+
+  function globMatches(value, pattern, prefix) {
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    try { return new RegExp(`^${escaped}${prefix ? "" : "$"}`, "i").test(value); } catch (_e) { return false; }
+  }
+
+  function autoBlacklistPatternMatches(url, pattern) {
+    if (pattern.includes("://")) {
+      if (pattern.includes("*")) return globMatches(url.href, pattern, false);
+      try {
+        const ruleUrl = new URL(pattern);
+        if (ruleUrl.origin !== url.origin) return false;
+        const rulePath = ruleUrl.pathname + ruleUrl.search + ruleUrl.hash;
+        const actualPath = url.pathname + url.search + url.hash;
+        return actualPath.startsWith(rulePath);
+      } catch (_e) { return false; }
+    }
+
+    const slash = pattern.indexOf("/");
+    const hostPattern = slash >= 0 ? pattern.slice(0, slash) : pattern;
+    const pathPattern = slash >= 0 ? pattern.slice(slash) : "";
+    if (!hostPattern || !globMatches(url.hostname, hostPattern, false)) return false;
+    if (!pathPattern) return true;
+    const actualPath = url.pathname + url.search + url.hash;
+    return globMatches(actualPath, pathPattern, !pathPattern.includes("*"));
+  }
+
+  function matchingAutoTranslatePatterns(urlValue, value) {
+    let url;
+    try { url = new URL(urlValue); } catch (_e) { return []; }
+    return normalizeAutoTranslateBlacklist(value).filter((pattern) => autoBlacklistPatternMatches(url, pattern));
+  }
+
+  function autoTranslateBlacklistMatches(urlValue, value) {
+    return matchingAutoTranslatePatterns(urlValue, value).length > 0;
+  }
+
+  function autoTranslateSitePattern(urlValue) {
+    try {
+      const url = new URL(urlValue);
+      return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? url.hostname.toLowerCase() : null;
+    } catch (_e) { return null; }
+  }
+
+  function toggleAutoTranslateSite(urlValue, value) {
+    const patterns = normalizeAutoTranslateBlacklist(value);
+    const matching = matchingAutoTranslatePatterns(urlValue, patterns);
+    if (matching.length) {
+      const remove = new Set(matching);
+      return { patterns: patterns.filter((pattern) => !remove.has(pattern)), excluded: false };
+    }
+    const site = autoTranslateSitePattern(urlValue);
+    if (!site) return { patterns, excluded: false };
+    return { patterns: patterns.concat(site), excluded: true };
+  }
+
+  const AutoTranslateBlacklist = Object.freeze({
+    normalize: normalizeAutoTranslateBlacklist,
+    matches: autoTranslateBlacklistMatches,
+    matchingPatterns: matchingAutoTranslatePatterns,
+    sitePattern: autoTranslateSitePattern,
+    toggleSite: toggleAutoTranslateSite,
+  });
+
   // ---- 設定スキーマ ----
   const DEFAULT_SETTINGS = Object.freeze({
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
@@ -242,6 +327,7 @@
       mymemory: null,
     }),
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
+    autoTranslateBlacklist: Object.freeze([]), // 自動翻訳だけを抑止する URL/host glob の複数行リスト
     persistentTranslationCache: false, // 原文/訳文の storage.local 永続キャッシュ (既定 OFF。明示 opt-in のみ)
     showFab: false,              // ページ右下のフローティング翻訳ボタン (既定 OFF。popup/右クリックから翻訳できるため希望者だけ ON)
     showImageButton: false,      // 画像ホバー時の「訳」ボタン (既定 OFF。希望者だけ ON)
@@ -306,6 +392,7 @@
       apiKeys,
       models,
       autoTranslate: Boolean(r.autoTranslate),
+      autoTranslateBlacklist: normalizeAutoTranslateBlacklist(r.autoTranslateBlacklist),
       persistentTranslationCache: r.persistentTranslationCache === true, // 原文を永続保存するため厳密な明示 true だけ有効
       showFab: r.showFab === true, // 既定 OFF。明示的に ON にした保存値だけ有効 (キー欠損 = 既定の OFF に倒す)
       showImageButton: r.showImageButton === true, // 既定 OFF。明示的に ON にした保存値だけ有効 (showFab と同形)
@@ -558,6 +645,40 @@
     }
     return false;
   }
+  function parseIpv6Words(hostname) {
+    const halves = hostname.split("::");
+    if (halves.length > 2) return null;
+    const parseHalf = (half) => {
+      if (!half) return [];
+      const parts = half.split(":");
+      if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part))) return null;
+      return parts.map((part) => parseInt(part, 16));
+    };
+    const left = parseHalf(halves[0]);
+    const right = parseHalf(halves[1] || "");
+    if (!left || !right) return null;
+    if (halves.length === 1) return left.length === 8 ? left : null;
+    const missing = 8 - left.length - right.length;
+    return missing >= 1 ? [...left, ...new Array(missing).fill(0), ...right] : null;
+  }
+  function isForbiddenIpv6Literal(hostname) {
+    const words = parseIpv6Words(hostname);
+    if (!words) return true;
+    const first = words[0];
+    if (words.every((word) => word === 0) || words.slice(0, 7).every((word) => word === 0) && words[7] === 1) return true;
+    if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0) return true;
+    // RFC 8215 の 64:ff9b:1::/48 はローカル用途で、公開画像取得先として扱わない。
+    if (words[0] === 0x64 && words[1] === 0xff9b && words[2] === 1) return true;
+
+    let v4WordIndex = -1;
+    if (words.slice(0, 6).every((word) => word === 0)) v4WordIndex = 6; // IPv4-compatible
+    else if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) v4WordIndex = 6; // IPv4-mapped
+    else if (words[0] === 0x64 && words[1] === 0xff9b && words.slice(2, 6).every((word) => word === 0)) v4WordIndex = 6; // NAT64 WKP
+    else if (words[0] === 0x2002) v4WordIndex = 1; // 6to4
+    if (v4WordIndex < 0) return false;
+    const hi = words[v4WordIndex];
+    return isPrivateV4((hi >> 8) & 0xff, hi & 0xff);
+  }
   function isForbiddenImageUrl(rawUrl) {
     let u;
     try { u = new URL(rawUrl); } catch (_e) { return true; }
@@ -578,22 +699,7 @@
     if (!looksIp && (!h.includes(".") || /\.(internal|intranet|corp|home|lan|private|test|example|invalid|localdomain)$/.test(h))) {
       return true;
     }
-    if (h.includes(":")) {
-      if (h === "::1" || h === "::") return true;
-      const hx = parseInt(h.split(":")[0], 16);
-      if (Number.isFinite(hx) && ((hx & 0xffc0) === 0xfe80 || (hx & 0xfe00) === 0xfc00)) return true;
-    }
-    const mapped = h.match(/^::ffff:(.+)$/i);
-    if (mapped) {
-      const tail = mapped[1];
-      const dq = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-      if (dq) {
-        if (isPrivateV4(+dq[1], +dq[2])) return true;
-      } else {
-        const hx = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-        if (hx) { const hi = parseInt(hx[1], 16); if (isPrivateV4((hi >> 8) & 0xff, hi & 0xff)) return true; }
-      }
-    }
+    if (h.includes(":") && isForbiddenIpv6Literal(h)) return true;
     const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
     return Boolean(m && isPrivateV4(+m[1], +m[2]));
   }
@@ -691,6 +797,7 @@
   globalThis.StorageKeys = StorageKeys;
   globalThis.Providers = Providers;
   globalThis.SettingsSchema = SettingsSchema;
+  globalThis.AutoTranslateBlacklist = AutoTranslateBlacklist;
   globalThis.TokenUsage = TokenUsage;
   globalThis.BatchTuner = BatchTuner;
   globalThis.TranslationBatch = TranslationBatch;

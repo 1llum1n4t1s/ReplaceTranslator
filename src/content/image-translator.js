@@ -48,7 +48,7 @@
     try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch (_e) { /* noop */ }
     try { if (btn) btn.remove(); } catch (_e) { /* noop */ }
     // 翻訳済み画像の監視タイマーを止める (context 失効時に死んだスクリプトのタイマーが回り続けるのを防ぐ)。
-    try { document.querySelectorAll(".__rt-img-wrap").forEach((w) => { if (w.__rtChk) clearInterval(w.__rtChk); }); } catch (_e) { /* noop */ }
+    try { queryOpenRoots(".__rt-img-wrap").forEach((w) => { if (w.__rtChk) clearInterval(w.__rtChk); }); } catch (_e) { /* noop */ }
     btn = null;
     target = null;
   }
@@ -159,12 +159,65 @@
     try { return root.elementsFromPoint(x, y).some((n) => n !== el && root.contains(n) && coversVideo(n, x, y)); } catch (_e) { return false; }
   }
 
-  function imgAtPoint(e) {
-    if (eligible(e.target)) return e.target;            // 速い経路: img が最前面
-    if (typeof e.clientX !== "number") return null;
+  // document.querySelectorAll / document.images は開いた Shadow DOM を貫通しない。右クリック注入後の
+  // URL 解決・ページ復元・context 失効時のタイマー停止で同じ画像集合を扱えるよう、open root を DFS する。
+  // 呼ばれるのは明示操作/後始末時だけで、mouseover の高頻度経路では全 DOM 走査しない。
+  function* openRoots() {
+    const stack = [document];
+    while (stack.length) {
+      const root = stack.pop();
+      yield root;
+      let elements;
+      try { elements = root.querySelectorAll("*"); } catch (_e) { continue; }
+      for (let i = elements.length - 1; i >= 0; i--) {
+        if (elements[i].shadowRoot) stack.push(elements[i].shadowRoot);
+      }
+    }
+  }
+
+  function queryOpenRoots(selector) {
+    const matches = [];
+    for (const root of openRoots()) {
+      try { matches.push(...root.querySelectorAll(selector)); } catch (_e) { /* noop */ }
+    }
+    return matches;
+  }
+
+  // カーソル位置にある要素だけを open Shadow DOM へ降りて最前面順に平坦化する。ShadowRoot の
+  // elementsFromPoint は host の祖先も返すため root.contains で内側だけへ絞り、seen で重複を除く。
+  function elementsFromPointDeep(root, x, y, seen = new Set()) {
     let stack;
-    try { stack = document.elementsFromPoint(e.clientX, e.clientY); } catch (_e) { return null; }
+    try { stack = root.elementsFromPoint(x, y); } catch (_e) { return []; }
+    const found = [];
     for (const el of stack) {
+      if (!el || seen.has(el) || (root !== document && !root.contains(el))) continue;
+      seen.add(el);
+      if (el.shadowRoot && typeof el.shadowRoot.elementsFromPoint === "function") {
+        found.push(...elementsFromPointDeep(el.shadowRoot, x, y, seen));
+      }
+      found.push(el);
+    }
+    return found;
+  }
+
+  function eventPathHasClass(e, className) {
+    if (!e || typeof e.composedPath !== "function") return false;
+    try { return e.composedPath().some((n) => n && n.classList && n.classList.contains(className)); } catch (_e) { return false; }
+  }
+
+  function imgAtPoint(e) {
+    // composed event は document 側で target が shadow host へリターゲットされるが、composedPath には
+    // 内側の IMG が残る。まずこの最短経路を使い、オーバーレイ被りは下の deep hit-test で解決する。
+    if (typeof e.composedPath === "function") {
+      try {
+        for (const el of e.composedPath()) {
+          if (el !== btn && eligible(el)) return el;
+        }
+      } catch (_e) { /* fallback below */ }
+    }
+    if (eligible(e.target)) return e.target;            // 速い経路: light DOM の img が最前面
+    if (typeof e.clientX !== "number") return null;
+    for (const el of elementsFromPointDeep(document, e.clientX, e.clientY)) {
       if (el === btn) continue;                         // 自前のボタン/オーバーレイは飛ばす
       if (coversVideo(el, e.clientX, e.clientY)) return null; // 見えているのは動画: 下に敷かれたポスター/サムネ img を拾わない
       if (eligible(el)) return el;                      // 被さった要素 (アンカー等) の下の img を採用
@@ -184,7 +237,8 @@
     // 「原(戻す)」候補 (= .__rt-img-wrap 内) にいるときだけ画像解決へ進み、それ以外は imgAtPoint
     // (elementsFromPoint + getComputedStyle 走査) ごと省く (mouseover 高頻度イベントの無駄な style flush を防ぐ)。
     if ((!showImageButton || !imageCapable) &&
-        !(e.target && e.target.closest && e.target.closest(".__rt-img-wrap"))) return;
+        !(e.target && e.target.closest && e.target.closest(".__rt-img-wrap")) &&
+        !eventPathHasClass(e, "__rt-img-wrap")) return;
     if (!contextAlive()) { shutdown(); return; } // 失効した旧スクリプトはボタンを出さず後始末
     if (e.target === btn) return;                // 自前ボタン上では target/位置を保持して何もしない
     const img = imgAtPoint(e);
@@ -234,7 +288,7 @@
   // 同率なら表示面積の大きい方を採る。
   function findBySrcUrl(srcUrl) {
     let best = null, bestScore = -1;
-    for (const i of document.images) {
+    for (const i of queryOpenRoots("img")) {
       if ((i.currentSrc || i.src) !== srcUrl) continue;
       const r = i.getBoundingClientRect();
       const visible = r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
@@ -1125,11 +1179,11 @@
   // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
     imgRunId++; // 世代を進めて進行中ホバー OCR の遅延描画を無効化する
-    document.querySelectorAll(".__rt-img-wrap").forEach(unwrapImage);
+    queryOpenRoots(".__rt-img-wrap").forEach(unwrapImage);
     // 念のため: ラッパー解除前に取り残された __rtPrevStyle 付き img/picture があれば素の状態へ戻す (二重防御)
-    document.querySelectorAll("img[style*='100%']").forEach(restorePrevStyle);
+    queryOpenRoots("img[style*='100%']").forEach(restorePrevStyle);
     // ラッパー無しで残っているレイヤーがあれば後始末
-    document.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove());
+    queryOpenRoots(".__rt-img-layer").forEach((l) => l.remove());
   }
 
   // 画像翻訳はホバー/右クリックの手動のみ (一括は廃止)。ページ翻訳には連動せず、原文復元時にだけ

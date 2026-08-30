@@ -96,7 +96,7 @@
   // qiankun 等の micro-frontend や非同期チャートは初回 ingest 時に 0-height で、可視内で高さが付いても IO は
   // 発火しない (スクロールしないと訳されない)。描画完了後に再走査して「高さの付いたブロック」を near として拾う。
   // 旧 [350,1200] は遅いダッシュボードの描画(2〜4s+)に間に合わず "翻訳済みなのに英語のまま" になっていた。
-  const REINGEST_DELAYS = [350, 1200, 2500];
+  const REINGEST_DELAYS = [350, 1200, 2500, 4500, 7500, 12000];
   // 1 page run の入力予算。スクロール追従は維持しつつ、悪意ある大量DOMで無制限に課金しない。
   const PAGE_MAX_TEXTS = 5000;
   const PAGE_MAX_CHARS = 500000;
@@ -435,7 +435,7 @@
       if (observedBlocks.has(block)) {
         // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外1: 初回 0×0 で observe した block は
         // 高さが付いて near 化したか毎回再評価する(0×0→サイズ付与の in-viewport 遷移は IO が発火しないことが
-        // あるため)。例外2: fullRecheck (scheduleReingest の定期再走査・350〜2500ms に最大3回) 時は、
+        // あるため)。例外2: fullRecheck (scheduleReingest の定期再走査・350〜12000ms に最大6回) 時は、
         // 0×0 でなかった block も含め near 化したか再評価する。初回計測時に非 0×0 でも「近傍の要素がまだ描画/
         // 確定していない一時的なレイアウト」のせいで最終位置より下に見え near=false と判定されることがあり
         // (例: 上にあるローディングプレースホルダが後で縮む)、この class の block は zeroSizedBlocks に入らず
@@ -623,6 +623,22 @@
   function applyTranslations(batch, translations) {
     for (let i = 0; i < batch.length; i++) applyBatchItem(batch[i], translations[i]);
   }
+  // NMT の部分失敗は訳文として原文を返すため、文字列比較では正当な無変更応答と区別できない。
+  // background が明示した失敗 index だけを数え、done を partial にする。
+  function markFailedTranslations(batch, failedIndices) {
+    if (!Array.isArray(failedIndices)) return 0;
+    let dropped = 0;
+    for (const index of new Set(failedIndices)) {
+      const group = Number.isInteger(index) ? batch[index] : null;
+      if (!group) continue;
+      for (const member of batchMembers(group)) {
+        if (!translatedNodes.has(member.node) || member.node.nodeValue !== member.text) continue;
+        dropped++;
+      }
+    }
+    droppedTransient += dropped;
+    return dropped;
+  }
   // 原文→訳文をメモに登録 (同一原文の再翻訳を API なしでキャッシュ適用するため)。上限超過後は新規登録のみ止める。
   // バッチ応答を原文→訳文メモに登録する。SPA 再レンダで Text ノード実体が差し替わっても、同一原文を
   // API に再送せずキャッシュ適用するためのもの。full=true は「完全な正常応答 (res.ok)」を表す。
@@ -741,6 +757,7 @@
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
+          markFailedTranslations(batch, res.failedIndices);
           rememberTranslations(batch, res.translations, false); // 部分成功 → 原文返しは失敗かもしれずキャッシュしない
         } else if (res && (res.error === "incomplete" || isOversizeRequest(res))) {
           // LLM 出力が途中で切れた/入力上限を超えた。確定済みの partial (nodeValue が訳文へ
@@ -1195,7 +1212,7 @@
     dbg("translating=true runId=", myRun, "ResizeObserver=", typeof ResizeObserver === "function");
     ingest(document.body || document.documentElement);
     // 初回 scan 後にアップグレードで open shadow root を遅延 attach する web component を取りこぼさないよう、
-    // 少し待ってから再 ingest する (scheduleReingest=350/1200ms)。新規 shadow root とその MutationObserver を拾う。
+    // bounded に再 ingest する (scheduleReingest=350〜12000ms)。新規 shadow root とその MutationObserver を拾う。
     // (content script は isolated world で page の attachShadow をフック不可のため、bounded な再走査で対処。)
     scheduleReingest();
     // 翻訳対象が無いページでも状態が固まるよう、保険で done 判定を 1 度入れる

@@ -241,7 +241,7 @@
     if (!contextAlive()) return;
     if (!m || m.action !== A.TRANSLATION_PROGRESS) return;
     if (m.state === "progress") { errText = ""; partialText = ""; state = "loading"; render(); }
-    else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "一部未翻訳（フレーム遅延/レート制限）") : ""; state = "on"; render(); }
+    else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "一部を翻訳できませんでした") : ""; state = "on"; render(); }
     else if (m.state === "error") { errText = errSummary(m.detail); partialText = ""; state = "off"; render(); } // 失敗理由を title に出す
     else if (m.state === "restored") { errText = ""; partialText = ""; state = "off"; render(); }
     else if (m.state === "skipped") { errText = ""; partialText = ""; state = "off"; render(); } // ページ言語=翻訳先 → 訳すものが無いので未翻訳状態へ戻す

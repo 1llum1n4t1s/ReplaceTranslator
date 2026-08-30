@@ -17,6 +17,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab is-active" type="button" role="tab" data-tab="translate" aria-selected="true" data-i18n="tabTranslate">翻訳</button>
     <button class="tab" type="button" role="tab" data-tab="api" aria-selected="false" data-i18n="tabApi">API設定</button>
+    <button class="tab" type="button" role="tab" data-tab="blacklist" aria-selected="false" data-i18n="tabBlacklist">除外リスト</button>
     <span class="tab-ink" aria-hidden="true"></span>
   </nav>
 
@@ -313,6 +314,19 @@
           </button>
         </div>
         <div id="model-list" class="model-list"></div>
+      </div>
+    </section>
+
+    <!-- 自動翻訳ブラックリストタブ -->
+    <section class="pane" data-pane="blacklist">
+      <div class="blacklist-card">
+        <div class="blacklist-head">
+          <h2 class="blacklist-title" data-i18n="blacklistTitle">自動翻訳ブラックリスト</h2>
+          <span id="blacklist-save-state" class="blacklist-save-state" aria-live="polite"></span>
+        </div>
+        <p class="blacklist-desc" data-i18n="blacklistDesc">1行に1件入力してください。登録したURLまたはホストでは自動翻訳を行いません。手動翻訳は引き続き利用できます。</p>
+        <textarea id="auto-translate-blacklist" class="blacklist-input" rows="11" maxlength="20000" spellcheck="false" autocomplete="off" data-i18n-placeholder="blacklistPlaceholder" placeholder="192.168.*&#10;https://photos.google.com/&#10;x.com"></textarea>
+        <p class="blacklist-help" data-i18n="blacklistHelp">* は任意の文字列に一致します。URLは指定したパス以下、ホスト名はそのホスト全体が対象です。</p>
       </div>
     </section>
 
