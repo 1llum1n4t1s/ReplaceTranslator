@@ -20,6 +20,7 @@ Translate the web page you are viewing in place using the cloud LLM of your choi
 - Multiple LLM providers — switch between providers such as OpenAI / Anthropic / Google Gemini / xAI using your own API key
 - No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
+- Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
 - Quick translate — translate short text right inside the popup
 - Image text translation (experimental, vision-capable LLMs)
@@ -33,7 +34,8 @@ In line with each provider's terms, this extension works with API keys (API toke
 2. Click the toolbar icon, open the "Keys" tab, and enter the API key for the provider you want (MyMemory needs no key)
 3. In the "Translate" tab, pick the source and target languages, then click "Translate". Click "Restore" to go back
 4. You can also toggle translate/restore from the floating button at the bottom-right of the page, or the right-click menu
-5. Turn on image translation in the "Keys" tab, then hover an image and click the translate button to translate the text inside it (experimental, vision-capable LLMs)
+5. Add or remove sites where auto-translate should stay off from the "Exclusions" tab or the right-click menu
+6. Turn on image translation in the "Keys" tab, then hover an image and click the translate button to translate the text inside it (experimental, vision-capable LLMs)
 
 [Privacy]
 - The developer does not collect, store, or receive your data (no analytics, no tracking)
@@ -83,7 +85,7 @@ Translate the text (and, optionally, the text inside images) of the web page the
   current tab's page content and replace it with the translated text.
 
   storage:
-  Stores the user's settings, API key, monthly token usage, and the auto-tuned batch size
+  Stores the user's settings (including auto-translate exclusions), API key, monthly token usage, and the auto-tuned batch size
   locally in the browser (chrome.storage.local). Nothing is sent to the developer.
 
   scripting:
@@ -91,7 +93,7 @@ Translate the text (and, optionally, the text inside images) of the web page the
   translate text nodes in place and to restore the original text.
 
   contextMenus:
-  Adds "Translate this page" / "Restore original" entries to the right-click menu.
+  Adds page translation, original restoration, and auto-translate exclusion controls to the right-click menu.
 
   host permissions (<all_urls>):
   Needed so the user can translate any web page. The content script is injected into the page,
