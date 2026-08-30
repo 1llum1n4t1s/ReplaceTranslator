@@ -5,17 +5,18 @@ This file provides guidance to Codex when working in this repository.
 各社クラウド LLM / 無料 NMT でページをインプレース置換翻訳する Chrome / Firefox (MV3) 拡張機能。本ファイルは LLM 向けの作業規約・実装パターン集（肯定形で記述）。全体の構造・責務・境界・データフロー・設計判断は [DESIGN.md](DESIGN.md)、機能別の実装詳細は [references/architecture.md](references/architecture.md) を正本とする。ビルドツール無しのネイティブ JS（`"type": "commonjs"`・ランタイム依存ゼロ・devDeps のみ）。
 
 ## ビルド / テスト / Lint コマンド
-- `pnpm test` — Node 標準テスト（`node --test`。純粋関数のみ: actions / providers / lang / stream）
+- `pnpm test` — Node 標準テスト（`node --test`。共有純粋関数に加え、実ソースから切り出した content / Service Worker 関数と静的契約も検証）
 - 単一ファイル: `node --test test/providers.test.js` ／ 単一テスト名: `node --test --test-name-pattern "BatchTuner"`
 - `pnpm run lint` — ESLint（Flat Config v9+）
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
 - ストア掲載画像は `webstore/*.html`（テンプレ）+ `webstore/generate-screenshots.js`（puppeteer）→ `webstore/images/{ja,en}/`。依存は `webstore/package.json`（gitignore）に隔離し `pnpm -C webstore install` で ad-hoc 導入
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（§popup フォント参照）
+- `pnpm sync:support` — exact 固定した `kagayoi-support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`pnpm exec kagayoi-support-sync --check` で一致を検証する
 
 ## 規約上の前提（設計の根拠）
 - 大手3社ともブラウザ拡張からサブスクのログインセッション流用は ToS 違反。**API トークンが唯一の正規ルート**。プロバイダ追加時も **API キー方式**で実装する
-- 翻訳エンジン（translator.js）はコードに自動テストが無い（DOM + chrome API + LLM 依存）。変更時は `pnpm test`（純粋関数）+ `pnpm run lint` を通し、ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
+- 翻訳エンジンと画像翻訳の一部関数・静的契約は `test/content-dom.test.js` で実ソースから検証する。ただし実 DOM + chrome API + LLM を組み合わせた統合テストは無い。変更時は `pnpm test` + `pnpm run lint` を通し、統合ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
 
 ## アーキテクチャ（3 レイヤ + lib）
 ```
@@ -68,5 +69,5 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - UI 文言は `_locales/{en,ja}/messages.json`、HTML は `data-i18n` 属性、JS は `chrome.i18n.getMessage`。文言を足すときは en/ja の両方に追加する
 
 ## リリース
-- `vava.config.json` + `.cws-id`（実 ID へ要差し替え）+ AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
+- `vava.config.json` + `.cws-id` + AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
 - バージョン番号（`package.json` / `manifest.json`）の更新は**ゆろさんが明示的に指示したときだけ**行う

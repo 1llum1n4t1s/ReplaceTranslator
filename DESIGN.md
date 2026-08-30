@@ -9,6 +9,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 - 拡張機能本体は `manifest.json`、`src/`、`icons/`、`_locales/` から構成し、実行時依存やバンドル工程を持たない。
 - ポップアップ、常駐 content script、オンデマンド注入する翻訳エンジン、background Service Worker の3レイヤと共通ライブラリで動作する。
 - APIキーと認証付き通信は Service Worker が所有する。content script はページ文脈で動くが、APIキーを受け取らない。
+- `src/shared/` の問い合わせ・評価UIは `kagayoi-support-extension` から同期して拡張へ同梱する。問い合わせ内容は利用者の明示送信時だけ Kagayoi Support API へ送る。
 - `web/` はランディングページとプライバシーページを配信する独立した Cloudflare Worker であり、翻訳処理や拡張機能の配布には関与しない。
 - Chrome Web Store / Firefox AMO が拡張機能を配布する。GitHub Actions は `release/<version>` ブランチを契機に検証、パッケージ生成、各ストアへの提出を行う。
 
@@ -23,6 +24,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 | `src/content/fab.*` | トップフレームに常駐し、翻訳・復元操作と進捗表示をページ上に提供する |
 | `src/content/selection-translator.*` | 明示操作された選択テキストを翻訳し、バブルまたはインラインで表示する |
 | `src/content/image-translator.*` | 明示操作された画像を取得し、vision対応プロバイダの結果をオーバーレイ描画する |
+| `src/shared/kagayoi-support-*` | 設定画面の問い合わせ・評価UIを提供する、共通パッケージから同期した同梱資産 |
 | `src/lib/actions.js` | メッセージ名、保存キー、設定正規化、プロバイダ定義、バッチ調整などの共有契約を定義する |
 | `src/lib/providers.js` | 各プロバイダの要求・応答・usage・モデル一覧・画像要求を共通形式へ変換する |
 | `src/lib/lang.js` | 対応言語とコード正規化を提供する |
@@ -30,7 +32,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 | `src/lib/stream.js` | ストリーミング応答から確定済み翻訳要素を逐次抽出する |
 | `_locales/` | 利用者向け文言の英語・日本語リソースを保持する |
 | `build-firefox-manifest.mjs` | Chrome用manifestからFirefox用 `background.scripts` 構成を生成する |
-| `test/` | DOMやブラウザAPIに依存しない共有契約・純粋関数を Node 標準テストで検証する |
+| `test/` | 共有契約・純粋関数に加え、実ソースから切り出した content / Service Worker 関数と静的整合性を Node 標準テストで検証する |
 
 ## データフロー
 
@@ -88,6 +90,10 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 
 全プロバイダ通信をService Workerへ寄せ、`providers.js` が会社ごとの差を共通形式へ変換する。新しいプロバイダは定義・要求変換・応答変換を追加すればUIと翻訳エンジンを共有できる。Service Workerの休止・再起動を前提に、永続すべき状態はstorageへ置き、進行中処理だけをメモリへ置く。
 
+### 共通サポート部品のローカル同梱
+
+問い合わせ・評価UIの正本は exact 固定した `kagayoi-support-extension` とし、JavaScript 2本とCSS 3本を `src/shared/` へ逐語同期して配布物へ含める。各拡張での分岐を防ぎつつ、MV3で禁止されるリモートJavaScriptと実行時依存を避ける代わりに、パッケージ更新時は同期と一致検証を必要とする。
+
 ### ビューポート優先・動的バッチ・限定並列
 
 ページ全体を一括送信せず、利用者が先に読む領域を優先してバッチ化する。往復回数を抑えつつ、実測スループットとレート制限からバッチサイズを調整し、プロバイダ固有の並列上限を適用する。速度とAPI制限への耐性を得る代わりに、DOM監視、再試行、部分完了の状態管理が複雑になる。
@@ -110,8 +116,9 @@ FAB、選択翻訳、画像翻訳は接頭辞付きID・クラス、`all: initia
 
 ## 検証境界
 
-- `pnpm test` は設定スキーマ、プロバイダ変換、言語処理、ストリーム解析などの純粋ロジックを検証する。
+- `pnpm test` は設定スキーマ、プロバイダ変換、言語処理、ストリーム解析などの純粋ロジックと、実ソースから切り出した content / Service Worker 関数・静的契約を検証する。
 - `pnpm run lint` は `src/` と `test/` の静的規約を検証する。
+- `pnpm exec kagayoi-support-sync --check` は `src/shared/` と exact 固定した共通サポートパッケージの一致を検証する。
 - `pnpm install --frozen-lockfile` はCIと配布時の依存再現性を保証する。
 - ページ翻訳エンジン、ブラウザAPI、各社APIを組み合わせた統合動作は自動テストの外側にあり、拡張機能を再読み込みした実ブラウザと利用者のAPIキーで確認する。
 - ChromeとFirefoxの配布物は同じ共有ディレクトリから作り、Firefox版は生成manifestを `web-ext lint` で検証する。
