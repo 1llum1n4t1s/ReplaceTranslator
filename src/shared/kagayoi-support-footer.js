@@ -170,7 +170,7 @@
         }
         // それでも来なければ（kagayoi-support-popup.js の同梱漏れ）操作不能にはせず、Web の窓口を開く。
         if (typeof this.popup.open === "function") {
-          this.popup.open()
+          this.popup.open(button)
         } else if (api.tabs?.create) {
           api.tabs.create({ url: SUPPORT_SITE })
         } else {

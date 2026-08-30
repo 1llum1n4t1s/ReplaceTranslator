@@ -73,6 +73,7 @@ kagayoi-contact-form {
   padding: 1rem;
   --ks-accent: var(--ksp-accent);
   --ks-surface: transparent;
+  --ks-option-surface: var(--ksp-surface);
   --ks-surface-soft: var(--ksp-surface-soft);
   --ks-border: var(--ksp-border);
   --ks-text: var(--ksp-text);

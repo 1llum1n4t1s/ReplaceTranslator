@@ -4,6 +4,8 @@
   "type": "commonjs",
   "description": "Chrome/Firefox extension that translates the current page in-place using cloud LLMs (OpenAI, Anthropic, Google Gemini, xAI Grok) via your own API key.",
   "scripts": {
+    "sync:support": "node --preserve-symlinks-main ./node_modules/kagayoi-support-extension/bin/kagayoi-support-sync.mjs",
+    "prebuild": "pnpm sync:support",
     "ci:install": "pnpm install --frozen-lockfile",
     "test": "node --test",
     "lint": "eslint src/ test/"
@@ -12,6 +14,7 @@
     "chrome-webstore-upload-cli": "^4.0.1",
     "eslint": "^10.9.1",
     "globals": "^17.11.0",
+    "kagayoi-support-extension": "1.0.4",
     "web-ext": "^10.6.0"
   },
   "keywords": [

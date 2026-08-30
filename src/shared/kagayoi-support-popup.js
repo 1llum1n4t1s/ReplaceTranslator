@@ -3,13 +3,10 @@
 
   const DEFAULT_API_BASE = "https://support.kagayoi.com"
   const SESSION_KEY = "kagayoi-support-session"
+  const API_TIMEOUT_MS = 15_000
   const FORM_STYLESHEET_URL = bundledStylesheetUrl("kagayoi-support-form.css")
   const POPUP_STYLESHEET_URL = bundledStylesheetUrl("kagayoi-support-popup.css")
-  const FIREFOX_CONTACT_DATA_PERMISSIONS = [
-    "personallyIdentifyingInfo",
-    "authenticationInfo",
-    "personalCommunications",
-  ]
+  const FIREFOX_OPTIONAL_CONTACT_DATA_PERMISSIONS = ["personalCommunications"]
   const CHANNELS = new Set(["web", "desktop", "extension", "other"])
   const STORAGE_SCOPES = new Set(["session", "local"])
   const CATEGORIES = [
@@ -115,10 +112,6 @@
               <label for="${id}-description">お問い合わせ内容</label>
               <textarea id="${id}-description" name="description" maxlength="10000" required></textarea>
             </div>
-            <div class="trap" aria-hidden="true">
-              <label for="${id}-website">ウェブサイト</label>
-              <input id="${id}-website" name="website" type="text" tabindex="-1" autocomplete="off">
-            </div>
             <div class="verification" hidden>
               <div class="field">
                 <label for="${id}-code">6桁の確認コード</label>
@@ -170,10 +163,6 @@
     async handleSubmit() {
       if (this.busy || !this.productId) return
       if (!this.validateTicketFields()) return
-      if (this.form.elements.website.value) {
-        this.showSuccess("KGS-RECEIVED")
-        return
-      }
       if (!await this.ensureDataCollectionConsent()) return
       const session = this.sessionForCurrentEmail()
       if (session) {
@@ -269,7 +258,7 @@
         // submit / resend の user-activated handler 内で最初の非同期 API として呼ぶ。
         // 既に許可済みなら Firefox はプロンプトなしで true を返す。
         const granted = await api.permissions.request({
-          data_collection: FIREFOX_CONTACT_DATA_PERMISSIONS,
+          data_collection: FIREFOX_OPTIONAL_CONTACT_DATA_PERMISSIONS,
         })
         if (granted) return true
         this.setStatus("お問い合わせ情報の送信には Firefox の許可が必要です。", "error")
@@ -289,6 +278,7 @@
           credentials: "omit",
           headers,
           body: JSON.stringify(options.body),
+          signal: AbortSignal.timeout(API_TIMEOUT_MS),
         })
       } catch {
         throw new Error("network")
@@ -588,18 +578,22 @@
         if (event.target === this.dialog) this.close()
       })
       this.dialog.addEventListener("close", () => {
-        this.releaseDocumentScrollLock()
-        this.trigger?.focus()
+        this.finishClose()
       })
-      if (this.hasAttribute("open")) queueMicrotask(() => this.open())
+      if (this.hasAttribute("open")) {
+        queueMicrotask(() => {
+          if (this.isConnected) this.open()
+        })
+      }
     }
 
     disconnectedCallback() {
       this.releaseDocumentScrollLock()
     }
 
-    open() {
-      if (!this.dialog || this.dialog.open) return
+    open(returnFocusTo = this.trigger) {
+      if (!this.isConnected || !this.dialog || this.dialog.open) return
+      this.returnFocusTo = returnFocusTo
       this.acquireDocumentScrollLock()
       try {
         if (typeof this.dialog.showModal === "function") this.dialog.showModal()
@@ -615,8 +609,19 @@
       if (!this.dialog?.open) return
       if (typeof this.dialog.close === "function") this.dialog.close()
       else this.dialog.removeAttribute("open")
+      this.finishClose()
+    }
+
+    finishClose() {
+      if (!this.documentScrollLocked) return
       this.releaseDocumentScrollLock()
-      this.trigger?.focus()
+      this.restoreFocus()
+    }
+
+    restoreFocus() {
+      const target = this.returnFocusTo?.isConnected ? this.returnFocusTo : this.trigger
+      target?.focus()
+      this.returnFocusTo = this.trigger
     }
 
     acquireDocumentScrollLock() {

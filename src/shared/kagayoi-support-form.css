@@ -6,6 +6,7 @@
   --ks-text: var(--ink, var(--fg, inherit));
   --ks-muted: var(--muted, #62626b);
   display: block;
+  color-scheme: var(--kgs-color-scheme, inherit);
   color: var(--ks-text);
   font: inherit;
   line-height: 1.7;
@@ -32,6 +33,10 @@ input, select, textarea {
   border: 1px solid var(--ks-border);
   border-radius: 10px;
   background-color: var(--ks-surface);
+  color: var(--ks-text);
+}
+option {
+  background-color: var(--ks-option-surface, var(--ks-surface));
   color: var(--ks-text);
 }
 textarea { min-height: 10rem; resize: vertical; }
