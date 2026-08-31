@@ -4,6 +4,7 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - kagayoi-support-extension@1.0.4
+  - kagayoi-support-extension@1.0.5
 
 # undici: web-ext > addons-linter > cheerio 経由の transitive 脆弱性
 # (GHSA-g8m3-5g58-fq7m 等 7 件) を修正版へ強制。dev 専用で拡張本体には同梱されない
