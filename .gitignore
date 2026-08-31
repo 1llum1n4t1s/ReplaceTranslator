@@ -2,7 +2,6 @@ node_modules/
 temp-build/
 temp-build-*/
 *.zip
-.serena/
 .claude/
 temp/
 # Firefox AMO ビルド成果物
