@@ -14,7 +14,7 @@
 
 // 依存ライブラリ読み込み (Chrome: importScripts / Firefox: manifest の background.scripts で既読)
 if (typeof importScripts === "function") {
-  importScripts("/src/lib/actions.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js");
+  importScripts("/src/lib/actions.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js", "/src/lib/settings-sync.js");
 }
 
 (function () {
@@ -39,6 +39,9 @@ if (typeof importScripts === "function") {
       if (area === "local" && changes[StorageKeys.SETTINGS]) {
         settingsMem = null;
         refreshActiveAutoTranslateSiteMenu();
+      }
+      if (area === "sync" && Object.keys(changes).some(key => key.startsWith(SettingsSync.PREFIX))) {
+        receiveSyncedSettings().catch(() => {});
       }
     });
   } catch (_e) { /* noop */ }
@@ -103,14 +106,17 @@ if (typeof importScripts === "function") {
     try { return (await res.text()).slice(0, 600); } catch (_e) { return ""; }
   }
 
-  async function saveSettings(raw) {
+  async function saveSettings(raw, syncState) {
     const normalized = SettingsSchema.normalize(raw);
     const previousCachePreference = persistentTranslationCacheEnabled;
     await chrome.storage.local.set({
       [StorageKeys.SETTINGS]: normalized,
       // content script (fab/image-translator) が読む非機密フラグ。apiKeys を content 文脈に出さないため分離する。
       [StorageKeys.CONTENT_FLAGS]: contentFlagsOf(normalized),
+      ...(syncState ? { [SettingsSync.STATE_KEY]: syncState,
+        [SettingsSync.STATUS_KEY]: normalized.syncSettings ? "pending" : "off" } : {}),
     });
+    if (syncState) settingsSyncMem = structuredClone(syncState);
     // 設定保存が成功する前に true にすると、storage 書き込み失敗時でも in-flight 翻訳が原文を
     // 永続化し得る。必ず保存成功後に preference を切り替える。
     persistentTranslationCacheEnabled = normalized.persistentTranslationCache === true;
@@ -125,18 +131,101 @@ if (typeof importScripts === "function") {
   // 同じ base を読んでから順に上書きし先の変更を取りこぼす (lost update)。チェーンで 1 件ずつ直列化し、
   // base には直前の save が同期確定した settingsMem を使うことで、後続 patch が最新値に積み増しされる。
   let settingsWriteChain = Promise.resolve();
-  function applySettingsPatch(patch) {
-    const run = async () => {
-      const base = settingsMem || await getSettings(); // 直前の saveSettings が settingsMem を確定済み
-      const p = typeof patch === "function" ? patch(base) : patch; // 関数 patch は最新 base を見てマージ内容を決める (models 等の入れ子保持に使う)
-      if (p == null) return base; // 変更不要 (例: migrateModel が載せ替え不要と判断) → 保存しない
-      return saveSettings(Object.assign({}, base, p));
-    };
-    // 直前の patch が成功/失敗どちらでも次を最新 base から直列適用する (then の両ハンドラに run を渡す)
-    const next = settingsWriteChain.then(run, run);
-    settingsWriteChain = next.catch(() => {}); // チェーンは常に解決させ、1 件の失敗で後続を詰まらせない
-    return next; // 呼び出し側にはこの patch 自身の結果 (保存後の設定) / 失敗を返す
+  let settingsSyncMem = null;
+  let settingsSyncGeneration = 0;
+
+  async function loadSettingsSync() {
+    if (!settingsSyncMem) {
+      const data = await chrome.storage.local.get(SettingsSync.STATE_KEY);
+      settingsSyncMem = SettingsSync.restore(data[SettingsSync.STATE_KEY], crypto.randomUUID());
+    }
+    return structuredClone(settingsSyncMem);
   }
+
+  function queueSettings(run) {
+    const next = settingsWriteChain.then(run, run);
+    settingsWriteChain = next.catch(() => {});
+    return next;
+  }
+
+  async function synchronizeSettings() {
+    const base = settingsMem || await getSettingsCached();
+    if (!base.syncSettings) return base;
+    const generation = settingsSyncGeneration;
+    try {
+      // ワーカー終了後も再送できるよう、通信前に次回実行を確保する。
+      await chrome.alarms.create(SettingsSync.ALARM, { delayInMinutes: 1 });
+      const state = await loadSettingsSync();
+      const remote = await chrome.storage.sync.get([...SettingsSync.KEYS, ...(!state.joined ? SettingsSync.LEGACY_KEYS : state.legacyCleanup)]);
+      if (generation !== settingsSyncGeneration) return base;
+      SettingsSync.join(state, base, remote);
+      const projected = SettingsSync.project(state, base);
+      const desired = SettingsSync.pack(state);
+      const uploads = Object.fromEntries(Object.entries(desired).filter(([key, value]) => !SettingsSync.equal(value, remote[key])));
+      state.legacyCleanup = SettingsSync.LEGACY_KEYS.filter(key => state.legacyCleanup.includes(key) || Object.hasOwn(remote, key));
+      const legacy = state.legacyCleanup;
+      // 勝者と未送信状態を同じlocal.setへ保存してから、設定を適用・送信する。
+      state.pending = Object.keys(uploads).length > 0 || legacy.length > 0;
+      const changed = !SettingsSync.equal(state, settingsSyncMem) || !SettingsSync.equal(projected, base);
+      if (!changed && !state.pending) {
+        const status = await chrome.storage.local.get(SettingsSync.STATUS_KEY);
+        if (status[SettingsSync.STATUS_KEY] !== "synced") await chrome.storage.local.set({ [SettingsSync.STATUS_KEY]: "synced" });
+        await chrome.alarms.clear(SettingsSync.ALARM);
+        return base;
+      }
+      if (changed) await saveSettings(projected, state);
+      if (generation !== settingsSyncGeneration) return settingsMem || base;
+      SettingsSync.checkQuota(desired);
+      if (Object.keys(uploads).length) await chrome.storage.sync.set(uploads);
+      if (generation !== settingsSyncGeneration) return settingsMem || base;
+      // 旧試作形式は初回移行時だけ読み、V2保存成功後に撤去する。
+      if (legacy.length) await chrome.storage.sync.remove(legacy);
+      state.pending = false;
+      state.legacyCleanup = [];
+      await chrome.storage.local.set({ [SettingsSync.STATE_KEY]: state, [SettingsSync.STATUS_KEY]: "synced" });
+      settingsSyncMem = state;
+      await chrome.alarms.clear(SettingsSync.ALARM);
+    } catch (_e) {
+      // localの更新は確定済みでも同期失敗はあり得る。元のstampを保持して再試行する。
+      await chrome.storage.local.set({ [SettingsSync.STATUS_KEY]: "error" }).catch(() => {});
+      await chrome.alarms.create(SettingsSync.ALARM, { delayInMinutes: 1 }).catch(() => {});
+    }
+    return settingsMem || base;
+  }
+
+  function receiveSyncedSettings() {
+    return queueSettings(synchronizeSettings);
+  }
+
+  function applySettingsPatch(patch) {
+    const changedAt = Date.now(); // 送信時でなく、利用者の変更を受け付けた時刻
+    if (patch && typeof patch === "object" && Object.hasOwn(patch, "syncSettings")) settingsSyncGeneration++;
+    const run = async () => {
+      const base = settingsMem || await getSettingsCached();
+      const p = typeof patch === "function" ? await patch(base) : patch; // 関数 patch は最新 base を見てマージ内容を決める
+      if (p == null) return base; // 変更不要 (例: migrateModel が載せ替え不要と判断) → 保存しない
+      const next = SettingsSchema.mergePatch(base, p);
+      let state;
+      let syncChanged = false;
+      if (next.syncSettings || base.syncSettings) {
+        state = await loadSettingsSync();
+        if (next.syncSettings !== base.syncSettings) state = { ...state, joined: false, records: {}, pending: false };
+        if (next.syncSettings) {
+          syncChanged = SettingsSync.recordChanges(state, base, next, changedAt) || !base.syncSettings;
+          state.pending ||= syncChanged;
+        }
+      }
+      await saveSettings(next, syncChanged || next.syncSettings !== base.syncSettings ? state : undefined);
+      if (!next.syncSettings && base.syncSettings) await chrome.alarms.clear(SettingsSync.ALARM).catch(() => {});
+      if (syncChanged) return synchronizeSettings();
+      return next;
+    };
+    return queueSettings(run);
+  }
+
+  chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === SettingsSync.ALARM) receiveSyncedSettings().catch(() => {});
+  });
 
   // 既存インストール移行 / SW 再起動時に CONTENT_FLAGS を用意する (未作成なら SETTINGS から導出)。
   async function ensureContentFlags() {
@@ -927,7 +1016,7 @@ if (typeof importScripts === "function") {
     // 直列キュー経由 + 最新 base に対して判定/マージし、models の他 provider のエントリも保持する。
     await applySettingsPatch((base) => {
       if (valid.includes(base.models[providerId])) return null; // 選択中が有効 → 載せ替え不要 (保存しない)
-      return { models: Object.assign({}, base.models, { [providerId]: models[0].id }) };
+      return { models: { [providerId]: models[0].id } };
     });
   }
   async function getModelsForProvider(providerId, force) {
@@ -1387,7 +1476,7 @@ if (typeof importScripts === "function") {
     await applySettingsPatch((base) => {
       if (typeof deadModel === "string" && base.models[providerId] !== deadModel) return null; // ユーザーが変更済み → 触らない
       if (base.models[providerId] === newModel) return null;
-      return { models: Object.assign({}, base.models, { [providerId]: newModel }) };
+      return { models: { [providerId]: newModel } };
     });
   }
 
@@ -1612,8 +1701,12 @@ if (typeof importScripts === "function") {
             // 連続して届く patch は applySettingsPatch がチェーンで直列化し lost update を防ぐ。
             const incoming = (msg.patch && typeof msg.patch === "object") ? msg.patch
               : ((msg.settings && typeof msg.settings === "object") ? msg.settings : {});
-            const saved = await applySettingsPatch(incoming);
-            sendResponse({ ok: true, settings: saved });
+            try {
+              const saved = await applySettingsPatch(incoming);
+              sendResponse({ ok: true, settings: saved });
+            } catch (_e) {
+              sendResponse({ ok: false, error: "settings_save_failed", settings: await getSettings() });
+            }
             break;
           }
           case Actions.GET_STATE: {
@@ -1621,6 +1714,7 @@ if (typeof importScripts === "function") {
             // (自動翻訳/FAB はエラー後に popup を開かず、即時イベントを逃すため)。
             const errTab = msg.tabId;
             const lastError = await getLastError(errTab);
+            await settingsWriteChain; // 起動時の同期取り込み・進行中の保存も表示へ反映する
             const stateSettings = await getSettings();
             // MessagePolicy が拡張ページだけをこの case へ通す。content へは API キーを含む state を返さない。
             sendResponse({ ok: true, settings: stateSettings, lastError });
@@ -1759,6 +1853,8 @@ if (typeof importScripts === "function") {
   // SW 起動時に翻訳ホットパスの設定/集計メモリをプリロードし、cold start 後の最初の TRANSLATE_BATCH の
   // storage 待ち (設定 + BATCH_TUNING + TOKEN_USAGE) を消す (warm 時は settingsMem/tuningMem が効くので無害)。
   const preloadSettings = getSettingsCached();
+  settingsWriteChain = preloadSettings.then(() => {}, () => {}); // 初回読込の後で同期値を確定する
+  receiveSyncedSettings().catch(() => {}); // 休止中・終了中に届いた設定も起動時に取り込む
   Promise.all([
     preloadSettings,
     ensureMem(),

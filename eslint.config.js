@@ -19,6 +19,7 @@ const ACTIONS_GLOBALS = {
   MessagePolicy: "readonly",    // src/lib/actions.js — runtime message送信元/対象tab境界
   RuntimeLimits: "readonly",    // src/lib/actions.js — decoder前の入力上限
   SettingsSchema: "readonly",   // src/lib/actions.js — 設定スキーマ + normalize
+  SettingsSync: "readonly",     // src/lib/settings-sync.js — 項目単位の同期レコード
   AutoTranslateBlacklist: "readonly", // src/lib/actions.js — 自動翻訳除外URL/host globの正規化・照合
   StorageKeys: "readonly",      // src/lib/actions.js — storage キー
   Providers: "readonly",        // src/lib/actions.js — プロバイダ定義 (id/label/endpoint/model)

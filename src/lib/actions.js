@@ -91,6 +91,7 @@
   // ---- storage キー ----
   const StorageKeys = Object.freeze({
     SETTINGS: "settings",
+    SETTINGS_SYNC_STATUS: "settingsSyncStatusV2", // 同期の再送待ち・成功・失敗表示
     TOKEN_USAGE: "tokenUsage",
     FAB_POSITION: "fabPosition",   // FAB(右端タブ) の縦位置比率 {ratio}。旧 {top}/{left,top} は ratio へ換算
     MODELS_CACHE: "modelsCache",   // 動的取得したモデル一覧 {provider: {models, fetchedAt}}
@@ -211,13 +212,13 @@
     enumerable: false,
   });
   Object.defineProperty(Providers, "get", {
-    value: function (id) { return Providers[id] || null; },
+    value: function (id) { return Providers.ids.includes(id) ? Providers[id] : null; },
     enumerable: false,
   });
   // 画像翻訳(vision)対応プロバイダか。visionModel を持つ社のみ true (openai/anthropic/gemini/openrouter/groq)。
   // xai/deepseek(text のみ)/mymemory(NMT) は false。content のボタン出し分けと SW の no_vision 判定で共有する。
   Object.defineProperty(Providers, "supportsImage", {
-    value: function (id) { const p = Providers[id]; return Boolean(p && p.visionModel); },
+    value: function (id) { const p = Providers.get(id); return Boolean(p && p.visionModel); },
     enumerable: false,
   });
   Object.freeze(Providers);
@@ -362,6 +363,7 @@
       mymemory: null,
     }),
     reasoningEfforts: EMPTY_REASONING_EFFORTS, // provider → model ID → 明示 effort。欠損は翻訳向け自動最小値
+    syncSettings: false, // この端末でのブラウザー設定同期への明示 opt-in
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     autoTranslateBlacklist: Object.freeze([]), // 自動翻訳だけを抑止する URL/host glob の複数行リスト
     persistentTranslationCache: false, // 原文/訳文の storage.local 永続キャッシュ (既定 OFF。明示 opt-in のみ)
@@ -428,6 +430,7 @@
       apiKeys,
       models,
       reasoningEfforts: normalizeReasoningEfforts(r.reasoningEfforts),
+      syncSettings: r.syncSettings === true,
       autoTranslate: Boolean(r.autoTranslate),
       autoTranslateBlacklist: normalizeAutoTranslateBlacklist(r.autoTranslateBlacklist),
       persistentTranslationCache: r.persistentTranslationCache === true, // 原文を永続保存するため厳密な明示 true だけ有効
@@ -438,9 +441,34 @@
     };
   }
 
+  // 入れ子は変更された項目だけを適用する。推論量のnullは自動へ戻す削除指定。
+  function mergeSettingsPatch(base, patch) {
+    const p = patch && typeof patch === "object" ? patch : {};
+    const next = { ...base, ...p };
+    for (const key of ["models", "apiKeys"]) {
+      if (p[key] && typeof p[key] === "object") next[key] = { ...base[key], ...p[key] };
+    }
+    if (p.reasoningEfforts && typeof p.reasoningEfforts === "object") {
+      next.reasoningEfforts = { ...base.reasoningEfforts };
+      for (const provider of Providers.ids) {
+        if (Object.hasOwn(p.reasoningEfforts, provider)) {
+          next.reasoningEfforts[provider] = { ...base.reasoningEfforts?.[provider], ...p.reasoningEfforts[provider] };
+        }
+      }
+    }
+    if (p.autoTranslateBlacklistChanges && typeof p.autoTranslateBlacklistChanges === "object") {
+      const changes = p.autoTranslateBlacklistChanges;
+      const removed = new Set(normalizeAutoTranslateBlacklist(changes.remove));
+      next.autoTranslateBlacklist = [...normalizeAutoTranslateBlacklist(base.autoTranslateBlacklist).filter(rule => !removed.has(rule)),
+        ...normalizeAutoTranslateBlacklist(changes.add)];
+    }
+    return normalizeSettings(next);
+  }
+
   const SettingsSchema = Object.freeze({
     DEFAULTS: DEFAULT_SETTINGS,
     normalize: normalizeSettings,
+    mergePatch: mergeSettingsPatch,
   });
 
   // ---- トークン使用量ヘルパー ----

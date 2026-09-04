@@ -1,4 +1,10 @@
 {
+  "optSyncSettings": { "message": "Sync settings across PCs" },
+  "optSyncSettingsDesc": { "message": "Turn this on on each PC and enable extension sync for the same browser account. Shares languages, service, models, display preferences, and exclusion rules individually; newer update records win conflicts. Existing synced settings take priority when enabled. API keys, caches, and usage stay on this device. Chrome and Firefox cannot sync with each other. Turning this off keeps synced settings and deletion records." },
+  "settingsSyncPending": { "message": "Saved on this device. Waiting to sync." },
+  "settingsSyncError": { "message": "Settings are saved on this device. Sync failed and will retry automatically. Check browser sync settings and storage limits." },
+  "settingsSyncSaved": { "message": "Saved to browser sync storage. Changes may take time to appear on other PCs." },
+  "settingsSaveFailed": { "message": "Could not save settings. Check browser sync settings and storage limits, then try again." },
   "appName": {
     "message": "Replace AI Translator API",
     "description": "Extension name shown in chrome://extensions and the stores"

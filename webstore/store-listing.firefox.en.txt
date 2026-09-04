@@ -19,6 +19,7 @@ Translate the page you are viewing in place using the cloud LLM of your choice. 
 - Per-model reasoning control — remember reasoning effort or thinking-budget choices for each supported model; Auto uses the translation-optimized minimum
 - No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
+- Optional settings sync — share languages, models, display preferences, and exclusions across PCs through browser sync. Off by default; API keys and translation data stay out of sync.
 - Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
 - Quick translate — translate short text right inside the popup

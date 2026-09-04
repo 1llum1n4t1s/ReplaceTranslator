@@ -23,5 +23,6 @@ load("lang.js");
 load("model-pricing.js");
 load("providers.js");
 load("stream.js");
+load("settings-sync.js");
 
 module.exports = globalThis;

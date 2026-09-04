@@ -6,6 +6,18 @@ const g = require("./_load-actions.js");
 
 const { ProviderApi } = g;
 
+test("辞書のプロトタイプ名やヘルパー名をプロバイダ定義として返さない", () => {
+  for (const id of ["constructor", "__proto__", "toString", "get", "ids", "supportsImage"]) {
+    assert.equal(g.Providers.get(id), null);
+    assert.throws(() => ProviderApi.buildRequest(id, {}), /unknown provider/);
+  }
+});
+
+test("MyMemoryの言語変換でプロトタイプ値を展開しない", () => {
+  const request = ProviderApi.buildRequest("mymemory", { texts: ["text"], sourceLang: "constructor", targetLang: "__proto__" });
+  assert.equal(new URL(request.url).searchParams.get("langpair"), "constructor|__proto__");
+});
+
 // ---- buildSystemPrompt ----
 
 test("ProviderApi exposes a positive translation prompt version for cache invalidation", () => {

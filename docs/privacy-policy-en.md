@@ -1,6 +1,6 @@
 # Privacy Policy — Replace AI Translator API
 
-Last updated: 2026-08-30
+Last updated: 2026-09-05
 
 ## Information we collect
 Replace AI Translator API's developer does not collect, store, or receive any of your data through the translation features, and the extension uses no analytics and no tracking. The text you translate — and, if you enable image translation, the images — are sent only to the translation provider you choose (see "Page text" and "Image translation" below).
@@ -12,8 +12,14 @@ The only exception is the contact form you submit yourself. Only then are the em
 - A key is sent only to its own provider's API for authentication when you translate. It is never sent to the extension's developer or any other third party.
 
 ## Auto-translate exclusions
-- URL, host, and wildcard rules you add are stored only inside your browser (`chrome.storage.local`).
+- URL, host, and wildcard rules you add are stored inside your browser (`chrome.storage.local`). When you enable "Sync settings across PCs", they are also stored using browser sync as described below.
 - These rules are used only to decide on-device whether to auto-translate the current page. They are never sent to the developer or a translation provider.
+
+## Settings sync (optional)
+- Each setting carries its edit timestamp, logical counter, and a randomly generated device ID to resolve conflicts. Exclusion-rule and reasoning-preference deletion records are retained to prevent older devices from restoring removed entries. The device ID is generated within this extension; it does not use your PC name or hardware identifiers.
+- "Sync settings across PCs" is off by default. Only when you enable it on each PC, languages, translation service, models, reasoning effort, display preferences, auto-translate, and exclusion rules are stored in `chrome.storage.sync` and shared through the browser provider's sync service across PCs using the same account. They do not pass through the developer's servers.
+- API keys, source text, translations, caches, usage counts, and your persistent-cache preference are not synced.
+- Turning it off stops sync reads and writes on that device and keeps the current local and synced settings. Synced data is handled under your browser provider's privacy policy.
 
 ## Page text
 - When you click "Translate", the text on the page is sent only to the provider's API you selected, in order to receive the translation.
@@ -39,7 +45,8 @@ The only exception is the contact form you submit yourself. Only then are the em
 - Page text, images, API keys, and token usage are never sent.
 
 ## Why each permission is used
-- `storage`: store settings (including auto-translate exclusions), API keys, token usage, and the translation cache on-device
+- `storage`: store settings (including auto-translate exclusions), API keys, token usage, and the translation cache on-device, and sync settings when you enable this option
+- `alarms`: retry incomplete settings sync; cleared when sync is turned off
 - `scripting` / `activeTab` / `host_permissions`: inject the translator into the target page and talk to the provider API you selected
 - `contextMenus`: right-click menu actions — translate page / translate selection / translate image / restore original / add or remove an auto-translate exclusion
 

@@ -18,7 +18,8 @@ test("popupに自動翻訳除外タブと複数行入力を備える", () => {
   assert.match(html, /data-pane="blacklist"/);
   assert.match(html, /<textarea[^>]+id="auto-translate-blacklist"[^>]+rows="11"/);
   assert.match(popup, /AutoTranslateBlacklist\.normalize\(state\.settings\.autoTranslateBlacklist\)/);
-  assert.match(popup, /save\(\{ autoTranslateBlacklist: input\.value \}/);
+  assert.match(popup, /save\(\{ autoTranslateBlacklistChanges \}/);
+  assert.match(popup, /remove: blacklistBaseline\.filter/);
   assert.match(css, /body\s*\{[\s\S]*?width:\s*360px/);
   assert.match(css, /\.tab\s*\{[\s\S]*?flex:\s*1/);
 });

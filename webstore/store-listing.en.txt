@@ -21,6 +21,7 @@ Translate the web page you are viewing in place using the cloud LLM of your choi
 - Per-model reasoning control — remember reasoning effort or thinking-budget choices for each supported model; Auto uses the translation-optimized minimum
 - No-key option — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
 - Pinpoint mixed-language translation — text already in the target language is left untouched; only the other languages are translated
+- Optional settings sync — share languages, models, display preferences, and exclusions across PCs through browser sync. Off by default; API keys and translation data stay out of sync.
 - Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
 - Quick translate — translate short text right inside the popup
@@ -87,7 +88,10 @@ Translate the text (and, optionally, the text inside images) of the web page the
 
   storage:
   Stores the user's settings (including auto-translate exclusions), API key, monthly token usage, and the auto-tuned batch size
-  locally in the browser (chrome.storage.local). Nothing is sent to the developer.
+  locally in the browser (chrome.storage.local). When enabled, settings and exclusion rules also use chrome.storage.sync. API keys and translation data are not synced. Nothing is sent to the developer.
+
+  alarms:
+  Retries incomplete settings sync. The retry alarm is cleared when sync is turned off.
 
   scripting:
   Injects the translation engine (translator.js) into the target page (all frames) on demand to

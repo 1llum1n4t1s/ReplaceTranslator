@@ -79,6 +79,14 @@
       <div class="opts">
         <div class="switch-field">
           <div class="switch-text">
+            <label class="switch-label" for="sync-settings" data-i18n="optSyncSettings">複数PCで設定を同期</label>
+            <div id="sync-settings-help" class="switch-desc" data-i18n="optSyncSettingsDesc">各PCでONにすると、同じブラウザーアカウントの設定を共有します。APIキーは同期しません。</div>
+            <div id="sync-settings-status" class="switch-desc" role="status" aria-live="polite"></div>
+          </div>
+          <input id="sync-settings" type="checkbox" aria-describedby="sync-settings-help">
+        </div>
+        <div class="switch-field">
+          <div class="switch-text">
             <label class="switch-label" for="auto-translate" data-i18n="optAutoTranslate">全ページ自動翻訳</label>
             <div class="switch-desc" data-i18n="optAutoTranslateDesc">開いたページを自動で翻訳します。API の利用量が増えるので、必要なときだけ ON にしてください。</div>
           </div>

@@ -66,7 +66,9 @@ Japanese, English, Chinese (Simplified / Traditional), Korean, Spanish, French, 
 
 ## 🔒 Privacy
 - API keys are stored **only inside your browser**
-- Auto-translate exclusion rules are stored only inside your browser and are never transmitted
+- Enable **Sync settings across PCs** on each PC and enable extension sync for the same browser account to share languages, service, models, display preferences, and exclusion rules. Chrome and Firefox cannot sync with each other. Existing synced settings take priority when enabled. Turning this off stops sync on that PC while keeping the local and synced settings
+- API keys, translation caches, usage, and the persistent-cache preference stay on each device. Update records determine the winner for each setting, and exclusion-rule deletions are retained. Clock differences can prevent this order from matching the real order of edits
+- Settings remain saved locally if sync fails. Retries run after about a minute and on restart. Sync status reports failures, including storage limits consumed by deletion records. Changes may take time to arrive. Update every PC to the same new version
 - Page text is sent **only to the provider API you selected** when translating (never to the extension developer's servers)
 - Source text and translations are cached on-device for the browser session. They are stored for up to 30 days only when you enable "Persistent translation cache", and are deleted when you turn it off
 - See the [Privacy Policy](docs/privacy-policy-en.md) for details

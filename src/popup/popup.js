@@ -11,7 +11,7 @@
 
 (function () {
   const $ = (id) => document.getElementById(id);
-  const state = { settings: null };
+  const state = { settings: SettingsSchema.normalize({}) };
   const msg = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
 
   function applyI18n() {
@@ -179,7 +179,7 @@
 
       item.append(name, cost);
       item.addEventListener("click", () => {
-        const models2 = Object.assign({}, state.settings.models, { [providerId]: m.id });
+        const models2 = { [providerId]: m.id };
         save({ models: models2 }, () => {
           if (state.settings.provider === providerId) renderModelList(models, m.id);
         });
@@ -257,16 +257,8 @@
     const keys = (state.settings && state.settings.apiKeys) || {};
     Providers.ids.forEach((id) => {
       const inp = $(`key-${id}`);
-      if (inp) inp.value = keys[id] || "";
+      if (inp && !settingsDrafts.has(`key-${id}`)) inp.value = keys[id] || "";
     });
-  }
-  function collectKeys() {
-    const apiKeys = {};
-    Providers.ids.forEach((id) => {
-      const inp = $(`key-${id}`);
-      if (inp) apiKeys[id] = inp.value.trim();
-    });
-    return { apiKeys };
   }
   // API キー欄はフォーカスが外れたら(blur)自動保存する。保存できたらその欄に緑チェックを一瞬出す。
   function flashSaved(id) {
@@ -282,11 +274,13 @@
       const elId = `key-${provider}`;
       const inp = $(elId);
       if (!inp) return;
+      inp.addEventListener("input", () => settingsDrafts.add(elId));
       inp.addEventListener("blur", () => {
         const val = inp.value.trim();
         const cur = (state.settings.apiKeys && state.settings.apiKeys[provider]) || "";
         if (val === cur) return; // 変化なしは保存もチェック表示もしない
-        save(collectKeys(), () => {
+        save({ apiKeys: { [provider]: val } }, () => {
+          if (inp.value.trim() === val) settingsDrafts.delete(elId);
           flashSaved(elId);
           renderProviderList();
           updateKeyWarning();
@@ -298,18 +292,24 @@
 
   // ---- 共通 ----
   function reflect() {
+    $("sync-settings").checked = state.settings.syncSettings === true;
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("persistent-cache").checked = state.settings.persistentTranslationCache === true;
     const fabOn = state.settings.showFab === true; // 既定 OFF (normalize 済みでも向きを合わせて明示 ON のみ点灯)
     $("show-fab").checked = fabOn;
     // 不透明度スライダー: 乗数(0.2〜1.0)→パーセント表示。FAB 非表示のときは操作不可にして淡くする
     const opPct = Math.round((typeof state.settings.fabOpacity === "number" ? state.settings.fabOpacity : 1) * 100);
-    $("fab-opacity").value = String(opPct);
-    $("fab-opacity-val").textContent = opPct + "%";
+    if (!settingsDrafts.has("fab-opacity")) {
+      $("fab-opacity").value = String(opPct);
+      $("fab-opacity-val").textContent = opPct + "%";
+    }
     $("fab-opacity").disabled = !fabOn;
     $("show-img-btn").checked = state.settings.showImageButton === true;
     $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
-    $("auto-translate-blacklist").value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
+    if (!settingsDrafts.has("auto-translate-blacklist")) {
+      $("auto-translate-blacklist").value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
+      blacklistBaseline = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist);
+    }
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
@@ -320,31 +320,95 @@
   }
 
   let pendingSave = Promise.resolve(); // 直近の save() の storage 確定を待つための promise
+  let saveRevision = 0;
+  let hasSavedSettings = false;
+  const settingsDrafts = new Set(); // 再描画で未保存の入力を上書きしない
   let blacklistSaveTimer = null;
+  let blacklistBaseline = [];
   function save(patch, after) {
-    state.settings = Object.assign({}, state.settings, patch); // 楽観更新 (UI 即応)
+    saveRevision++;
+    const previous = state.settings;
+    state.settings = SettingsSchema.mergePatch(state.settings, patch); // 楽観更新 (UI 即応)
     // 全体ではなく patch (変更分) だけ送り、background が保管値にマージする (他経路の変更を巻き戻さない)
     pendingSave = new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: Actions.APPLY_SETTINGS, patch }, (res) => {
-        if (res && res.settings) state.settings = res.settings;
-        if (after) after();
-        resolve();
+        const failed = chrome.runtime.lastError || !res || !res.ok;
+        if (res && res.settings) {
+          state.settings = res.settings;
+          hasSavedSettings = true;
+        }
+        else if (failed) {
+          for (const key of Object.keys(patch)) state.settings[key] = previous[key];
+        }
+        if (failed) {
+          restoreSavedControls(patch);
+          setStatus(msg("settingsSaveFailed", "Could not save settings. Check browser sync and storage limits, then try again."));
+        }
+        else if (after) after();
+        resolve(!failed);
       });
     });
     return pendingSave;
   }
 
-  function saveBlacklist() {
+  async function reflectAfterSaves(initialSettings) {
+    // 待っている間に追加された保存も確定してから、現在値で再描画する。
+    let saving;
+    do {
+      saving = pendingSave;
+      await saving;
+    } while (saving !== pendingSave);
+    // 保存応答があればそちらを優先。未操作・保存通信失敗時だけ初期読込値を使う。
+    if (initialSettings && !hasSavedSettings) state.settings = initialSettings;
+    reflect();
+  }
+
+  // 失敗した操作子だけを保存値へ戻す。キーと除外リストの入力は再試行用に残す。
+  function restoreSavedControls(patch) {
+    const s = state.settings;
+    for (const [key, id] of Object.entries({ syncSettings: "sync-settings", autoTranslate: "auto-translate",
+      persistentTranslationCache: "persistent-cache", showFab: "show-fab", showImageButton: "show-img-btn" })) {
+      if (Object.hasOwn(patch, key)) $(id).checked = s[key] === true;
+    }
+    for (const [key, id] of Object.entries({ sourceLang: "source", targetLang: "target", selectionMode: "sel-mode" })) {
+      if (Object.hasOwn(patch, key)) $(id).value = s[key];
+    }
+    if (Object.hasOwn(patch, "fabOpacity")) {
+      const percent = Math.round(s.fabOpacity * 100);
+      $("fab-opacity").value = String(percent);
+      $("fab-opacity-val").textContent = percent + "%";
+    }
+    if (Object.hasOwn(patch, "showFab")) $("fab-opacity").disabled = !s.showFab;
+    if (["provider", "models", "reasoningEfforts"].some(key => Object.hasOwn(patch, key))) {
+      renderProviderList();
+      updateKeyWarning();
+      loadModels(false);
+    }
+    if (Object.hasOwn(patch, "targetLang")) updateQtDir();
+  }
+
+  async function saveBlacklist() {
     if (blacklistSaveTimer) { window.clearTimeout(blacklistSaveTimer); blacklistSaveTimer = null; }
     const input = $("auto-translate-blacklist");
+    const submittedText = input.value;
+    const submitted = AutoTranslateBlacklist.normalize(input.value);
+    const before = new Set(blacklistBaseline), after = new Set(submitted);
+    const autoTranslateBlacklistChanges = {
+      add: submitted.filter(rule => !before.has(rule)), remove: blacklistBaseline.filter(rule => !after.has(rule)),
+    };
     $("blacklist-save-state").textContent = msg("blacklistSaving", "保存中…");
-    save({ autoTranslateBlacklist: input.value }, () => {
+    const saved = await save({ autoTranslateBlacklistChanges }, () => {
       // blur後だけ正規化済みの表示へ揃える。入力中はカーソル位置を動かさない。
-      if (document.activeElement !== input) {
+      if (document.activeElement !== input && input.value === submittedText) {
+        settingsDrafts.delete("auto-translate-blacklist");
         input.value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
+        blacklistBaseline = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist);
+      } else {
+        blacklistBaseline = submitted;
       }
       $("blacklist-save-state").textContent = msg("blacklistSaved", "保存しました");
     });
+    if (!saved) $("blacklist-save-state").textContent = msg("settingsSaveFailed", "Could not save settings. Check browser sync and storage limits, then try again.");
   }
 
   async function getActiveTab() {
@@ -529,15 +593,24 @@
     setLinks();
     fillLangSelect($("source"), true);
     fillLangSelect($("target"), false);
+    const showSyncStatus = (value) => {
+      const messages = { pending: "settingsSyncPending", error: "settingsSyncError", synced: "settingsSyncSaved" };
+      const key = Object.hasOwn(messages, value) ? messages[value] : null;
+      $("sync-settings-status").textContent = key ? msg(key, "") : "";
+    };
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[StorageKeys.SETTINGS_SYNC_STATUS]) showSyncStatus(changes[StorageKeys.SETTINGS_SYNC_STATUS].newValue);
+    });
+    chrome.storage.local.get(StorageKeys.SETTINGS_SYNC_STATUS).then(data => showSyncStatus(data[StorageKeys.SETTINGS_SYNC_STATUS])).catch(() => {});
 
     // 自タブの直近翻訳エラーも受け取りたいので tabId を添えて状態を取得する。
     // (自動翻訳/FAB でエラーが出た後にこの popup を開くと、揮発した error イベントは逃すが last-error で再表示できる。)
     getActiveTab().then((tab) => {
-      chrome.runtime.sendMessage({ action: Actions.GET_STATE, tabId: tab && tab.id }, (res) => {
+      chrome.runtime.sendMessage({ action: Actions.GET_STATE, tabId: tab && tab.id }, async (res) => {
         if (res && res.ok) {
-          state.settings = res.settings;
-          reflect();
-          if (res.lastError) setStatus(errorText(res.lastError)); // 直近の失敗理由 (キー無効/quota 等) を出す
+          // 操作後の初期応答は古い可能性がある。保存応答を正本にし、初期値を採用しない。
+          await reflectAfterSaves(res.settings);
+          if (saveRevision === 0 && res.lastError) setStatus(errorText(res.lastError)); // 保存エラー表示も巻き戻さない
         }
       });
     });
@@ -575,7 +648,10 @@
     // ワンショットの「翻訳」ボタン/FAB/右クリックとは独立 — このトグルだけが autoTranslate を変える。
     $("auto-translate").addEventListener("change", async (e) => {
       const on = e.target.checked;
-      await save({ autoTranslate: on }); // 保存の確定を待ってから翻訳/復元 (background が storage を再読みするため)
+      if (!await save({ autoTranslate: on })) {
+        e.target.checked = Boolean(state.settings.autoTranslate);
+        return;
+      } // 保存の確定を待ってから翻訳/復元
       const tab = await getActiveTab();
       if (!tab) return;
       setStatus(on ? msg("statusStarting", "Starting…") : "");
@@ -583,6 +659,13 @@
     });
 
     // 翻訳タブに移動した各オプションは変更で即保存する (キー保存ボタンとは独立)
+    $("sync-settings").addEventListener("change", async (e) => {
+      const checkbox = e.target;
+      checkbox.disabled = true;
+      await save({ syncSettings: checkbox.checked });
+      await reflectAfterSaves(); // 同期待ち中の後続保存も含め、未保存入力を保持して反映する
+      checkbox.disabled = false;
+    });
     $("persistent-cache").addEventListener("change", async (e) => {
       const checkbox = e.target;
       checkbox.disabled = true; // local cache の load/remove が完了するまで連打で状態を反転させない
@@ -592,11 +675,20 @@
     });
     $("show-fab").addEventListener("change", (e) => { save({ showFab: e.target.checked }); $("fab-opacity").disabled = !e.target.checked; });
     // 不透明度スライダー: input でラベルを即時更新 (保存はせず軽量に), change (ドラッグ確定) で保存する
-    $("fab-opacity").addEventListener("input", (e) => { $("fab-opacity-val").textContent = e.target.value + "%"; });
-    $("fab-opacity").addEventListener("change", (e) => save({ fabOpacity: Number(e.target.value) / 100 }));
+    $("fab-opacity").addEventListener("input", (e) => {
+      settingsDrafts.add("fab-opacity");
+      $("fab-opacity-val").textContent = e.target.value + "%";
+    });
+    $("fab-opacity").addEventListener("change", (e) => {
+      const value = e.target.value;
+      save({ fabOpacity: Number(value) / 100 }, () => {
+        if (e.target.value === value) settingsDrafts.delete("fab-opacity");
+      });
+    });
     $("sel-mode").addEventListener("change", (e) => save({ selectionMode: e.target.value }));
     $("show-img-btn").addEventListener("change", (e) => save({ showImageButton: e.target.checked }));
     $("auto-translate-blacklist").addEventListener("input", () => {
+      settingsDrafts.add("auto-translate-blacklist");
       $("blacklist-save-state").textContent = msg("blacklistSaving", "保存中…");
       if (blacklistSaveTimer) window.clearTimeout(blacklistSaveTimer);
       blacklistSaveTimer = window.setTimeout(saveBlacklist, 450);
@@ -616,11 +708,7 @@
       const providerId = row.dataset.provider;
       const modelId = row.dataset.model;
       if (!providerId || !modelId || state.settings.provider !== providerId || state.settings.models[providerId] !== modelId) return;
-      const all = Object.assign({}, state.settings.reasoningEfforts);
-      const byModel = Object.assign({}, all[providerId]);
-      if (e.target.value) byModel[modelId] = e.target.value;
-      else delete byModel[modelId];
-      all[providerId] = byModel;
+      const all = { [providerId]: { [modelId]: e.target.value || null } };
       save({ reasoningEfforts: all }, () => renderReasoningEffort(providerId, modelId, row.dataset.modelName || modelId));
     });
 

@@ -1,4 +1,10 @@
 {
+  "optSyncSettings": { "message": "複数PCで設定を同期" },
+  "optSyncSettingsDesc": { "message": "各PCでONにし、同じブラウザーアカウントで拡張機能の同期を有効にしてください。言語・サービス・モデル・表示設定・除外リストを項目ごとに共有し、同じ項目は更新情報が新しい方を採用します。ON時は既存の同期設定を優先します。APIキー・キャッシュ・使用量は同期しません。ChromeとFirefox間は非対応です。OFFにしても同期先の設定と削除記録は残ります。" },
+  "settingsSyncPending": { "message": "この端末に保存しました。同期を待っています。" },
+  "settingsSyncError": { "message": "設定はこの端末に保存されています。同期できなかったため自動で再試行します。ブラウザーの同期設定や容量制限を確認してください。" },
+  "settingsSyncSaved": { "message": "ブラウザーの同期領域へ保存済みです。他のPCへの反映には時間がかかる場合があります。" },
+  "settingsSaveFailed": { "message": "設定を保存できませんでした。ブラウザーの同期設定や保存容量を確認して、もう一度お試しください。" },
   "appName": {
     "message": "Replace AI Translator API",
     "description": "拡張機能名 (chrome://extensions およびストア表示)"
