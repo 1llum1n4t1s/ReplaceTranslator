@@ -297,7 +297,7 @@
   // ロケールベースのコード (zh-CN / zh-TW) に正規化してから langpair に渡す。
   const MYMEMORY_LANG_MAP = { "zh-Hans": "zh-CN", "zh-Hant": "zh-TW" };
   function mymemoryLang(code) {
-    return MYMEMORY_LANG_MAP[code] || code;
+    return Object.hasOwn(MYMEMORY_LANG_MAP, code) ? MYMEMORY_LANG_MAP[code] : code;
   }
 
   function buildRequest(providerId, opts) {

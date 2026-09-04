@@ -34,7 +34,7 @@
     { code: "uk", en: "Ukrainian", native: "Українська" },
   ];
 
-  const byCode = {};
+  const byCode = Object.create(null);
   for (const l of LANGUAGES) byCode[l.code] = l;
 
   function get(code) {

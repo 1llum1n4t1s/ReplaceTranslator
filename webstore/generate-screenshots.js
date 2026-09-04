@@ -166,7 +166,7 @@ async function shoot(browser, slide, locale) {
 async function main() {
   console.log('🎨 ストア掲載スクリーンショットを生成中...\n');
   const browser = await puppeteer.launch({
-    headless: 'new',
+    headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--force-color-profile=srgb'],
     protocolTimeout: 300000,
   });

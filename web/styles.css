@@ -288,43 +288,12 @@ h1 em::after {
   line-height: 1.7;
 }
 
-/* ポップアップを持たない拡張の代わりに置く比較表。UI の再現ではなく素の表として見せる。 */
-.compare-card {
-  position: relative;
-  padding: 22px;
-  border: 1px solid var(--ink);
-  background: var(--paper-bright);
-  box-shadow: 14px 14px 0 rgba(24, 33, 38, .13);
-}
-
-.compare-card::before {
-  content: "COMPARISON";
-  position: absolute;
-  top: -25px;
-  right: -1px;
-  padding: 3px 10px;
-  color: white;
-  background: var(--ink);
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: .1em;
-}
-
-.compare-card > p {
-  margin: 0 0 18px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table caption { margin-bottom: 12px; color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-align: left; }
 .data-table th, .data-table td { padding: 11px 10px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
 .data-table thead th { color: var(--muted); border-bottom: 1px solid var(--rule-dark); font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
 .data-table tbody th { color: var(--ink); font-size: 12px; font-weight: 700; }
 .data-table td { font-family: var(--mono); font-size: 12px; }
-.data-table .cell-before { color: var(--muted); }
-.data-table .cell-after { color: var(--accent-dark); font-weight: 700; }
 .table-scroll { overflow-x: auto; }
 
 .metric-ribbon {
@@ -401,7 +370,6 @@ h2 { margin-bottom: 0; font-size: clamp(42px, 4.6vw, 72px); }
 .legal { max-width: 880px; padding: 110px 0 140px; }
 .legal h1 { margin-bottom: 42px; font-size: clamp(48px, 7.4vw, 92px); }
 .legal-lead { max-width: 760px; margin-bottom: 60px; color: #39474d; font-size: clamp(17px, 2vw, 22px); line-height: 1.8; }
-.legal-lead-sub { max-width: 760px; margin-bottom: 40px; color: var(--muted); }
 .legal section { padding: 34px 0; border-top: 1px solid var(--rule-dark); }
 .legal section:last-of-type { border-bottom: 1px solid var(--rule-dark); }
 .legal h2 { margin-bottom: 18px; font-size: clamp(24px, 2.8vw, 34px); letter-spacing: -.035em; line-height: 1.25; }
@@ -413,8 +381,6 @@ h2 { margin-bottom: 0; font-size: clamp(42px, 4.6vw, 72px); }
 .legal p, .legal li, .legal a, .legal code { overflow-wrap: anywhere; }
 .legal a { color: var(--accent-dark); text-underline-offset: 4px; }
 .legal code { padding: 2px 6px; background: #dde6e9; font-family: var(--mono); font-size: .9em; }
-.legal-quote { padding-left: 16px; border-left: 3px solid var(--accent); color: var(--muted); font-size: 14px; }
-.legal-date { font-family: var(--mono); font-size: 12px; }
 .table-scroll { margin-bottom: 18px; overflow-x: auto; }
 .legal table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .legal th, .legal td { padding: 10px 12px; border: 1px solid var(--rule-dark); text-align: left; vertical-align: top; }
@@ -428,7 +394,7 @@ h2 { margin-bottom: 0; font-size: clamp(42px, 4.6vw, 72px); }
   .site-nav { display: none; }
   .hero { grid-template-columns: 1fr; padding-top: 70px; }
   .hero-copy { max-width: 760px; }
-  .shot, .compare-card { width: min(100%, 620px); justify-self: center; }
+  .shot { width: min(100%, 620px); justify-self: center; }
   .problem, .feature { grid-template-columns: 1fr; gap: 48px; }
   .process { grid-template-columns: 1fr; }
   .process-step { min-height: auto; }
@@ -450,7 +416,7 @@ h2 { margin-bottom: 0; font-size: clamp(42px, 4.6vw, 72px); }
   .eyebrow { gap: 14px; font-size: 8px; }
   .hero-facts { grid-template-columns: 1fr; }
   .hero-facts div + div { padding-left: 0; border-top: 1px solid var(--rule-dark); border-left: 0; }
-  .shot, .compare-card { padding: 15px; }
+  .shot { padding: 15px; }
   .metric-ribbon { display: grid; grid-template-columns: repeat(2, 1fr); }
   .metric-ribbon span { min-width: 0; padding-inline: 10px; border-bottom: 1px solid #4b585e; }
   .metric-ribbon span:last-child { grid-column: 1 / -1; border-bottom: 0; }

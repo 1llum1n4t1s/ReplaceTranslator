@@ -8,6 +8,14 @@ const { Lang } = g;
 
 // ---- normalizeCode (ページ言語検出コードの正規化) ----
 
+test("辞書のプロトタイプ名を言語コードとして受理しない", () => {
+  for (const code of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    assert.equal(Lang.normalizeCode(code), null);
+    assert.equal(Lang.get(code), null);
+    assert.equal(Lang.promptName(code), null);
+  }
+});
+
 test("normalizeCode strips region subtags", () => {
   assert.equal(Lang.normalizeCode("ja"), "ja");
   assert.equal(Lang.normalizeCode("ja-JP"), "ja");
