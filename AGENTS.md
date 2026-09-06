@@ -40,6 +40,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 | モデル一覧の取得、バッチ自動学習 | 動的モデル取得 & バッチ自動学習 |
 | 画像翻訳（ホバー / 右クリック、vision プロバイダ） | 画像翻訳 |
 | popup の 3 タブ、FAB | UI 構成 |
+| 設定保存・複数PC同期 | [DESIGN.md](DESIGN.md)「状態と保存」と UI 構成。変更時は `test/settings-sync.test.js` と `test/popup-settings-save.test.js` の契約も確認する |
 | 選択テキスト翻訳、浮遊バブル | 選択テキスト翻訳 |
 
 ## 重要パターン（このとおりに実装する）

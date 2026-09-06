@@ -166,12 +166,14 @@
   // 訳し直したり、復元時に stale な訳語へ戻すのを防ぐ。特に自動翻訳 ON で選択翻訳バブルが拾われると、
   // 「翻訳中…」自体が翻訳バッチに乗り、その応答が選択翻訳の TRANSLATE_BATCH と競合して
   // parse/incomplete エラーに化けることがある (= ユーザーから見た「解析エラー」の主因)。
-  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no], .notranslate, #__rt_fab, #__rt_sel_bubble, .__rt-sel-inline, .__rt-img-btn, .__rt-img-layer";
+  // ProseMirror は閲覧専用でも translate=no を残す（Elgato Marketplace の概要・更新情報など）。
+  // 明示的に編集不可の表示領域だけを例外にし、外側/内側の翻訳禁止指定と編集欄は引き続き除外する。
+  const SKIP_CLOSEST = "pre, code, kbd, samp, svg, math, [translate=no]:not(.ProseMirror[contenteditable=false]), .notranslate, #__rt_fab, #__rt_sel_bubble, .__rt-sel-inline, .__rt-img-btn, .__rt-img-layer";
 
   // 可視性に影響する属性。これらが変わったら display:none→表示になったドロップダウン/モーダル/タブ/
   // アコーディオン等の中身を取り込み直す (IO は display 切替を取りこぼすことがあるため属性駆動で補う)。
   // data-state は Radix/shadcn 等が open/closed の表示制御に使う。
-  const ATTR_FILTER = ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded", "data-state"];
+  const ATTR_FILTER = ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded", "data-state", "contenteditable", "translate"];
   // MutationObserver の監視設定 (本体 / shadow root で共通)。childList+characterData で動的追加・文言差し替えを、
   // attributes(ATTR_FILTER) で表示トグルを拾う。我々は属性を書き換えないので自己再発火は起きない。
   const MO_OPTS = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTR_FILTER, attributeOldValue: true };
