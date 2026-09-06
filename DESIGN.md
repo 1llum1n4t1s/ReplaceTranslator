@@ -80,7 +80,7 @@ popupはモデル・推論量を変更項目だけのpatchで送り、除外リ�
 - 保存設定は `SettingsSchema.normalize` を通し、未知値・欠損値を既定値へ正規化する。
 - 翻訳バッチは入力と同数・同順の文字列配列として扱い、形式不正や件数不一致をDOMへ適用しない。
 - 翻訳元が確定している場合はその言語だけを翻訳し、未確定の場合は翻訳先言語以外だけを翻訳する。
-- `code`、`pre`、SVG、MathML、`translate=no`、`.notranslate` などの対象外領域をプロバイダへ送らない。
+- `code`、`pre`、SVG、MathML、編集可能領域、`translate=no`、`.notranslate` などの対象外領域をプロバイダへ送らない。ただし `.ProseMirror[contenteditable=false]` 自身の `translate=no` は、閲覧専用本文にも残るため例外として翻訳対象にする。祖先・子孫の別の除外指定は維持し、`contenteditable` と `translate` の属性変更も監視して対象を再評価する。
 - 原文を保持してから `nodeValue` を置換し、復元可能性を維持する。ページ由来の値で `innerHTML` を組み立てない。
 - 画像送信と選択翻訳は利用者の明示操作を起点とし、自動で送信しない。
 - fetchにはタイムアウトと中断を適用し、恒久エラーと一時エラーを区別して進捗へ反映する。
