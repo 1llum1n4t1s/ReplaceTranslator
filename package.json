@@ -13,7 +13,7 @@
   "devDependencies": {
     "chrome-webstore-upload-cli": "^4.0.1",
     "eslint": "^10.9.1",
-    "globals": "^17.11.0",
+    "globals": "^17.12.0",
     "kagayoi-support-extension": "1.0.5",
     "web-ext": "^10.6.0"
   },
