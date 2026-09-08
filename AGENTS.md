@@ -10,7 +10,7 @@ This file provides guidance to Codex when working in this repository.
 - `pnpm run lint` — ESLint（Flat Config v9+）
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
-- ストア掲載画像は `webstore/*.html`（テンプレ）+ `webstore/generate-screenshots.js`（puppeteer）→ `webstore/images/{ja,en}/`。依存は `webstore/package.json`（gitignore）に隔離し `pnpm -C webstore install` で ad-hoc 導入
+- 製品ページの配信は `vps-web/deploy/deploy-lp.ps1` を使う。公開ホスト・更新ファイルの既存経路を維持する。
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（§popup フォント参照）
 - `pnpm sync:support` — exact 固定した `kagayoi-support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`pnpm exec kagayoi-support-sync --check` で一致を検証する
 

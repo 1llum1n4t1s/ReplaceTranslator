@@ -10,7 +10,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 - ポップアップ、常駐 content script、オンデマンド注入する翻訳エンジン、background Service Worker の3レイヤと共通ライブラリで動作する。
 - APIキーと認証付き通信は Service Worker が所有する。content script はページ文脈で動くが、APIキーを受け取らない。
 - `src/shared/` の問い合わせ・評価UIは `kagayoi-support-extension` から同期して拡張へ同梱する。問い合わせ内容は利用者の明示送信時だけ Kagayoi Support API へ送る。
-- `web/` はランディングページとプライバシーページを配信する独立した Cloudflare Worker であり、翻訳処理や拡張機能の配布には関与しない。
+- `../vps-web/lp/replacetranslator/` はVPSから配信するランディングページとプライバシーページであり、翻訳処理や拡張機能の配布には関与しない。
 - Chrome Web Store / Firefox AMO が拡張機能を配布する。GitHub Actions は `release/<version>` ブランチを契機に検証、パッケージ生成、各ストアへの提出を行う。
 
 ## 主要コンポーネント
@@ -86,7 +86,7 @@ popupはモデル・推論量を変更項目だけのpatchで送り、除外リ�
 - fetchにはタイムアウトと中断を適用し、恒久エラーと一時エラーを区別して進捗へ反映する。
 - content scriptと共通ライブラリは再注入可能な冪等ガードを持ち、拡張機能context失効時は静かに停止する。
 - ソースの `manifest.json` はChrome用 `service_worker` 形式に保ち、Firefox用manifestはService Workerの `importScripts` を単一ソースとしてビルド時に生成する。
-- 拡張機能パッケージへリモートJavaScriptやランディングページの `web/` を含めない。
+- 拡張機能パッケージへリモートJavaScriptやランディングページの `../vps-web/lp/replacetranslator/` を含めない。
 
 ## 採用済みの設計判断
 
@@ -130,3 +130,9 @@ FAB、選択翻訳、画像翻訳は接頭辞付きID・クラス、`all: initia
 - `pnpm install --frozen-lockfile` はCIと配布時の依存再現性を保証する。
 - ページ翻訳エンジン、ブラウザAPI、各社APIを組み合わせた統合動作は自動テストの外側にあり、拡張機能を再読み込みした実ブラウザと利用者のAPIキーで確認する。
 - ChromeとFirefoxの配布物は同じ共有ディレクトリから作り、Firefox版は生成manifestを `web-ext lint` で検証する。
+
+## 製品ページの配信先
+
+製品ページの配信HTMLは `../vps-web/lp/replacetranslator/`（編集元は `../vps-web/tools/lp/templates/`）、公開実体はVPSの `/srv/www/lp/replacetranslator/`。
+直接配信の設定は `../vps-web/deploy/caddy-sites/lp-replacetranslator.caddy` に置く。
+公開URLを維持し、静的ファイルの配信は `vps-web/deploy/deploy-lp.ps1` へ統一する。
