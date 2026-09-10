@@ -9,7 +9,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 - 拡張機能本体は `manifest.json`、`src/`、`icons/`、`_locales/` から構成し、実行時依存やバンドル工程を持たない。
 - ポップアップ、常駐 content script、オンデマンド注入する翻訳エンジン、background Service Worker の3レイヤと共通ライブラリで動作する。
 - APIキーと認証付き通信は Service Worker が所有する。content script はページ文脈で動くが、APIキーを受け取らない。
-- `src/shared/` の問い合わせ・評価UIは `kagayoi-support-extension` から同期して拡張へ同梱する。問い合わせ内容は利用者の明示送信時だけ Kagayoi Support API へ送る。
+- `src/shared/` の問い合わせ・評価UIは `@kagayoi/support-extension` から同期して拡張へ同梱する。問い合わせ内容は利用者の明示送信時だけ Kagayoi Support API へ送る。
 - `../vps-web/lp/replacetranslator/` はVPSから配信するランディングページとプライバシーページであり、翻訳処理や拡張機能の配布には関与しない。
 - Chrome Web Store / Firefox AMO が拡張機能を配布する。GitHub Actions は `release/<version>` ブランチを契機に検証、パッケージ生成、各ストアへの提出を行う。
 
@@ -100,7 +100,7 @@ popupはモデル・推論量を変更項目だけのpatchで送り、除外リ�
 
 ### 共通サポート部品のローカル同梱
 
-問い合わせ・評価UIの正本は exact 固定した `kagayoi-support-extension` とし、JavaScript 2本とCSS 3本を `src/shared/` へ逐語同期して配布物へ含める。各拡張での分岐を防ぎつつ、MV3で禁止されるリモートJavaScriptと実行時依存を避ける代わりに、パッケージ更新時は同期と一致検証を必要とする。
+問い合わせ・評価UIの正本は exact 固定した `@kagayoi/support-extension` とし、JavaScript 2本とCSS 3本を `src/shared/` へ逐語同期して配布物へ含める。各拡張での分岐を防ぎつつ、MV3で禁止されるリモートJavaScriptと実行時依存を避ける代わりに、パッケージ更新時は同期と一致検証を必要とする。
 
 ### ビューポート優先・動的バッチ・限定並列
 
