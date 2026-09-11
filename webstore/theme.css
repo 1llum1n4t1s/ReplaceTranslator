@@ -1,9 +1,9 @@
 /* ストア掲載スクリーンショット共通テーマ（生成り × 墨 × 朱）
-   フォントは拡張本体同梱の IBM Plex Sans JP woff2 を file:// で参照する。
+   フォントは拡張本体同梱の Replace Translator Sans JP woff2 を file:// で参照する。
    puppeteer は deviceScaleFactor=1・clip 1280x800 でキャプチャ（CWS 仕様）。 */
-@font-face { font-family: 'Plex JP'; src: url('../src/popup/fonts/IBMPlexSansJP-400.woff2') format('woff2'); font-weight: 400; font-display: block; }
-@font-face { font-family: 'Plex JP'; src: url('../src/popup/fonts/IBMPlexSansJP-600.woff2') format('woff2'); font-weight: 600; font-display: block; }
-@font-face { font-family: 'Plex JP'; src: url('../src/popup/fonts/IBMPlexSansJP-700.woff2') format('woff2'); font-weight: 700; font-display: block; }
+@font-face { font-family: 'Replace Translator Sans JP'; src: url('../src/popup/fonts/ReplaceTranslatorSansJP-400.woff2') format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Replace Translator Sans JP'; src: url('../src/popup/fonts/ReplaceTranslatorSansJP-600.woff2') format('woff2'); font-weight: 600; font-display: block; }
+@font-face { font-family: 'Replace Translator Sans JP'; src: url('../src/popup/fonts/ReplaceTranslatorSansJP-700.woff2') format('woff2'); font-weight: 700; font-display: block; }
 
 :root {
   --paper:   #f6f3ec;
@@ -23,7 +23,7 @@
 /* サイズは puppeteer の viewport に追従（スクショ=1280x800 / プロモ=440x280・1400x560） */
 html, body { width:100%; height:100%; }
 body {
-  font-family:'Plex JP','Segoe UI','Yu Gothic UI','Meiryo',sans-serif;
+  font-family:'Replace Translator Sans JP','Segoe UI','Yu Gothic UI','Meiryo',sans-serif;
   color:var(--ink);
   background:
     radial-gradient(1100px 520px at 13% -10%, #fffdf8 0%, rgba(255,253,248,0) 60%),
@@ -111,7 +111,7 @@ body {
 .radio { width:20px; height:20px; border-radius:50%; border:2px solid #cfc7b6; flex:none; }
 .provcard.sel .radio { border-color:var(--vermilion); background:radial-gradient(circle at center, var(--vermilion) 0 6px, #fff 7px); }
 .prov-name { font-size:17px; font-weight:700; }
-.prov-key { margin-left:auto; font-family:'Plex JP',monospace; font-size:14px; color:var(--ink-soft); letter-spacing:.12em; }
+.prov-key { margin-left:auto; font-family:'Replace Translator Sans JP',monospace; font-size:14px; color:var(--ink-soft); letter-spacing:.12em; }
 .tag { font-size:13px; font-weight:700; padding:4px 11px; border-radius:999px; }
 .tag.pay{ background:#f0ece2; color:var(--ink-soft);} .tag.free{ background:#eef6f1; color:#2f7d52;} .tag.nokey{ background:#eaf2f7; color:#2c6a8a;}
 .check { color:var(--ok); font-size:18px; font-weight:700; }

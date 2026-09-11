@@ -4,24 +4,24 @@
    ・境界は低コントラストのヘアライン(--hair)、面は上端 1px のハイライト(--sheen)で厚みを出す
    ・影は 接地(1px) + 中距離 + 遠距離拡散 の 3 層。色は墨寄りの暖色で紙に馴染ませる
    ・角丸/余白は 4px グリッドのスケール(--r-sm/md/lg)に統一
-   タイポは IBM Plex Sans JP + `palt`(日本語の詰め)。 */
+   タイポは IBM Plex Sans JP 派生の Replace Translator Sans JP + `palt`(日本語の詰め)。 */
 
-/* ---- IBM Plex Sans JP (拡張に同梱・MV3 CSP/プライバシーのため外部CDNは使わない) ---- */
+/* ---- Replace Translator Sans JP (IBM Plex Sans JP 派生・拡張に同梱) ---- */
 /* 必要範囲(Latin/かな/漢字 U+4E00-9FFF/記号)にサブセットした woff2 を 'self' から読み込む。 */
 @font-face {
-  font-family: "IBM Plex Sans JP";
+  font-family: "Replace Translator Sans JP";
   font-style: normal; font-weight: 400; font-display: swap;
-  src: url("fonts/IBMPlexSansJP-400.woff2") format("woff2");
+  src: url("fonts/ReplaceTranslatorSansJP-400.woff2") format("woff2");
 }
 @font-face {
-  font-family: "IBM Plex Sans JP";
+  font-family: "Replace Translator Sans JP";
   font-style: normal; font-weight: 600; font-display: swap;
-  src: url("fonts/IBMPlexSansJP-600.woff2") format("woff2");
+  src: url("fonts/ReplaceTranslatorSansJP-600.woff2") format("woff2");
 }
 @font-face {
-  font-family: "IBM Plex Sans JP";
+  font-family: "Replace Translator Sans JP";
   font-style: normal; font-weight: 700; font-display: swap;
-  src: url("fonts/IBMPlexSansJP-700.woff2") format("woff2");
+  src: url("fonts/ReplaceTranslatorSansJP-700.woff2") format("woff2");
 }
 
 :root {
@@ -62,8 +62,8 @@
   --r-lg: 16px;
   --ease: cubic-bezier(.32, .72, 0, 1); /* 立ち上がりが速く終わりが静かなイージングに統一 */
 
-  --display: "IBM Plex Sans JP", "Yu Gothic", "Hiragino Kaku Gothic ProN", "Segoe UI", system-ui, sans-serif;
-  --sans: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --display: "Replace Translator Sans JP", "Yu Gothic", "Hiragino Kaku Gothic ProN", "Segoe UI", system-ui, sans-serif;
+  --sans: "Replace Translator Sans JP", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {

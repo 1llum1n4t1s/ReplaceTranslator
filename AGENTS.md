@@ -11,7 +11,7 @@ This file provides guidance to Codex when working in this repository.
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
 - 製品ページの配信は `vps-web/deploy/deploy-lp.ps1` を使う。公開ホスト・更新ファイルの既存経路を維持する。
-- フォント同梱の作り直し: `uvx --from "fonttools[woff]" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（§popup フォント参照）
+- フォント同梱の作り直し: `uvx --from "fonttools[woff]==4.65.0" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（入力版・hash・subset 契約は `src/popup/fonts/README.md`、§popup フォント参照）
 - `pnpm sync:support` — exact 固定した `@kagayoi/support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`pnpm exec kagayoi-support-sync --check` で一致を検証する
 
 ## 規約上の前提（設計の根拠）
@@ -53,8 +53,8 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - **設定は必ず normalize を通す**: `SettingsSchema.normalize` で未知キー除去・欠損補完・partial payload 防御。既定 provider は `mymemory`（キー不要で即翻訳）
 - **DOM 構築は innerHTML を使わない**: 動的代入は `createElement` + `textContent` + `replaceChildren()`（AMO 静的解析 `UNSAFE_VAR_ASSIGNMENT` 回避 + XSS 防止）
 
-## popup フォント（IBM Plex Sans JP を同梱）
-- MV3 拡張は CSP/プライバシー/審査の都合で**外部 CDN フォント不可** → フル TTF を `pyftsubset` で必要範囲(Latin/かな/漢字 U+4E00-9FFF/記号)だけサブセット化した woff2 を `src/popup/fonts/` に同梱し `@font-face` で `'self'` から読む（400/600/700）。`popup.css` の `--display`/`--sans` 先頭に指定。明朝は使わない
+## popup フォント（IBM Plex Sans JP 派生フォントを同梱）
+- MV3 拡張は CSP/プライバシー/審査の都合で**外部 CDN フォント不可** → IBM Plex Sans JP のフル TTF を `pyftsubset` で必要範囲(Latin/かな/漢字 U+4E00-9FFF/記号)だけサブセット化し、OFL の Reserved Font Name 条件に従って内部名を `Replace Translator Sans JP` にした woff2 を `src/popup/fonts/` に同梱して `@font-face` で `'self'` から読む（400/600/700）。`popup.css` の `--display`/`--sans` 先頭に指定。明朝は使わない
 
 ## Firefox 対応（ソース manifest は Chrome 純正・Firefox はビルド時に変換）
 - **`manifest.json` の `background` は Chrome 純正 = `service_worker` のみ**。`background.scripts` を入れると Chrome が「`'background.scripts' requires manifest version of 2 or lower.`」警告を開発・ストア両方で出し続けるため除去した。Chrome は `src/service_worker.js` 冒頭の `importScripts(...)` で lib をロード
