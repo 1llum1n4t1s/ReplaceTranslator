@@ -409,6 +409,37 @@
       $("blacklist-save-state").textContent = msg("blacklistSaved", "保存しました");
     });
     if (!saved) $("blacklist-save-state").textContent = msg("settingsSaveFailed", "Could not save settings. Check browser sync and storage limits, then try again.");
+    return saved;
+  }
+
+  async function addCurrentSiteToBlacklist() {
+    const button = $("blacklist-add-current");
+    button.disabled = true;
+    try {
+      // textarea の blur/debounce 保存が先に始まっていたら、その確定後の入力へ追記する。
+      if (blacklistSaveTimer) { window.clearTimeout(blacklistSaveTimer); blacklistSaveTimer = null; }
+      await pendingSave;
+      const tab = await getActiveTab();
+      const site = AutoTranslateBlacklist.sitePattern(tab && tab.url);
+      if (!site) {
+        $("blacklist-save-state").textContent = msg("blacklistCurrentSiteUnavailable", "This page cannot be added");
+        return false;
+      }
+
+      const input = $("auto-translate-blacklist");
+      const current = AutoTranslateBlacklist.normalize(input.value);
+      if (current.includes(site)) {
+        $("blacklist-save-state").textContent = msg("blacklistCurrentSiteAdded", "Current site added");
+        return true;
+      }
+      input.value = AutoTranslateBlacklist.normalize([...current, site]).join("\n");
+      settingsDrafts.add("auto-translate-blacklist");
+      const saved = await saveBlacklist();
+      if (saved) $("blacklist-save-state").textContent = msg("blacklistCurrentSiteAdded", "Current site added");
+      return saved;
+    } finally {
+      button.disabled = false;
+    }
   }
 
   async function getActiveTab() {
@@ -694,6 +725,7 @@
       blacklistSaveTimer = window.setTimeout(saveBlacklist, 450);
     });
     $("auto-translate-blacklist").addEventListener("blur", saveBlacklist);
+    $("blacklist-add-current").addEventListener("click", addCurrentSiteToBlacklist);
     // ショートカット変更: ブラウザのコマンド設定ページを開く (Chrome=extensions/shortcuts / Firefox=about:addons)
     $("sel-shortcut").addEventListener("click", () => {
       const ff = typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent || "");

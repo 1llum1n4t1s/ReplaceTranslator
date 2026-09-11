@@ -17,6 +17,7 @@ test("popupに自動翻訳除外タブと複数行入力を備える", () => {
   assert.match(html, /data-tab="blacklist"/);
   assert.match(html, /data-pane="blacklist"/);
   assert.match(html, /<textarea[^>]+id="auto-translate-blacklist"[^>]+rows="11"/);
+  assert.match(html, /<button[^>]+id="blacklist-add-current"[^>]+data-i18n="blacklistAddCurrentSite"/);
   assert.match(popup, /AutoTranslateBlacklist\.normalize\(state\.settings\.autoTranslateBlacklist\)/);
   assert.match(popup, /save\(\{ autoTranslateBlacklistChanges \}/);
   assert.match(popup, /remove: blacklistBaseline\.filter/);
@@ -42,6 +43,7 @@ test("英語と日本語に除外タブと右クリック切替文言が揃う",
     for (const key of [
       "tabBlacklist", "blacklistTitle", "blacklistDesc", "blacklistPlaceholder",
       "blacklistHelp", "blacklistSaving", "blacklistSaved",
+      "blacklistAddCurrentSite", "blacklistCurrentSiteAdded", "blacklistCurrentSiteUnavailable",
       "ctxAutoTranslateBlock", "ctxAutoTranslateAllow",
     ]) {
       assert.equal(typeof messages[key]?.message, "string", `${locale}: ${key}`);

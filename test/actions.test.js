@@ -224,6 +224,7 @@ test("AutoTranslateBlacklist toggles the current site and removes every matching
     ["*.example.com", "https://news.example.com/", "x.com"],
   );
   assert.deepEqual(removed, { patterns: ["x.com"], excluded: false });
+  assert.equal(AutoTranslateBlacklist.sitePattern("https://chatgpt.com/c/6aa436e4-b728-83ee-b1c1-c7d62b8379cb"), "chatgpt.com");
   assert.equal(AutoTranslateBlacklist.sitePattern("file:///C:/local.html"), null);
 });
 

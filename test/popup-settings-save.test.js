@@ -26,11 +26,11 @@ const startupHarness = () => {
   const api = vm.runInNewContext(`(() => {
     ${keys}
     ${common}
-    return { save, reflect, saveBlacklist, bindKeyAutosave, bind() { ${listeners} }, start() { ${startup} } };
+    return { save, reflect, saveBlacklist, addCurrentSiteToBlacklist, bindKeyAutosave, bind() { ${listeners} }, start() { ${startup} } };
   })()`, { state, SettingsSchema, AutoTranslateBlacklist, Providers: { ids: ["openai", "xai"] },
     Actions: { APPLY_SETTINGS: "APPLY_SETTINGS", GET_STATE: "GET_STATE" }, $: element,
     chrome: { runtime: { lastError: null, sendMessage: (message, callback) => requests.push({ message, callback }) } },
-    getActiveTab: async () => ({ id: 1 }), document: { activeElement: null },
+    getActiveTab: async () => ({ id: 1, url: "https://chatgpt.com/c/6aa436e4-b728-83ee-b1c1-c7d62b8379cb" }), document: { activeElement: null },
     window: { setTimeout: () => 1, clearTimeout: () => {} },
     msg: key => key, setStatus: () => {}, errorText: () => "error", renderProviderList: () => {},
     updateKeyWarning: () => {}, updateQtDir: () => {}, loadModels: () => {},
@@ -138,6 +138,22 @@ test("除外リストの保存応答は保存中に追記した入力を上書�
   h.api.reflect();
   assert.equal(list.value, "first.example\nsecond.example");
 });
+
+test("現在のサイト追加はURLのパスを捨ててhostnameだけを保存する", async () => {
+  const h = startupHarness();
+  h.api.bind();
+  const adding = h.api.addCurrentSiteToBlacklist();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.requests.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.requests[0].message.patch)), {
+    autoTranslateBlacklistChanges: { add: ["chatgpt.com"], remove: [] },
+  });
+  h.requests[0].callback({ ok: true, settings: SettingsSchema.normalize({ autoTranslateBlacklist: ["chatgpt.com"] }) });
+  assert.equal(await adding, true);
+  assert.equal(h.element("auto-translate-blacklist").value, "chatgpt.com");
+  assert.equal(h.element("blacklist-add-current").disabled, false);
+});
+
 test("除外リストの保存失敗を編集中のタブに表示し、再保存で回復する", async () => {
   const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
   const start = popup.indexOf("  let pendingSave =");
