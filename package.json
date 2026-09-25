@@ -11,11 +11,11 @@
     "lint": "eslint src/ test/"
   },
   "devDependencies": {
-    "chrome-webstore-upload-cli": "^4.0.1",
-    "eslint": "^10.10.0",
-    "globals": "^17.12.0",
     "@kagayoi/support-extension": "1.0.6",
-    "web-ext": "^10.6.0"
+    "chrome-webstore-upload-cli": "^4.0.1",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "web-ext": "^10.7.0"
   },
   "keywords": [
     "chrome-extension",
