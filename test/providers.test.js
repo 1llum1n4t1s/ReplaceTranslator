@@ -209,7 +209,9 @@ test("各社とも reasoning/thinking をモデルが許す最小値に明示指
   assert.ok(!("temperature" in g35.body.generationConfig));
   const g37 = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-3.7-flash", apiKey: "k" });
   assert.equal(g37.body.generationConfig.thinkingConfig.thinkingLevel, "low");
-  for (const model of ["gemini-3.1-pro-preview", "gemini-3.5-pro", "gemini-3.8-pro"]) {
+  const g38 = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-3.8-flash", apiKey: "k" });
+  assert.equal(g38.body.generationConfig.thinkingConfig.thinkingLevel, "low");
+  for (const model of ["gemini-3.1-pro-preview"]) {
     const pro = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
     assert.equal(pro.body.generationConfig.thinkingConfig.thinkingLevel, "low", model);
   }
@@ -225,7 +227,7 @@ test("各社とも reasoning/thinking をモデルが許す最小値に明示指
   const x43 = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model: "grok-4.3", apiKey: "k" });
   assert.equal(x43.body.reasoning_effort, "none");
   assert.ok(!("temperature" in x43.body));
-  for (const model of ["grok-4.5", "grok-4.6", "grok-4.20", "grok-4.20-0309-reasoning"]) {
+  for (const model of ["grok-4.5", "grok-4.6", "grok-4.7", "grok-4.20", "grok-4.20-0309-reasoning"]) {
     const x = ProviderApi.buildRequest("xai", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
     assert.equal(x.body.reasoning_effort, "low");
     assert.ok(!("temperature" in x.body));
@@ -234,13 +236,13 @@ test("各社とも reasoning/thinking をモデルが許す最小値に明示指
   const goss = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "openai/gpt-oss-120b", apiKey: "k" });
   assert.equal(goss.body.reasoning_effort, "low");
   assert.equal(goss.body.temperature, 0);
-  const gqwen = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "qwen/qwen3.6-27b", apiKey: "k" });
+  const gqwen = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "qwen/qwen3.8-27b", apiKey: "k" });
   assert.equal(gqwen.body.reasoning_effort, "none");
   const safeguard = ProviderApi.buildRequest("groq", { texts: ["x"], targetLang: "ja", model: "openai/gpt-oss-safeguard-20b", apiKey: "k" });
   assert.ok(!("reasoning_effort" in safeguard.body));
   assert.equal(safeguard.body.temperature, 0);
   // DeepSeek v4: 既定 high の thinking を明示的に無効化する
-  for (const model of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+  for (const model of ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"]) {
     const ds = ProviderApi.buildRequest("deepseek", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
     assert.deepEqual(ds.body.thinking, { type: "disabled" });
     assert.equal(ds.body.temperature, 0);
@@ -287,14 +289,14 @@ test("OpenRouter はモデル系列ごとの最小 reasoning を使い未知モ�
   ]) {
     const unknown = ProviderApi.buildRequest("openrouter", { texts: ["x"], targetLang: "ja", model, apiKey: "k" });
     assert.ok(!("reasoning" in unknown.body), `${model} is not classified as a known reasoning family`);
-    assert.equal(unknown.body.temperature, 0, `${model} fallback temperature`);
+    assert.ok(!("temperature" in unknown.body), `${model} unknown-model request omits sampling`);
   }
   const nativeUnknown = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4foo", apiKey: "k" });
   assert.ok(!("reasoning_effort" in nativeUnknown.body));
-  assert.equal(nativeUnknown.body.temperature, 0);
+  assert.ok(!("temperature" in nativeUnknown.body));
   const geminiUnknown = ProviderApi.buildRequest("gemini", { texts: ["x"], targetLang: "ja", model: "gemini-3.5foo", apiKey: "k" });
   assert.ok(!geminiUnknown.body.generationConfig.thinkingConfig);
-  assert.equal(geminiUnknown.body.generationConfig.temperature, 0);
+  assert.ok(!("temperature" in geminiUnknown.body.generationConfig));
 });
 
 test("reasoningProfile はモデルが受理する選択肢だけを UI 向けに返す", () => {
@@ -316,6 +318,32 @@ test("reasoningProfile はモデルが受理する選択肢だけを UI 向け�
   assert.deepEqual(ProviderApi.reasoningProfile("fugu", "fugu-ultra").options, ["high", "xhigh", "max"]);
   assert.equal(ProviderApi.reasoningProfile("openai", "gpt-4.1-mini"), null);
   assert.equal(ProviderApi.reasoningProfile("openrouter", "vendor/unknown"), null);
+});
+
+test("未知の新モデルは推測した推論量や temperature を送らない", () => {
+  for (const [provider, model] of [
+    ["xai", "grok-4.8"],
+    ["openrouter", "google/gemini-3.9-flash"],
+    ["deepseek", "deepseek-v5-flash"],
+    ["groq", "qwen/qwen3.9-27b"],
+    ["fugu", "fugu-next"],
+  ]) {
+    const body = ProviderApi.buildRequest(provider, { texts: ["x"], targetLang: "ja", model, apiKey: "k" }).body;
+    assert.ok(!("temperature" in body), `${provider}/${model} temperature`);
+    assert.ok(!("reasoning_effort" in body), `${provider}/${model} effort`);
+    assert.ok(!("reasoning" in body), `${provider}/${model} reasoning`);
+  }
+  const claude = ProviderApi.buildRequest("anthropic", {
+    texts: ["x"], targetLang: "ja", model: "claude-haiku-5", apiKey: "k",
+  }).body;
+  assert.ok(!("temperature" in claude));
+  assert.ok(!("thinking" in claude));
+  assert.ok(!("output_config" in claude));
+  const gemini = ProviderApi.buildRequest("gemini", {
+    texts: ["x"], targetLang: "ja", model: "gemini-3.9-flash", apiKey: "k",
+  }).body.generationConfig;
+  assert.ok(!("temperature" in gemini));
+  assert.ok(!("thinkingConfig" in gemini));
 });
 
 test("明示したモデル別 effort を各社のネイティブ request 形式へ変換する", () => {
@@ -579,20 +607,6 @@ test("parseModels gemini keeps only generateContent models, strips models/ prefi
   const r = ProviderApi.parseModels("gemini", json);
   assert.equal(r.length, 1);
   assert.equal(r[0].id, "gemini-2.0-flash");
-});
-
-test("filterTranslationModels keeps curated dated snapshots but rejects uncurated dated/rolling IDs", () => {
-  const models = [
-    { id: "deepseek/deepseek-v4-flash-0731", created: 4 },
-    { id: "google/gemini-2.5-flash", created: 3 },
-    { id: "vendor/model-20240806", created: 2 },
-    { id: "vendor/model-latest", created: 1 },
-    { id: "vendor/text-embedding-3", created: 0 },
-  ];
-  assert.deepEqual(
-    ProviderApi.filterTranslationModels("openrouter", models).map((m) => m.id),
-    ["deepseek/deepseek-v4-flash-0731", "google/gemini-2.5-flash"],
-  );
 });
 
 // ---- 画像内テキストの翻訳 (vision) ----

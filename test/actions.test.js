@@ -232,7 +232,7 @@ test("Groq uses separate current text and vision models", () => {
   const groq = Providers.get("groq");
   assert.equal(groq.defaultModel, "openai/gpt-oss-120b");
   assert.equal(SettingsSchema.DEFAULTS.models.groq, groq.defaultModel);
-  assert.equal(groq.visionModel, "qwen/qwen3.6-27b");
+  assert.equal(groq.visionModel, "qwen/qwen3.8-27b");
   assert.notEqual(groq.defaultModel, groq.visionModel);
 });
 

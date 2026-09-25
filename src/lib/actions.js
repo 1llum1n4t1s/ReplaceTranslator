@@ -112,7 +112,7 @@
       endpoint: "https://api.openai.com/v1/chat/completions",
       defaultModel: "gpt-5.4-mini",
       visionModel: "gpt-5.4-mini",  // 画像翻訳は速い軽量 vision を既定で使う (テキスト選択モデルに依らない)
-      models: Object.freeze(["gpt-5.4-mini", "gpt-5.5", "gpt-4.1-mini"]),
+      models: Object.freeze(["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-5.4-mini", "gpt-5.5", "gpt-4.1-mini"]),
       keyUrl: "https://platform.openai.com/api-keys",
     }),
     anthropic: Object.freeze({
@@ -145,7 +145,7 @@
       endpoint: "https://api.x.ai/v1/chat/completions",
       // grok-4-1-fast(-non)-reasoning は 2026-05-15 に廃止 (API は grok-4.3 へリダイレクト) → 既定/一覧を現行へ。
       defaultModel: "grok-4.3",
-      models: Object.freeze(["grok-4.3"]),
+      models: Object.freeze(["grok-4.3", "grok-4.7"]),
       keyUrl: "https://console.x.ai/",
     }),
     openrouter: Object.freeze({
@@ -156,18 +156,18 @@
       defaultModel: "google/gemini-2.5-flash",
       visionModel: "google/gemini-2.5-flash",  // 画像翻訳は bbox 精度の高い Gemini flash を OpenRouter 経由で使う
       // deepseek/deepseek-chat は退役済み。OpenRouter 側は無日付の公開版を配信しないため、
-      // Anthropic と同じ扱いで日付入りスナップショットを載せる (latest エイリアスは filterTranslationModels が弾く)。
+      // 日付入りスナップショットを載せる (latest エイリアスは filterTranslationModels が弾く)。
       models: Object.freeze(["google/gemini-2.5-flash", "openai/gpt-4.1-mini", "anthropic/claude-haiku-4.5", "deepseek/deepseek-v4-flash-0731"]),
       keyUrl: "https://openrouter.ai/keys",
     }),
     deepseek: Object.freeze({
       id: "deepseek",
       label: "DeepSeek",
-      // DeepSeek は OpenAI 互換 (chat/completions・Bearer)。安価。テキストのみ (vision 無し)。
-      // 旧エイリアス deepseek-chat / deepseek-reasoner は 2026-07-24 に退役し、公式 API は v4 系のみ。
+      // DeepSeek は OpenAI 互換 (chat/completions・Bearer)。画像翻訳用モデルは未設定。
+      // deepseek-v4-flash は V4.1 Flash への互換エイリアス。正規 ID は deepseek-flash。
       endpoint: "https://api.deepseek.com/v1/chat/completions",
-      defaultModel: "deepseek-v4-flash",
-      models: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
+      defaultModel: "deepseek-flash",
+      models: Object.freeze(["deepseek-flash", "deepseek-v4-pro"]),
       keyUrl: "https://platform.deepseek.com/api_keys",
     }),
     groq: Object.freeze({
@@ -178,8 +178,8 @@
       // developer/free tier では llama-3.3 が 2026-08-16、Llama 4 Scout が 2026-07-17 に停止済み。
       // テキストは公式移行先、画像は現行の vision 対応 Qwen を使う (enterprise の旧モデル選択は保存値として維持)。
       defaultModel: "openai/gpt-oss-120b",
-      visionModel: "qwen/qwen3.6-27b",
-      models: Object.freeze(["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]),
+      visionModel: "qwen/qwen3.8-27b",
+      models: Object.freeze(["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]),
       keyUrl: "https://console.groq.com/keys",
     }),
     fugu: Object.freeze({
@@ -357,7 +357,7 @@
       gemini: "gemini-2.5-flash",
       xai: "grok-4.3",
       openrouter: "google/gemini-2.5-flash",
-      deepseek: "deepseek-v4-flash",
+      deepseek: "deepseek-flash",
       groq: "openai/gpt-oss-120b",
       fugu: "fugu",
       mymemory: null,

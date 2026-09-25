@@ -14,7 +14,10 @@
 
   // [match(部分一致キー), input $/1M, output $/1M]
   const TABLE = [
-    // OpenAI (新しい順: GPT-5.x → 4.x。価格は概算・相対比較用)
+    // OpenAI (新しい順: GPT-6 → 5.x → 4.x。標準処理の入出力価格)
+    ["gpt-6-luna", 0.10, 0.50],
+    ["gpt-6-sol", 2.00, 10.00],
+    ["gpt-6-astra", 10.00, 50.00],
     ["gpt-5.5", 1.25, 10.00],
     ["gpt-5.4-nano", 0.05, 0.40],
     ["gpt-5.4-mini", 0.25, 2.00],
@@ -51,25 +54,25 @@
     ["gemini-1.5-pro", 1.25, 5.00],
     // xAI Grok (grok-4-1-fast / grok-4-fast は 2026-05-15 廃止 → grok-4.3 へリダイレクトされ 1.25/2.50 課金。
     // 旧 0.20/0.50 は実コストを約6倍過小表示するため行ごと削除した。RETIRED_MODELS 入りで一覧にも出ない)
+    ["grok-4.7", 2.00, 6.00],
     ["grok-4.3", 1.25, 2.50],
     ["grok-4.20", 1.25, 2.50],
     ["grok-4", 3.00, 15.00],
     ["grok-3-mini", 0.30, 0.50],
     ["grok-3", 3.00, 15.00],
     // DeepSeek (OpenRouter の deepseek/* もこの部分一致に当たる)
-    ["deepseek-v4-flash", 0.14, 0.28],
-    ["deepseek-v4-pro", 0.435, 0.87],
+    ["deepseek-flash", 0.30, 1.20],
+    ["deepseek-v4-flash", 0.30, 1.20],
+    ["deepseek-v4-pro", 1.32, 3.96],
     ["deepseek-reasoner", 0.55, 2.19],
     ["deepseek-chat", 0.27, 1.10],
     // Groq 提供モデル (openai/gpt-oss・moonshotai/kimi も部分一致)
     ["llama-3.3-70b", 0.59, 0.79],
     ["gpt-oss-120b", 0.15, 0.75],
     ["gpt-oss-20b", 0.075, 0.30],
+    ["qwen3.8-27b", 0.80, 4.00],
     ["kimi-k2", 1.00, 3.00],
-    // Sakana Fugu (fugu / fugu-ultra) は意図的に未掲載。fugu は変動ルーティング価格 (振り分け先モデルの
-    // 標準レート) で固定値が出せず、fugu-ultra ($5/$30) のみ判明する。だが pickPriced は「価格付きが1件でも
-    // あれば価格なしを全部捨てる」ため、fugu-ultra だけ載せると既定の fugu が一覧から消える。両モデルを
-    // 価格なし ("—") で並べて選べるよう、あえてどちらも載せない (誤った固定価格のサイレント表示も避ける)。
+    // Sakana Fugu は変動ルーティング価格なので、固定価格の推測値は載せない。
   ];
 
   // ---- 動的価格 (models.dev) ----

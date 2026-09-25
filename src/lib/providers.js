@@ -83,6 +83,12 @@
     if (!m) return null;
 
     if (providerId === "openai") {
+      if (/^gpt-6-(?:sol|luna)(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("none", ["none", "low", "medium", "high", "xhigh", "max"]);
+      }
+      if (/^gpt-6-astra(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("low", ["low", "medium", "high", "xhigh", "max"]);
+      }
       if (/^(?:gpt-5|o[1-9])-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("high", ["high"]);
       if (/^gpt-5\.6(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("none", ["none", "low", "medium", "high", "xhigh", "max"]);
@@ -98,12 +104,13 @@
 
     if (providerId === "xai") {
       if (/^grok-4\.3(?:$|[-:])/.test(m)) return makeReasoningProfile("none", ["none", "low", "medium", "high"]);
+      if (/^grok-4\.7(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high", "xhigh"]);
       if (/^grok-4\.6(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high", "xhigh"]);
       if (/^grok-4\.5(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
       if (/^grok-4\.20(?:$|[-:])/.test(m) && !/non-reasoning|multi-agent/.test(m)) {
         return makeReasoningProfile("low", ["low", "medium", "high", "xhigh"]);
       }
-      if (/reasoning/.test(m) && !/non-reasoning/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^grok-4-1-fast-reasoning(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
       return null;
     }
 
@@ -116,10 +123,11 @@
       if (/^google\/gemini-2\.5-pro(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
       }
-      if (/^google\/gemini-(?:3\.7|[3-9](?:\.\d+)*-pro)(?:$|[-:])/.test(m)) {
+      if (/^google\/gemini-3\.(?:7|8)-flash(?:$|[-:])/.test(m) ||
+          /^google\/gemini-(?:3-pro|3\.(?:1|5|8)-pro)(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("low", ["low", "medium", "high"]);
       }
-      if (/^google\/gemini-[3-9](?:\.\d+)*(?:$|[-:])/.test(m)) {
+      if (/^google\/gemini-(?:3-flash|3\.1-flash-lite|3\.(?:5|6)-flash(?:-lite)?)(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
       }
       if (/^anthropic\/claude-(?:fable-5|mythos-(?:5|preview))(?:$|[-:.])/.test(m)) {
@@ -128,7 +136,7 @@
           : ["low", "medium", "high", "max"];
         return makeReasoningProfile("low", options);
       }
-      if (/^anthropic\/claude-(?:3[.-]7(?:$|[-:])|(?:opus|sonnet|haiku)-[4-9](?:\.\d+)*(?:$|[-:]))/.test(m)) {
+      if (/^anthropic\/claude-(?:3[.-]7|haiku-4[.-]5|sonnet-4[.-]6|opus-4[.-][5-8])(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("none", ["none", "low", "medium", "high"]);
       }
       if (/^deepseek\/deepseek-v4(?:$|[-:.])/.test(m)) return makeReasoningProfile("none", ["none", "low", "high", "max"]);
@@ -147,21 +155,23 @@
     }
 
     if (providerId === "gemini") {
-      if (/^gemini-2\.5(?:$|[-:])/.test(m)) {
+      if (/^gemini-2\.5-(?:flash-lite|flash|pro)(?:$|[-:])/.test(m)) {
         return makeReasoningProfile(/-(?:flash-lite|flash)(?:$|[-:])/.test(m) ? "none" : "minimal",
           ["budget:1024", "budget:4096", "budget:8192"], "budget");
       }
       if (/^gemini-3\.1-flash-lite-image(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("minimal", ["minimal", "high"]);
       }
-      if (/^gemini-3\.7(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
-      if (/^gemini-3(?:$|-pro(?:$|[-:]))/.test(m)) return makeReasoningProfile("low", ["low", "high"]);
-      if (/^gemini-[3-9](?:\.\d+)*-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
-      if (/^gemini-[3-9](?:\.\d+)*(?:$|[-:])/.test(m)) return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
+      if (/^gemini-3\.(?:7|8)-flash(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^gemini-3-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "high"]);
+      if (/^gemini-3\.1-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("low", ["low", "medium", "high"]);
+      if (/^gemini-(?:3-flash|3\.1-flash-lite|3\.(?:5|6)-flash(?:-lite)?)(?:$|[-:])/.test(m)) {
+        return makeReasoningProfile("minimal", ["minimal", "low", "medium", "high"]);
+      }
       return null;
     }
 
-    if (providerId === "deepseek" && /^deepseek-v4(?:$|[-:.])/.test(m)) {
+    if (providerId === "deepseek" && /^(?:deepseek-flash(?:$|[-:])|deepseek-v4(?:$|[-:.]))/.test(m)) {
       return makeReasoningProfile("none", ["none", "low", "high", "max"]);
     }
     if (providerId === "groq") {
@@ -170,7 +180,7 @@
       if (/^qwen\/qwen3\.8-/.test(m)) return makeReasoningProfile("none", ["none", "default", "low", "medium", "high"]);
       return null;
     }
-    if (providerId === "fugu" && /^fugu(?:-|$)/.test(m)) {
+    if (providerId === "fugu" && /^fugu(?:-ultra)?$/.test(m)) {
       return makeReasoningProfile("high", /ultra/.test(m) ? ["high", "xhigh", "max"] : ["high", "xhigh"]);
     }
     return null;
@@ -200,7 +210,7 @@
     const profile = reasoningProfile(providerId, m);
     if (providerId === "openai" && profile) {
       body.reasoning_effort = chosenReasoningEffort(profile, requested);
-      // gpt-5 系は verbosity:"low" で出力を簡潔化 (翻訳は前置き不要・出力トークン削減で生成短縮)。o 系には付けない。
+      // GPT-5 系は verbosity:"low" で翻訳結果を簡潔化する。o 系には付けない。
       if (/^gpt-5/i.test(m)) body.verbosity = "low";
       return body;
     }
@@ -234,7 +244,12 @@
       body.reasoning = { effort: chosenReasoningEffort(profile, requested) };
       return body;
     }
-    body.temperature = 0;
+    // 未知の新モデルには温度や推論量を推測して送らず、プロバイダの既定に任せる。
+    // 旧来の非推論モデルだけ、従来の決定的な翻訳設定を維持する。
+    if ((providerId === "openai" || providerId === "openrouter") &&
+        /^(?:openai\/)?gpt-(?:4o|4\.1)(?:$|[-:])/.test(m)) body.temperature = 0;
+    if (providerId === "xai" && /^(?:grok-4|grok-4-1-fast-non-reasoning)(?:$|[-:])/.test(m)) body.temperature = 0;
+    if (providerId === "groq" && /^openai\/gpt-oss-safeguard-20b(?:$|[-:])/.test(m)) body.temperature = 0;
     return body;
   }
 
@@ -248,15 +263,16 @@
 
   function tuneAnthropic(model, body, requested) {
     const m = String(model || "");
-    const think = anthropicThinking(m);
-    if (think) body.thinking = think;
     const profile = reasoningProfile("anthropic", m);
     if (profile) {
+      const think = anthropicThinking(m);
+      if (think) body.thinking = think;
       const effort = chosenReasoningEffort(profile, requested);
       body.output_config = { effort };
       // Opus 5 は xhigh/max と thinking:disabled の併用を拒否する。高 effort を明示したときはモデル既定の思考を使う。
       if (/^claude-opus-[5-9](?:$|[-:])/i.test(m) && (effort === "xhigh" || effort === "max")) delete body.thinking;
-    } else {
+    } else if (/^claude-haiku-4-5(?:$|[-:])/i.test(m)) {
+      body.thinking = { type: "disabled" };
       body.temperature = 0;
     }
     return body;
@@ -285,7 +301,7 @@
       config.maxOutputTokens += thinking.thinkingBudget;
     }
     // Gemini 3.x は temperature/top-p 等を推奨せず、一部モデルは受け付けない。
-    if (/^gemini-[3-9](?:\.\d+)*(?:$|[-:])/i.test(String(model || ""))) delete config.temperature;
+    if (!thinking || !Object.hasOwn(thinking, "thinkingBudget")) delete config.temperature;
     return config;
   }
 
@@ -529,9 +545,8 @@
     return [];
   }
 
-  // 翻訳に使えるモデルだけを残す。通常は挙動が予告なく変わる rolling alias と、無日付の公開版がある
-  // dated snapshot を除く。ただし provider.models に明示した curated ID は、日付入りしか公開されないモデルも
-  // 意図して採用したものなので残す (例: OpenRouter の deepseek/deepseek-v4-flash-0731)。
+  // 翻訳に使えるモデルだけを残す。日付付き ID は新モデルの唯一の公開名の場合があるため残す。
+  // rolling alias は中身が予告なく変わるため除く。
   function filterTranslationModels(providerId, models) {
     const include = {
       openai: /^(gpt-|o[1-9]|chatgpt-)/i,
@@ -541,14 +556,11 @@
     }[providerId];
     const exclude = /embed|whisper|tts|transcribe|dall-e|image|imagine|audio|realtime|moderation|search|guard|video|veo|sora/i;
     const rolling = /latest/i;
-    const dated = /\d{4}-\d{2}-\d{2}|\d{6,}|[-_]\d{4}$/;
-    const provider = globalThis.Providers && globalThis.Providers.get(providerId);
-    const curated = new Set((provider && provider.models) || []);
     return (Array.isArray(models) ? models : []).filter((m) =>
       m && typeof m.id === "string" && m.id &&
       (!include || include.test(m.id)) &&
       !exclude.test(m.id) &&
-      (providerId === "anthropic" || curated.has(m.id) || (!dated.test(m.id) && !rolling.test(m.id))));
+      !rolling.test(m.id));
   }
 
   // ---- 画像内テキストの翻訳 (LLM vision: OCR + 翻訳 + 正規化 bbox) ----

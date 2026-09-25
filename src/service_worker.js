@@ -704,12 +704,15 @@ if (typeof importScripts === "function") {
   // 戻り値: 非stream と同形の結果、stream 非対応時だけ null。送信後の通信失敗は配信結果不明として返し、
   // 同じ論理batchを非streamで二重送信しない。
   // 翻訳の真実は蓄積した完全 JSON の extractTranslations。partial がズレても最終結果が確定し直す。
+  const streamUnsupported = new Set(); // モデルごとの明示的な stream 非対応 400 を SW 生存中は記憶する
   async function translateBatchStream(settings, texts, contexts, signal, onPartial) {
     const providerId = settings.provider;
     if (!ProviderApi.supportsStream(providerId)) return null; // stream 対応は OpenAI 互換社のみ
     const apiKey = keyFor(settings, providerId);
     if (!apiKey) return { ok: false, error: "no_api_key", provider: providerId };
     const model = (settings.models && settings.models[providerId]) || undefined;
+    const streamKey = providerId + ":" + (model || "");
+    if (streamUnsupported.has(streamKey)) return null;
     let req;
     try {
       req = ProviderApi.buildRequest(providerId, {
@@ -730,6 +733,12 @@ if (typeof importScripts === "function") {
       // 429/5xx を非stream で即再送すると失敗が二重化しスロットリングを悪化させる。HTTP エラーを返して
       // content 側のリトライ/バックオフ/サイズ縮小に委ねる (429 は学習サイズを縮小)。null フォールバックは stream 非対応時のみ。
       const detail = await readDetail(res);
+      // リクエストが拒否されたことを確認できた場合だけ、同じ入力を通常送信へ切り替える。
+      // 429/5xx や受理後の不完全な応答は二重課金・制限悪化を避けるため再送しない。
+      if (res.status === 400 && /\bstream(?:ing|_options)?\b|include_usage/i.test(detail)) {
+        streamUnsupported.add(streamKey);
+        return null;
+      }
       const failure = { ok: false, error: "http", status: res.status, message: detail, provider: providerId };
       if (res.status === 429 || TranslationBatch.isOversize(failure)) {
         updateBatchTuning(providerId, texts.length, Date.now() - t0, true);
@@ -887,9 +896,8 @@ if (typeof importScripts === "function") {
       .replace(/-latest$/, "");
   }
   // ---- 動的価格の取得 (models.dev) ----
-  // 同梱 model-pricing.js の TABLE は新モデルが出るたびに手更新が要る (更新漏れ = pickPriced が新モデルを
-  // 一覧から隠す)。models.dev (オープンソースのモデルカタログ・全対象社を収録) の api.json から実勢価格を
-  // 取得して ModelPricing.setDynamic へ流し込み、同梱表は取得失敗/未収録時のフォールバックに落とす。
+  // models.dev (オープンソースのモデルカタログ・全対象社を収録) の api.json から実勢価格を
+  // 取得して ModelPricing.setDynamic へ流し込み、同梱表は取得失敗/未収録時のフォールバックに使う。
   // 通信はモデル一覧の force 取得時のみ + PRICING_TTL_MS で抑制 (数MB 級 JSON を毎回引かない)。
   const PRICING_URL = "https://models.dev/api.json";
   const PRICING_TTL_MS = 60 * 60 * 1000; // 1h: force 連打 (キー blur 保存の連続等) での再取得を抑える
@@ -950,14 +958,12 @@ if (typeof importScripts === "function") {
     await pricingRefreshing;
   }
 
-  // 価格ゲージを出せる (model-pricing に載っている) モデルだけを {id, price} 配列にして残す。
-  // ユーザーはコスト比較できない "—" モデルを選びようがないので一覧から除く。
-  // ただし 1 件も価格が付かないときは全件 (price:null 込み) を返す = 空一覧で詰むのを防ぐ保険。
-  function pickPriced(ids) {
+  const MODEL_LIST_CACHE_VERSION = 3;
+  // 価格カタログの更新より先に公開されたモデルも選べるよう、価格不明を含めて返す。
+  // popup は price:null を「—」として表示する。
+  function modelEntries(ids) {
     // name は models.dev の公式表示名 (無ければ popup が ID 表示に倒す。undefined は storage 保存時に落ちる)
-    const all = ids.map((id) => ({ id, price: ModelPricing.lookup(id), name: ModelPricing.displayName(id) || undefined }));
-    const priced = all.filter((m) => m.price);
-    return priced.length ? priced : all;
+    return ids.map((id) => ({ id, price: ModelPricing.lookup(id), name: ModelPricing.displayName(id) || undefined }));
   }
   // Anthropic は日付入り ID をエイリアス化し、同一エイリアスは新しい順で先頭(最新)だけ残す。
   function normalizeModelList(providerId, models) {
@@ -973,8 +979,8 @@ if (typeof importScripts === "function") {
     return out;
   }
   function geminiVerKey(id) {
-    const m = String(id).match(/(\d+)\.(\d+)/);
-    let v = m ? Number(m[1]) * 100 + Number(m[2]) : 0;
+    const m = String(id).match(/gemini-(\d+)(?:\.(\d+))?/i);
+    let v = m ? Number(m[1]) * 100 + Number(m[2] || 0) : 0;
     if (/flash/i.test(id)) v += 5;   // 翻訳向きの flash を pro より優先
     if (/lite|8b/i.test(id)) v -= 1;
     return v;
@@ -985,7 +991,7 @@ if (typeof importScripts === "function") {
     else arr.sort((a, b) => (b.created || 0) - (a.created || 0));
     return arr;
   }
-  async function fetchModels(providerId, apiKey) {
+  async function fetchModels(providerId, apiKey, migrate = true) {
     const req = ProviderApi.buildModelsRequest(providerId, apiKey);
     if (!req) return { ok: false, error: "unsupported" };
     let res;
@@ -998,25 +1004,26 @@ if (typeof importScripts === "function") {
     try { json = await res.json(); } catch (_e) { return { ok: false, error: "parse" }; }
     const sorted = sortNewest(providerId, ProviderApi.filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
     const normalized = normalizeModelList(providerId, sorted);
-    // 価格が引けるモデルだけに絞ってから上位 10 件 (圏外でも価格付きを優先して拾える)。
-    const top = pickPriced(normalized.map((m) => m.id)).slice(0, 10);
+    // API の新しい順で上位 10 件。価格カタログ未収録でも一覧から消さない。
+    const top = modelEntries(normalized.map((m) => m.id)).slice(0, 10);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
-    cacheAll[providerId] = { models: top, fetchedAt: Date.now() };
+    cacheAll[providerId] = { models: top, fetchedAt: Date.now(), version: MODEL_LIST_CACHE_VERSION };
     await chrome.storage.local.set({ [StorageKeys.MODELS_CACHE]: cacheAll });
-    await migrateModel(providerId, top, normalized.map((m) => m.id));
+    if (migrate) await migrateModel(providerId, top, normalized.map((m) => m.id));
     return { ok: true, models: top };
   }
-  // 選択中モデルが「取得した全モデル」に無いときだけ最新(先頭)へ載せ替える (要件: マイグレーション)。
+  // 選択中モデルが「取得した全モデル」に無いときだけ一覧先頭の価格既知モデルへ載せ替える。
   // 判定は表示用 top10 ではなく allIds (全取得リスト) で行い、ユーザーが選んだ古め/安めの有効モデル
   // (top10 圏外) を勝手に最新へ差し替えないようにする。
   async function migrateModel(providerId, models, allIds) {
     if (!models || !models.length) return;
     const valid = (allIds && allIds.length) ? allIds : models.map((m) => m.id);
+    const fallbackModel = models.find((m) => m.price) || models[0];
     // SETTINGS 直書きは applySettingsPatch の直列化を迂回し、並行する APPLY_SETTINGS と lost-update を起こす。
     // 直列キュー経由 + 最新 base に対して判定/マージし、models の他 provider のエントリも保持する。
     await applySettingsPatch((base) => {
       if (valid.includes(base.models[providerId])) return null; // 選択中が有効 → 載せ替え不要 (保存しない)
-      return { models: { [providerId]: models[0].id } };
+      return { models: { [providerId]: fallbackModel.id } };
     });
   }
   async function getModelsForProvider(providerId, force) {
@@ -1024,14 +1031,16 @@ if (typeof importScripts === "function") {
     if (!provider || provider.batch === false) return { ok: true, models: [] };
     const settings = await getSettings();
     const apiKey = keyFor(settings, providerId);
-    // 価格を pickPriced が引く前に動的価格を用意する (force 時のみ通信・それ以外は storage キャッシュ反映のみ)
+    // 一覧表示に使う価格を用意する (force 時のみ通信・それ以外は storage キャッシュ反映のみ)
     await ensurePricing(Boolean(force));
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
-    const cached = cacheAll[providerId];
-    // 静的な既定モデルを価格付きで返すフォールバック (価格ゲージを出せるものだけ)
+    // 旧キャッシュは価格未登録モデルや各社の新しい同梱モデルを隠すので無効化する。
+    const stored = cacheAll[providerId];
+    const cached = stored && stored.version === MODEL_LIST_CACHE_VERSION ? stored : null;
+    // 同梱モデルを返すフォールバック
     const fallback = () => ({
       ok: true, fallback: true,
-      models: pickPriced(provider.models || []),
+      models: modelEntries(provider.models || []),
     });
     // API 通信 (取得) は force のときだけ = 「API キー入力後」と「モデル更新ボタン押下時」のみ。
     // それ以外 (provider 切替 / popup 起動) は通信せず、キャッシュ or 同梱フォールバックを表示する。
@@ -1442,7 +1451,7 @@ if (typeof importScripts === "function") {
     return Boolean(res && !res.ok && res.error === "http" && res.status === 404);
   }
 
-  // 廃止モデルの代替を解決: まず provider.defaultModel(現行に保守)、既定自体が廃止なら live /models の先頭。
+  // 廃止モデルの代替を解決: live /models で既定モデルの生存を確認し、無ければ一覧内の現行モデルを選ぶ。
   async function resolveFallbackModel(providerId, deadModel) {
     const key = providerId + ":" + deadModel; // provider スコープのキー (社をまたぐ同名モデルの相互汚染を防ぐ)
     if (modelFallback.has(key)) return modelFallback.get(key);
@@ -1450,13 +1459,14 @@ if (typeof importScripts === "function") {
     const job = (async () => {
       const provider = Providers.get(providerId);
       const def = provider && provider.defaultModel;
-      if (def && def !== deadModel) return def;
       try {
         const s = await getSettingsCached();
-        const r = await fetchModels(providerId, keyFor(s, providerId));
-        const first = r && r.ok && r.models && r.models[0] && r.models[0].id;
+        const r = await fetchModels(providerId, keyFor(s, providerId), false);
+        if (r && r.ok && r.models && r.models.some((m) => m.id === def) && def !== deadModel) return def;
+        const first = r && r.ok && r.models && (r.models.find((m) => m.price) || r.models[0])?.id;
         if (first && first !== deadModel) return first;
       } catch (_e) { /* live 取得失敗 → 復旧不可 */ }
+      if (def && def !== deadModel) return def; // models API 障害時は同梱の既定を最後の保険にする
       return null;
     })();
     resolvingFallback.set(key, job);
