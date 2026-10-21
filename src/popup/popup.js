@@ -62,20 +62,23 @@
   // ---- 翻訳タブ: サービス一覧 ----
   // 各プロバイダの静的カード(選択ヘッダ + キー入力を合体)の状態を in-place 更新する。
   // 入力欄は再生成しない (blur 自動保存中に値が消えないようにするため)。
+  const providerCards = new Map(Providers.ids.map((id) => {
+    const card = document.querySelector(`.provider-card[data-provider="${id}"]`);
+    return [id, { card, head: card?.querySelector(".pc-head"), badge: card?.querySelector("[data-badge]"),
+      body: card?.querySelector(".pc-body") }];
+  }));
   function renderProviderList() {
     const cur = state.settings.provider;
     Providers.ids.forEach((id) => {
-      const card = document.querySelector(`.provider-card[data-provider="${id}"]`);
+      const { card, head, badge } = providerCards.get(id);
       if (!card) return;
       const p = Providers.get(id);
       const requiresKey = p.requiresKey !== false;
       const hasKey = Boolean(state.settings.apiKeys && state.settings.apiKeys[id]);
       const selected = id === cur;
       card.classList.toggle("selected", selected);
-      const head = card.querySelector(".pc-head");
       if (head) head.setAttribute("aria-checked", selected ? "true" : "false");
 
-      const badge = card.querySelector("[data-badge]");
       if (badge) {
         if (!requiresKey) { badge.className = "pi-badge free"; badge.textContent = msg("badgeFree", "No key"); }
         else if (hasKey) { badge.className = "pi-badge ok"; badge.textContent = "✓"; }
@@ -89,8 +92,7 @@
   // 「そのサービスのキー + モデル」を 1 枚のカードにまとめて見やすくするため。
   // 単一要素を appendChild で移すだけ (id 重複を避け、loadModels の参照 #model-list/#refresh-models も追従する)。
   function placeModelRow() {
-    const card = document.querySelector(`.provider-card[data-provider="${state.settings.provider}"]`);
-    const body = card && card.querySelector(".pc-body");
+    const body = providerCards.get(state.settings.provider)?.body;
     const row = $("model-row");
     if (body && row && row.parentElement !== body) body.appendChild(row);
   }
@@ -307,8 +309,8 @@
     $("show-img-btn").checked = state.settings.showImageButton === true;
     $("sel-mode").value = state.settings.selectionMode === "inline" ? "inline" : "bubble";
     if (!settingsDrafts.has("auto-translate-blacklist")) {
-      $("auto-translate-blacklist").value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
       blacklistBaseline = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist);
+      $("auto-translate-blacklist").value = blacklistBaseline.join("\n");
     }
     renderProviderList();
     $("source").value = state.settings.sourceLang;
@@ -401,8 +403,8 @@
       // blur後だけ正規化済みの表示へ揃える。入力中はカーソル位置を動かさない。
       if (document.activeElement !== input && input.value === submittedText) {
         settingsDrafts.delete("auto-translate-blacklist");
-        input.value = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist).join("\n");
         blacklistBaseline = AutoTranslateBlacklist.normalize(state.settings.autoTranslateBlacklist);
+        input.value = blacklistBaseline.join("\n");
       } else {
         blacklistBaseline = submitted;
       }

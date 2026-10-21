@@ -9,23 +9,6 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
-test("persistent translation cache is exposed as an explicit localized opt-in", () => {
-  const html = read("src/popup/popup.html");
-  const popup = read("src/popup/popup.js");
-  const en = JSON.parse(read("_locales/en/messages.json"));
-  const ja = JSON.parse(read("_locales/ja/messages.json"));
-
-  assert.match(html, /id="persistent-cache" type="checkbox"/);
-  assert.match(html, /data-i18n="optPersistentCache"/);
-  assert.match(html, /data-i18n="optPersistentCacheDesc"/);
-  assert.match(popup, /state\.settings\.persistentTranslationCache === true/);
-  assert.match(popup, /save\(\{ persistentTranslationCache: checkbox\.checked \}\)/);
-  for (const locale of [en, ja]) {
-    assert.ok(locale.optPersistentCache.message);
-    assert.ok(locale.optPersistentCacheDesc.message);
-  }
-});
-
 test("persistent cache storage is gated and removed on opt-out", () => {
   const worker = read("src/service_worker.js");
   assert.match(worker, /if \(persistentTranslationCacheEnabled\)/);

@@ -207,7 +207,10 @@
     try { fab.releasePointerCapture(e.pointerId); } catch (_e) { /* noop */ }
     if (moved) {
       posRatio = ratioFromTop(fab.getBoundingClientRect().top);
-      try { chrome.storage.local.set({ [POS_KEY]: { ratio: posRatio } }); } catch (_e) { /* noop */ }
+      try {
+        const pending = chrome.storage.local.set({ [POS_KEY]: { ratio: posRatio } });
+        if (pending && pending.catch) pending.catch(() => { /* 保存失敗時もドラッグの後始末を続ける */ });
+      } catch (_e) { /* noop */ }
       if (cancelled) moved = false;
     }
   }

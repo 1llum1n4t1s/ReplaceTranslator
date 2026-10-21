@@ -60,7 +60,10 @@
     if (p[0] === "autoTranslateBlacklist") return value === true;
     const raw = p.length === 1 ? { [p[0]]: value } : p.length === 2
       ? { models: { [p[1]]: value } } : { reasoningEfforts: { [p[1]]: { [p[2]]: value } } };
-    return equal(snapshot(raw)[id], value);
+    const s = SettingsSchema.normalize(raw);
+    const normalizedValue = p.length === 1 ? s[p[0]] : p.length === 2
+      ? s.models[p[1]] : s.reasoningEfforts[p[1]]?.[p[2]];
+    return equal(normalizedValue, value);
   }
 
   function compare(a, b) {

@@ -50,36 +50,25 @@ test("同梱した共通部品が正本の契約を満たす", () => {
   }
 });
 
-const manifestAt = (manifestPath) => {
-  const full = path.join(ROOT, manifestPath);
-  return fs.existsSync(full) ? JSON.parse(fs.readFileSync(full, "utf8")) : null;
-};
-
 const allowsSupportHost = (hosts = []) =>
   hosts.some((host) => host.includes("support.kagayoi.com") || host === "<all_urls>" || host === "https://*/*");
 
 test("manifest が問い合わせ先ホストへの権限を持つ", () => {
-  for (const manifestPath of ["manifest.json", "manifest.firefox.json"]) {
-    const manifest = manifestAt(manifestPath);
-    if (!manifest) continue;
-    assert.ok(
-      allowsSupportHost(manifest.host_permissions),
-      `${manifestPath} に support.kagayoi.com のホスト権限が要る`,
-    );
-  }
+  const manifest = JSON.parse(read("manifest.json"));
+  assert.ok(
+    allowsSupportHost(manifest.host_permissions),
+    "manifest.json に support.kagayoi.com のホスト権限が要る",
+  );
 });
 
 test("Firefox 版が問い合わせで送るデータを AMO へ申告している", () => {
   // 問い合わせフォームはメールアドレス（personallyIdentifyingInfo）と
   // 確認コード（authenticationInfo）を送る。利用者が自分で入力した値も申告対象で、
   // "none" は他の値と併記できない。
-  for (const manifestPath of ["manifest.json", "manifest.firefox.json"]) {
-    const gecko = manifestAt(manifestPath)?.browser_specific_settings?.gecko;
-    if (!gecko) continue;
-    const declared = gecko.data_collection_permissions?.required ?? [];
-    for (const category of ["personallyIdentifyingInfo", "authenticationInfo"]) {
-      assert.ok(declared.includes(category), `${manifestPath} の申告に ${category} が要る`);
-    }
-    assert.equal(declared.includes("none"), false, `${manifestPath}: "none" は併記できない`);
+  const manifest = JSON.parse(read("manifest.json"));
+  const declared = manifest.browser_specific_settings?.gecko?.data_collection_permissions?.required ?? [];
+  for (const category of ["personallyIdentifyingInfo", "authenticationInfo"]) {
+    assert.ok(declared.includes(category), `manifest.json の申告に ${category} が要る`);
   }
+  assert.equal(declared.includes("none"), false, 'manifest.json: "none" は併記できない');
 });

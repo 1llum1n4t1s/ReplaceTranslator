@@ -99,7 +99,7 @@ if (typeof importScripts === "function") {
     });
   }
 
-  // HTTP エラー応答の本文を安全に読む (失敗吸収 + 300 字に切り詰め)。各 fetch のエラー message 生成で共用。
+  // HTTP エラー応答の本文を安全に読む (失敗吸収 + 600 字に切り詰め)。各 fetch のエラー message 生成で共用。
   async function readDetail(res) {
     // 600 字確保: Gemini 等の 429 本文は quota_id ("...PerDayPerProjectPerModel-FreeTier" 等) が
     // 後方にあることがあり、content 側の quotaScope 判定 (日次 vs 分次) に必要なため広めに取る。
@@ -258,7 +258,10 @@ if (typeof importScripts === "function") {
     const patch = {};
     if (tuningMem) patch[StorageKeys.BATCH_TUNING] = tuningMem;
     if (usageMem) patch[StorageKeys.TOKEN_USAGE] = usageMem;
-    try { chrome.storage.local.set(patch); } catch (_e) { /* noop */ }
+    try {
+      const pending = chrome.storage.local.set(patch);
+      if (pending && pending.catch) pending.catch(() => { /* 保存失敗時も翻訳を継続する */ });
+    } catch (_e) { /* noop */ }
   }
   function schedulePersist() {
     if (persistTimer) return;
@@ -418,7 +421,8 @@ if (typeof importScripts === "function") {
       translationCacheChars += chars;
       changedMap = true;
     }
-    return { needsRewrite: normalized.needsRewrite || trimTranslationCache(), changedMap };
+    const trimmed = trimTranslationCache();
+    return { needsRewrite: normalized.needsRewrite || trimmed, changedMap };
   }
 
   async function ensureTranslationCache(includePersistent = false) {
@@ -1005,7 +1009,7 @@ if (typeof importScripts === "function") {
     const sorted = sortNewest(providerId, ProviderApi.filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
     const normalized = normalizeModelList(providerId, sorted);
     // API の新しい順で上位 10 件。価格カタログ未収録でも一覧から消さない。
-    const top = modelEntries(normalized.map((m) => m.id)).slice(0, 10);
+    const top = modelEntries(normalized.slice(0, 10).map((m) => m.id));
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     cacheAll[providerId] = { models: top, fetchedAt: Date.now(), version: MODEL_LIST_CACHE_VERSION };
     await chrome.storage.local.set({ [StorageKeys.MODELS_CACHE]: cacheAll });
@@ -1111,6 +1115,10 @@ if (typeof importScripts === "function") {
       total += value.length;
       if (total > cap) { try { await reader.cancel(); } catch (_e) { /* noop */ } return null; } // 上限超過で打ち切り
       chunks.push(value);
+    }
+    // 単独の完全な buffer は再利用し、大きな親 buffer を持つ部分 view は従来どおりコピーする。
+    if (chunks.length === 1 && chunks[0].byteOffset === 0 && chunks[0].byteLength === chunks[0].buffer.byteLength) {
+      return chunks[0];
     }
     const out = new Uint8Array(total);
     let off = 0;

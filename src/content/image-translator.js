@@ -546,7 +546,8 @@
 
   // 焼き込みフォント問題の切り分け用ログ。既定は完全無音。ページ console で localStorage.__rt_debug を立てると出る。
   // 例: localStorage.setItem("__rt_debug","1") → 再翻訳すると [rt-img] 経路/解像度/各 block の font を出力。
-  function dbg(...a) { try { if (localStorage.getItem("__rt_debug")) console.debug("[rt-img]", ...a); } catch (_e) { /* localStorage 例外時は無音 */ } }
+  function debugEnabled() { try { return Boolean(localStorage.getItem("__rt_debug")); } catch (_e) { return false; } }
+  function dbg(...a) { try { if (debugEnabled()) console.debug("[rt-img]", ...a); } catch (_e) { /* ログ出力失敗時は無音 */ } }
 
   // Phase 2: 平坦背景のとき box(+余白)内で背景色と差のある画素=文字インクの外接矩形を求め、
   // 「ink 外接 ∪ 元 box」(縮めず広げるのみ)へ消去域を補正する。LLM/OCR の右ズレ box が行頭グリフを
@@ -695,13 +696,18 @@
   function availPitchFor(items, i) {
     const cur = items[i].pb;
     let best = Infinity;
-    for (let j = 0; j < items.length; j++) {
-      if (j === i) continue;
-      const o = items[j].pb;
-      const overlapX = Math.min(cur.x1, o.x1) - Math.max(cur.x0, o.x0);
-      if (overlapX <= 0) continue; // 同カラム (x 重なり) のみ隣行として扱う
-      const d = Math.abs(o.cyPx - cur.cyPx); // 上下どちらの隣行も対象 (中央寄せ描画は両方向に伸びる)
-      if (d > 0 && d < best) best = d;
+    // 呼び出し元で cy 昇順に並べてあるため、各方向の最初の同カラム行より先は調べなくてよい。
+    for (let direction = -1; direction <= 1; direction += 2) {
+      for (let j = i + direction; j >= 0 && j < items.length; j += direction) {
+        const o = items[j].pb;
+        const d = Math.abs(o.cyPx - cur.cyPx);
+        if (d >= best) break;
+        if (d === 0) continue;
+        const overlapX = Math.min(cur.x1, o.x1) - Math.max(cur.x0, o.x0);
+        if (overlapX <= 0) continue;
+        best = d;
+        break;
+      }
     }
     return best;
   }
@@ -841,7 +847,7 @@
     const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
     // computeGroupFonts が flat 単独行に決めた横展開幅 (均一余白へ広げて全角訳文を原文サイズ 1 行に保つ)。未展開は box 幅。
     const effW = (blk.__rtEffInnerW > 0) ? Math.max(innerW, blk.__rtEffInnerW) : innerW;
-    const fit = fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
+    let fit; // 確定フォントが幅ゲートを通る場合は枠フィット計算を省く。
     // forcedFont>0 は pitch + 幅 + avail(隣行間隔)の各ガードを織り込んだ重なり安全な確定値 → 無条件採用 (上方向拡大を通す)。
     // これを minReadable で超えて底上げすると隣行/幅へ食い込むため、forcedFont があるときは底上げしない。
     // fallback(0)のときだけ枠フィット + 物理可読下限へ底上げ (枠 innerH を割らない範囲で表示 ~12px 相当を確保)。
@@ -849,6 +855,7 @@
     if (forcedFont && forcedFont > 0) {
       fontSize = forcedFont;
     } else {
+      fit = fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
       const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
       fontSize = Math.max(fit.fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
     }
@@ -856,6 +863,7 @@
     let lines = wrapCanvasText(ctx, blk.translation, effW);
     // 幅はみ出しの最終ゲート: 1 行でも effW を超えるならこの block だけ枠フィットへ落とす。
     if (lines.some((l) => ctx.measureText(l).width > effW)) {
+      fit ||= fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
       fontSize = fit.fontSize; ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`; lines = fit.lines;
     }
     ctx.textAlign = "center";
@@ -1109,7 +1117,7 @@
         // orig が既に崩れていれば vision の読み取り段、orig 正常で trans 崩れなら翻訳段、と一目で確定できる。
         if (res && res.ok && Array.isArray(res.blocks)) {
           dbg("img-result", "n=" + res.blocks.length);
-          res.blocks.forEach((b, i) => dbg("  block#" + i, "kind=" + ((b && b.kind) || "-"),
+          if (debugEnabled()) res.blocks.forEach((b, i) => dbg("  block#" + i, "kind=" + ((b && b.kind) || "-"),
             "orig=" + JSON.stringify((b && b.original) || ""), "trans=" + JSON.stringify((b && b.translation) || "")));
         } else {
           dbg("img-result", "ok=" + !!(res && res.ok), "error=" + (res && res.error));

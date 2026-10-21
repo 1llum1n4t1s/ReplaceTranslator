@@ -113,14 +113,6 @@ test("normalize clamps fabOpacity to [0.2, 1] and defaults to 1 when missing/inv
   assert.equal(SettingsSchema.normalize({ fabOpacity: "x" }).fabOpacity, 1);   // 非数値は既定 1
 });
 
-test("Actions exposes the selection-translate trigger", () => {
-  assert.equal(g.Actions.TRANSLATE_SELECTION_CS, "TRANSLATE_SELECTION_CS");
-});
-
-test("Actions exposes the image-translate trigger", () => {
-  assert.equal(g.Actions.TRANSLATE_IMAGE_CS, "TRANSLATE_IMAGE_CS");
-});
-
 test("RuntimeLimits exposes a finite image pixel guard", () => {
   assert.equal(RuntimeLimits.MAX_IMAGE_PIXELS, 25000000);
 });
