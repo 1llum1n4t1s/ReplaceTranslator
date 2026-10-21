@@ -10,7 +10,7 @@ This file provides guidance to Codex when working in this repository.
 - `pnpm run lint` — ESLint（Flat Config v9+）
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
-- 製品ページの配信は `vps-web/deploy/deploy-lp.ps1` を使う。公開ホスト・更新ファイルの既存経路を維持する。
+- 製品ページの配信は `../vps-web/deploy/deploy-lp.ps1` を使う（配置は [DESIGN.md](DESIGN.md#製品ページの配信先)）。公開ホスト・更新ファイルの既存経路を維持する。
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]==4.65.0" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（入力版・hash・subset 契約は `src/popup/fonts/README.md`、§popup フォント参照）
 - `pnpm sync:support` — exact 固定した `@kagayoi/support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`pnpm exec kagayoi-support-sync --check` で一致を検証する
 

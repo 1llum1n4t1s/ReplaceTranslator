@@ -26,6 +26,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 | `src/content/image-translator.*` | 明示操作された画像を取得し、vision対応プロバイダの結果をオーバーレイ描画する |
 | `src/shared/kagayoi-support-*` | 設定画面の問い合わせ・評価UIを提供する、共通パッケージから同期した同梱資産 |
 | `src/lib/actions.js` | メッセージ名、保存キー、設定正規化、プロバイダ定義、バッチ調整などの共有契約を定義する |
+| `src/lib/settings-sync.js` | 設定同期レコードの生成・比較・マージと固定バケットへの分割を、ブラウザAPIから独立した純粋関数として提供する |
 | `src/lib/providers.js` | 各プロバイダの要求・応答・usage・モデル一覧・画像要求を共通形式へ変換する |
 | `src/lib/lang.js` | 対応言語とコード正規化を提供する |
 | `src/lib/model-pricing.js` | モデル価格の照合と比較表示用データを提供する |
@@ -141,4 +142,4 @@ FAB、選択翻訳、画像翻訳は接頭辞付きID・クラス、`all: initia
 
 製品ページの配信HTMLは `../vps-web/lp/replacetranslator/`（編集元は `../vps-web/tools/lp/templates/`）、公開実体はVPSの `/srv/www/lp/replacetranslator/`。
 直接配信の設定は `../vps-web/deploy/caddy-sites/lp-replacetranslator.caddy` に置く。
-公開URLを維持し、静的ファイルの配信は `vps-web/deploy/deploy-lp.ps1` へ統一する。
+静的ファイルの配信スクリプトは `../vps-web/deploy/deploy-lp.ps1` にある。配信時の作業規約は [AGENTS.md](AGENTS.md#ビルド--テスト--lint-コマンド) を参照する。

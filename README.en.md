@@ -2,14 +2,16 @@
 
 > 日本語版は [README.md](README.md) を参照してください。
 
-A Chrome / Firefox extension that translates the page you are viewing **in place** using cloud LLMs (OpenAI / Anthropic / Google Gemini / xAI (Grok)). Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click — but it uses large language models for more natural, context-aware results.
+A Chrome / Firefox extension that translates the page you are viewing **in place** using cloud LLMs or the no-key MyMemory service. Like Chrome's built-in page translation, it replaces the original text with the translation and lets you switch back with one click. Choose an LLM for natural, context-aware translation.
 
 ## ✨ Features
 - **In-place replacement** — replace the original text with the translation, toggle back to the original
-- **Multiple LLM providers** — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) using your own API key
+- **Multiple LLM providers** — switch between OpenAI / Anthropic (Claude) / Google Gemini / xAI (Grok) / OpenRouter / DeepSeek / Groq / Sakana AI (Fugu) using your own API key
+- **Model selection** — refresh the model list to see new models; models without pricing information display “—” for their price
 - **Per-model reasoning control** — remember reasoning effort or thinking-budget choices for each supported model; Auto keeps translation fast and inexpensive with the model-safe minimum
 - **No-key option** — MyMemory (free NMT) works with no key or signup (best for short text, instant trial)
-- **Page-language aware** — detects the page's main language and translates only that language; pages already in the target language are left alone (English menu items on a Japanese page are no longer swept up)
+- **Page-language aware** — detects the page's main language; auto-translate skips pages mostly in the target language with little text in other languages
+- **SPA auto-translation** — rechecks settings and exclusions when the URL changes within the same tab
 - **Auto-translate exclusions** — enter URLs, hosts, or wildcard rules on separate lines to stop auto-translate only on matching sites
 - **Infinite scroll friendly** — content loaded later is translated automatically
 - **Token-saving cache** — exact text matches in the same page scope and context are reused from an on-device cache; persistence across browser restarts is stored only when you explicitly opt in
@@ -51,14 +53,21 @@ Install from [Firefox Add-ons (AMO)](https://addons.mozilla.org/firefox/addon/re
 ## 🚀 Usage
 1. Open the toolbar icon, pick a service in the **"API settings" tab** and enter your API key (auto-saved on blur; MyMemory needs no key). Pick a model to adjust its reasoning effort directly below the model list when supported
 2. In the **"Translate" tab**, pick a target language, then "Translate". Use "Restore" to go back
-3. Add one URL, host, or wildcard per line in the "Exclusions" tab for sites where auto-translate should stay off. You can also add or remove the current site from the right-click menu
+3. Add one URL, host, or wildcard per line in the "Exclusions" tab for sites where auto-translate should stay off. "Add current site" adds the current host; you can also add or remove it from the right-click menu
 4. Turn on **"Persistent translation cache"** in the "Translate" tab only if you want translations reused after browser restarts (up to 30 days; turning it off deletes the saved cache)
 5. You can also toggle translate/restore with the **floating button (訳 / 原) at the bottom-right of the page** (drag it anywhere you like, or hide it from the "Translate" tab)
 6. The right-click menu also offers "Translate this page" / "Restore original"
 7. With a vision-capable LLM selected, hover an image and click 訳 to translate text inside it (experimental)
 
+Enable **"Auto-translate all pages"** in the "Translate" tab to translate pages as you open them. This increases API usage, so enable it only when needed. Exclusions apply to auto-translation; manual translation remains available.
+
+### Selected text and quick translation
+
+- Select text on a page and press **Ctrl+Shift+L** (**Command+Shift+L** on Mac), or use the right-click menu. In the "Translate" tab, choose a bubble or inline bilingual display under "Selected text translation". "Change shortcuts" opens the shortcut settings.
+- Type or paste into "Quick translation" in the "Translate" tab to translate only that text. You can copy the translation or listen to the source and translation.
+
 ### Source / target
-- **Source** — leave it on "Detect language" and the extension detects the page's main language and translates only that language. Pages already in the target language are left untouched (stray fragments in other languages are not swept up). You can also pin a specific source language.
+- **Source** — leave it on "Detect language" to use the page's main language. Auto-translate skips pages mostly in the target language with little text in other languages, but includes substantial content in another language. Manual actions such as "Translate" bypass this skip. You can also pin a specific source language.
 - **Target** — pick the language you want.
 
 ## 🌐 Supported languages
@@ -77,6 +86,7 @@ Japanese, English, Chinese (Simplified / Traditional), Korean, Spanish, French, 
 - **"No API key set"** — enter the key for the selected provider in Settings (⚙)
 - **Nothing happens / errors** — check the key is correct and that you have not exceeded your balance / rate limit
 - **Only part of the page is translated** — text already in the target language is intentionally left as is
+- **Browser settings pages or local HTML do not translate** — browser settings pages cannot be translated. For `file://` pages, enable "Allow access to file URLs" for the extension and reload the page
 - If something is off, reload the extension (the 🔄 on `chrome://extensions`) and try again
 
 ## 📄 License

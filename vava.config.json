@@ -1,5 +1,5 @@
 {
-  "_comment": "/vava スキル (~/.claude/skills/vava/) のスクリプトに渡すプロジェクト固有設定。スキル側スクリプトは CWD の本ファイルから設定を読み込む。",
+  "_comment": "vava スキルのスクリプトに渡すプロジェクト固有設定。スキル側スクリプトは CWD の本ファイルから設定を読み込む。",
   "amo": {
     "slug": "replace-translator",
     "categories": ["other"],

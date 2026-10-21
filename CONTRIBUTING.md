@@ -14,7 +14,7 @@
 - `src/content/translator.js` — DOM インプレース置換翻訳エンジン
 - `src/content/fab.js` + `fab.css` — 全ページ右端の翻訳タブ（レール型タブ形状・表面はアプリ専用「朱の栞」＝生成りの和紙×墨×朱・ホバーでせり出し・縦ドラッグ移動・ダーク対応）
 - `src/content/image-translator.js` + `image-translator.css` — 画像内テキストの翻訳オーバーレイ（ホバー/右クリックの手動・LLM vision）
-- `src/popup/` — ポップアップ UI（2タブ「翻訳 / API設定」。設定は popup に統合済み、options ページは廃止）
+- `src/popup/` — ポップアップ UI（3タブ「翻訳 / API設定 / 除外リスト」。設定は popup に統合済み、options ページは廃止）
 - `icons/` — `icon.svg`（原本）+ commit 済み `icon{16,48,128}.png`
 - `_locales/{en,ja}/messages.json` — i18n
 - `test/` — Node 標準テスト
@@ -32,9 +32,11 @@ pnpm install
 
 ## テスト / Lint
 ```
-pnpm test        # Node 標準テスト（actions / providers の純粋関数）
+pnpm test        # Node 標準テスト（共有純粋関数・実ソースから抽出した関数の状態遷移・静的契約）
 pnpm run lint    # ESLint（Flat Config）
 ```
+
+content / Service Worker などの実ソースを検証します。実 DOM + chrome API + LLM を組み合わせた統合テストは含まれないため、API キーを使う実機確認は別途必要です。
 
 ## ビルド
 アイコン（`icons/icon{16,48,128}.png`）は commit 済みなのでビルド時生成は不要です。
