@@ -12,11 +12,6 @@ jobs:
   package:
     name: ZIP パッケージ作成
     runs-on: ubuntu-latest
-    env:
-      # Chrome zip と Firefox build に同梱する共有ディレクトリ(単一ソース)。新たに同梱必須の
-      # トップレベルディレクトリが増えたらここだけ直せば両 artifact に反映され、片側更新漏れ(片 OS 欠損)を防ぐ。
-      # manifest.json は target 別(Chrome=純正 / Firefox=生成)なので含めず各 step で個別に扱う。
-      PKG_DIRS: icons src _locales
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -24,6 +19,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: 同梱ディレクトリを取得
+        run: |
+          # ローカルの各 OS と同じ package-dirs.txt を正本にする。
+          # manifest.json は target 別(Chrome=純正 / Firefox=生成)なので各 step で個別に扱う。
+          echo "PKG_DIRS=$(tr -d '\r\n' < package-dirs.txt)" >> "$GITHUB_ENV"
 
       - name: バージョンを取得
         id: version
@@ -55,7 +56,7 @@ jobs:
           version: 11
 
       - name: Node セットアップ
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -90,13 +91,13 @@ jobs:
       - name: zip パッケージを作成
         run: |
           # _locales/ は manifest.json の default_locale 参照先。含めないと CWS の Submit for review で
-          # PKG_DEFAULT_LOCALE_MISSING エラーになる。同梱ディレクトリは $PKG_DIRS(job env)を単一ソースに使う。
+          # PKG_DEFAULT_LOCALE_MISSING エラーになる。同梱ディレクトリは package-dirs.txt から取得した $PKG_DIRS を使う。
           zip -r replace-translator.zip manifest.json $PKG_DIRS \
             -x "*.DS_Store" "*.swp" "*~"
           ls -lh replace-translator.zip
 
       - name: ZIP artifact を保存
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: replace-translator-zip
           path: replace-translator.zip
@@ -108,7 +109,7 @@ jobs:
           # build-firefox-manifest.mjs で background.scripts 形式へ変換する(importScripts を単一ソースに生成)。
           mkdir -p firefox-build
           node build-firefox-manifest.mjs firefox-build/manifest.json
-          # 同梱ディレクトリは Chrome zip と同じ $PKG_DIRS(job env)を単一ソースに使う(片側更新漏れ防止)。
+          # 同梱ディレクトリは Chrome zip と同じ package-dirs.txt 由来の $PKG_DIRS を使う。
           for d in $PKG_DIRS; do cp -r "$d" firefox-build/; done
           find firefox-build \( -name "*.DS_Store" -o -name "*.swp" -o -name "*~" \) -delete
           echo "📂 firefox-build 内容:"
@@ -118,7 +119,7 @@ jobs:
         run: pnpm exec web-ext lint --source-dir firefox-build
 
       - name: Firefox source artifact を保存
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: replace-translator-firefox-source
           path: firefox-build/
@@ -131,7 +132,7 @@ jobs:
     environment: chrome-web-store
     steps:
       - name: ZIP artifact を取得
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: replace-translator-zip
           path: .
@@ -264,7 +265,7 @@ jobs:
           persist-credentials: false
 
       - name: Firefox source artifact を取得
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: replace-translator-firefox-source
           path: firefox-build/
@@ -275,7 +276,7 @@ jobs:
           version: 11
 
       - name: Node セットアップ
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: 'pnpm'

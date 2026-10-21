@@ -12,9 +12,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Chrome/Firefox 両 variant に同梱する共有ディレクトリ(単一ソース)。CI(publish.yml の job env PKG_DIRS)と揃える。
+# Chrome/Firefox 両 variant に同梱する共有ディレクトリは package-dirs.txt を正本にする。
 # manifest.json は variant 別(Chrome=純正 / Firefox=生成)なので含めず build_pkg 内で個別に扱う。
-PKG_DIRS="icons src _locales"
+PKG_DIRS=$(tr -d '\r\n' < package-dirs.txt)
 
 TARGET="${1:-both}"
 case "$TARGET" in
@@ -47,7 +47,7 @@ build_pkg() {
   else
     cp manifest.json "$tmp/manifest.json"  # Chrome はソース manifest (service_worker のみ) をそのまま
   fi
-  # 同梱ディレクトリは単一ソース (PKG_DIRS)。CI(.github/workflows/publish.yml の job env PKG_DIRS) と同じ列挙を保つ。
+  # ローカルの各 OS と CI で package-dirs.txt の同じ列挙を使う。
   for d in $PKG_DIRS; do cp -r "$d" "$tmp/"; done
 
   find "$tmp" \( -name "*.DS_Store" -o -name "*.swp" -o -name "*~" \) -delete
