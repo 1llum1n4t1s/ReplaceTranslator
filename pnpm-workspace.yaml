@@ -1,5 +1,5 @@
 minimumReleaseAgeExclude:
-  - '@kagayoi/support-extension@1.0.6'
+  - '@kagayoi/support-extension@1.0.8'
   - adm-zip@0.6.1
 
 # undici: web-ext > addons-linter > cheerio 経由の transitive 脆弱性
