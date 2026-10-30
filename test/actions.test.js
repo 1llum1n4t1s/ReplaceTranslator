@@ -9,6 +9,34 @@ const {
   MessagePolicy, ImageRequestPolicy, ExtUtil,
 } = g;
 
+test("翻訳スタイル・追加指示を正規化し、設定変更で別の翻訳キャッシュを使う", () => {
+  const base = SettingsSchema.normalize({});
+  assert.equal(base.translationStyle, "natural");
+  assert.equal(base.customPrompt, "");
+  assert.equal(SettingsSchema.normalize({ translationStyle: "unknown", customPrompt: {} }).translationStyle, "natural");
+  assert.equal(SettingsSchema.normalize({ customPrompt: {} }).customPrompt, "");
+  assert.equal(SettingsSchema.normalize({ customPrompt: "  短く訳す  " }).customPrompt, "短く訳す");
+  assert.equal(SettingsSchema.normalize({ customPrompt: "あ".repeat(2001) }).customPrompt.length, 2000);
+  const key = settings => TranslationBatch.cacheKey("https://example.com", settings, 2, "Hello", "");
+  assert.notEqual(key(base), key(SettingsSchema.mergePatch(base, { translationStyle: "cute" })));
+  assert.equal(key(base), key(SettingsSchema.mergePatch(base, { customPrompt: "短く訳す" })));
+  assert.notEqual(key(SettingsSchema.mergePatch(base, { translationStyle: "custom" })),
+    key(SettingsSchema.mergePatch(base, { translationStyle: "custom", customPrompt: "短く訳す" })));
+});
+
+test("クイック翻訳の言語は旧設定から移行後、ページ翻訳の言語と独立して保存する", () => {
+  const migrated = SettingsSchema.normalize({ sourceLang: "ja", targetLang: "en" });
+  assert.equal(migrated.quickSourceLang, "ja");
+  assert.equal(migrated.quickTargetLang, "en");
+  const pageChanged = SettingsSchema.mergePatch(migrated, { sourceLang: "auto", targetLang: "ja" });
+  assert.equal(pageChanged.quickSourceLang, "ja");
+  assert.equal(pageChanged.quickTargetLang, "en");
+  const quickChanged = SettingsSchema.mergePatch(pageChanged, { quickTargetLang: "fr" });
+  assert.equal(quickChanged.sourceLang, "auto");
+  assert.equal(quickChanged.targetLang, "ja");
+  assert.equal(quickChanged.quickTargetLang, "fr");
+});
+
 // ---- SettingsSchema.normalize ----
 
 test("normalize fills defaults and drops unknown keys", () => {

@@ -47,6 +47,7 @@
   let originalReapplyAt = new WeakMap(); // Node → 原文書き戻しへ最後に訳文を再適用した時刻 (ページとの書き換え競合を止める)
   let recentScopeWrites = new WeakMap(); // 安定した親コンポーネント → 直近に訳文を書いた原文と時刻 (Text ノード再生成競合の検知)
   const translatedNodes = new Set();    // 翻訳/処理済みノード (再翻訳防止 + 復元走査用)
+  let budgetSkippedNodes = new WeakSet(); // 原文を保持しない上限超過ノードの重複処理を防ぐ
   // 原文テキスト → 訳文のセッション内メモ。SPA 再レンダで Text ノード実体が差し替わると WeakMap キーから
   // 外れて同一原文を再翻訳してしまう (= autoTranslate で「翻訳済みを何度も再翻訳」)。同じ原文を既に訳して
   // いれば API を呼ばずキャッシュ適用する。provider/targetLang が変わると訳が変わるので revert で clear する。
@@ -202,7 +203,7 @@
   }
 
   function accept(node) {
-    if (translatedNodes.has(node)) return false;
+    if (translatedNodes.has(node) || budgetSkippedNodes.has(node)) return false;
     const p = node.parentNode;
     if (!p || p.nodeType !== 1) return false;
     if (SKIP_PARENT_TAGS.has(p.nodeName)) return false;
@@ -482,11 +483,11 @@
   // collectNodes() が accept() 済みノードだけを返すため、ここでは再検証しない (二重 accept=closest 走査の回避)。
   // 全呼び出し元 (ingest / onIntersect) が collectNodes 経由なのが前提。
   function enqueue(node, y, context) {
-    if (!node || queuedNodes.has(node) || translatedNodes.has(node)) return;
+    if (!node || queuedNodes.has(node) || translatedNodes.has(node) || budgetSkippedNodes.has(node)) return;
     const text = String(node.nodeValue || "");
     if (text.length > PAGE_MAX_SINGLE_CHARS || pageTextCount >= PAGE_MAX_TEXTS || pageCharCount + text.length > PAGE_MAX_CHARS) {
       // 上限超過分は原文のまま残し、done(partial)で正直に通知する。
-      translatedNodes.add(node);
+      budgetSkippedNodes.add(node);
       droppedTransient++;
       return;
     }
@@ -961,6 +962,7 @@
       if (m.type === "characterData") {
         // サイトが既存テキストノードを書き換えたケース (SPA/チャット等の文言差し替え)。
         const tn = m.target;
+        budgetSkippedNodes.delete(tn); // 書き換えられたテキストは上限を再評価する
         if (translatedNodes.has(tn)) {
           // (a) 我々が書いた訳文のままなら無視 (自己書き換えでの再発火/ループ防止)。必ず最初に判定する。
           if (tn.nodeValue === writtenValue.get(tn)) continue;
@@ -1157,6 +1159,7 @@
       writtenValue.delete(node);
     }
     translatedNodes.clear();
+    budgetSkippedNodes = new WeakSet();
     originalReapplyAt = new WeakMap();
     recentScopeWrites = new WeakMap();
     translationMemo.clear(); // provider/targetLang 変更での再翻訳時に古い訳をキャッシュ適用しないよう破棄

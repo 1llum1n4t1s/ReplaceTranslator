@@ -1,8 +1,8 @@
 # Replace AI Translator API 拡張機能パッケージ生成スクリプト
 # 使い方:
-#   powershell -ExecutionPolicy Bypass -File zip.ps1                    # Chrome zip + Firefox xpi 両方
-#   powershell -ExecutionPolicy Bypass -File zip.ps1 -Target chrome     # Chrome のみ
-#   powershell -ExecutionPolicy Bypass -File zip.ps1 -Target firefox    # Firefox のみ
+#   pwsh -NoProfile -File zip.ps1                    # Chrome zip + Firefox xpi 両方
+#   pwsh -NoProfile -File zip.ps1 -Target chrome     # Chrome のみ
+#   pwsh -NoProfile -File zip.ps1 -Target firefox    # Firefox のみ
 #
 # ソース manifest.json は Chrome 純正（background.service_worker のみ）。Chrome 版はそのまま .zip 出力。
 # Firefox は service_worker 非対応のため build-firefox-manifest.mjs で background.scripts 形式へ変換して .xpi 出力する。

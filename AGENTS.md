@@ -11,7 +11,7 @@ This file provides guidance to Codex when working in this repository.
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
 - 製品ページの配信は `../vps-web/deploy/deploy-lp.ps1` を使う（配置は [DESIGN.md](DESIGN.md#製品ページの配信先)）。公開ホスト・更新ファイルの既存経路を維持する。
-- フォント同梱の作り直し: `uvx --from "fonttools[woff]==4.65.0" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（入力版・hash・subset 契約は `src/popup/fonts/README.md`、§popup フォント参照）
+- フォント同梱の作り直し: `uvx --from "fonttools[woff]==4.68.0" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（入力版・hash・subset 契約は `src/popup/fonts/README.md`、§popup フォント参照）
 - `pnpm sync:support` — exact 固定した `@kagayoi/support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`pnpm exec kagayoi-support-sync --check` で一致を検証する
 
 ## 規約上の前提（設計の根拠）
@@ -39,7 +39,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 | 翻訳の中核、速度・網羅の調整 | 翻訳エンジン translator.js |
 | モデル一覧の取得、バッチ自動学習 | 動的モデル取得 & バッチ自動学習 |
 | 画像翻訳（ホバー / 右クリック、vision プロバイダ） | 画像翻訳 |
-| popup の 3 タブ、FAB | UI 構成 |
+| popup の 4 タブ、FAB | UI 構成 |
 | 設定保存・複数PC同期 | [DESIGN.md](DESIGN.md)「状態と保存」と UI 構成。変更時は `test/settings-sync.test.js` と `test/popup-settings-save.test.js` の契約も確認する |
 | 選択テキスト翻訳、浮遊バブル | 選択テキスト翻訳 |
 

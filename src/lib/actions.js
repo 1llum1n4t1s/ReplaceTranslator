@@ -350,6 +350,8 @@
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
     sourceLang: "auto",          // auto = ページの主要言語を検出して翻訳元にする (検出不能時は target 以外を翻訳)
     targetLang: "ja",
+    quickSourceLang: "auto",
+    quickTargetLang: "ja",
     apiKeys: Object.freeze({ openai: "", anthropic: "", gemini: "", xai: "", openrouter: "", deepseek: "", groq: "", fugu: "", mymemory: "" }),
     models: Object.freeze({
       openai: "gpt-5.4-mini",
@@ -363,6 +365,8 @@
       mymemory: null,
     }),
     reasoningEfforts: EMPTY_REASONING_EFFORTS, // provider → model ID → 明示 effort。欠損は翻訳向け自動最小値
+    translationStyle: "natural",
+    customPrompt: "", // LLMへの追加翻訳指示。出力形式・翻訳対象の契約は維持する
     syncSettings: false, // この端末でのブラウザー設定同期への明示 opt-in
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     autoTranslateBlacklist: Object.freeze([]), // 自動翻訳だけを抑止する URL/host glob の複数行リスト
@@ -421,15 +425,22 @@
       // 廃止モデルを書き戻して実行時 404 自己修復と往復し続けないよう null (未選択 → live 取得で解決) に倒す。
       const def = Providers[id].defaultModel;
       const fallbackModel = (def && RETIRED_MODELS.has(def)) ? null : def;
-      models[id] = (saved && !RETIRED_MODELS.has(saved)) ? saved : fallbackModel;
+      const liveVoice = (id === "openai" || id === "openrouter") && /^(?:openai\/)?gpt-live(?:-|$)/i.test(saved || "");
+      models[id] = (saved && !RETIRED_MODELS.has(saved) && !liveVoice) ? saved : fallbackModel;
     }
     return {
       provider,
       sourceLang: (typeof r.sourceLang === "string" && r.sourceLang) ? r.sourceLang : DEFAULT_SETTINGS.sourceLang,
       targetLang: (typeof r.targetLang === "string" && r.targetLang) ? r.targetLang : DEFAULT_SETTINGS.targetLang,
+      quickSourceLang: (typeof r.quickSourceLang === "string" && r.quickSourceLang) ? r.quickSourceLang
+        : ((typeof r.sourceLang === "string" && r.sourceLang) ? r.sourceLang : DEFAULT_SETTINGS.quickSourceLang),
+      quickTargetLang: (typeof r.quickTargetLang === "string" && r.quickTargetLang) ? r.quickTargetLang
+        : ((typeof r.targetLang === "string" && r.targetLang) ? r.targetLang : DEFAULT_SETTINGS.quickTargetLang),
       apiKeys,
       models,
       reasoningEfforts: normalizeReasoningEfforts(r.reasoningEfforts),
+      translationStyle: ["natural", "cute", "formal", "casual", "literal", "custom"].includes(r.translationStyle) ? r.translationStyle : "natural",
+      customPrompt: typeof r.customPrompt === "string" ? r.customPrompt.trim().slice(0, 2000) : "",
       syncSettings: r.syncSettings === true,
       autoTranslate: Boolean(r.autoTranslate),
       autoTranslateBlacklist: normalizeAutoTranslateBlacklist(r.autoTranslateBlacklist),
@@ -606,6 +617,8 @@
       String(scope || ""), provider, model, reasoningEffort,
       typeof s.sourceLang === "string" ? s.sourceLang : "",
       typeof s.targetLang === "string" ? s.targetLang : "",
+      typeof s.translationStyle === "string" ? s.translationStyle : "natural",
+      s.translationStyle === "custom" && typeof s.customPrompt === "string" ? s.customPrompt : "",
       Number(promptVersion) || 0,
       text,
       typeof context === "string" ? context : "",

@@ -32,6 +32,8 @@ if (typeof importScripts === "function") {
   let settingsMem = null;
   async function getSettingsCached() {
     if (!settingsMem) settingsMem = await getSettings();
+    await ensurePricing(false);
+    await ensureReasoningModels();
     return settingsMem;
   }
   try {
@@ -647,6 +649,7 @@ if (typeof importScripts === "function") {
         model,
         apiKey,
         reasoningEffort: reasoningEffortFor(settings, providerId, model),
+        translationStyle: settings.translationStyle, customPrompt: settings.customPrompt,
       });
     } catch (e) {
       return { ok: false, error: "build", message: String((e && e.message) || e) };
@@ -722,6 +725,7 @@ if (typeof importScripts === "function") {
       req = ProviderApi.buildRequest(providerId, {
         texts, contexts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey,
         reasoningEffort: reasoningEffortFor(settings, providerId, model), stream: true,
+        translationStyle: settings.translationStyle, customPrompt: settings.customPrompt,
       });
     } catch (_e) { return null; }
     await ensureMem();
@@ -905,9 +909,10 @@ if (typeof importScripts === "function") {
   // 通信はモデル一覧の force 取得時のみ + PRICING_TTL_MS で抑制 (数MB 級 JSON を毎回引かない)。
   const PRICING_URL = "https://models.dev/api.json";
   const PRICING_TTL_MS = 60 * 60 * 1000; // 1h: force 連打 (キー blur 保存の連続等) での再取得を抑える
-  const PRICING_VERSION = 4; // 抽出フォーマットの世代 (4 = 欠損価格の 0 化を排除)。旧世代キャッシュは TTL 内でも再取得する
+  const PRICING_VERSION = 5; // 5 = 各社API別の推論能力も保存。旧世代はTTL内でも再取得する
   // 拡張の providerId → models.dev のプロバイダキー (fugu は変動価格で意図的に未収録・mymemory は無料)
   const PRICING_PROVIDERS = { openai: "openai", anthropic: "anthropic", gemini: "google", xai: "xai", deepseek: "deepseek", groq: "groq", openrouter: "openrouter" };
+  const REASONING_PROVIDERS = { ...PRICING_PROVIDERS, fugu: "sakana" };
   let pricingLoaded = false;    // storage キャッシュを ModelPricing へ反映済みか (SW 起動ごとに 1 回)
   let pricingRefreshing = null; // 並行 force を 1 本の fetch に集約
   function extractPricing(json) {
@@ -944,6 +949,9 @@ if (typeof importScripts === "function") {
     if (!pricingLoaded) {
       pricingLoaded = true;
       if (cached && cached.map) ModelPricing.setDynamic(cached.map); // SW 再起動でもキャッシュ価格で即動く
+      for (const providerId of Object.keys(REASONING_PROVIDERS)) {
+        ProviderApi.setReasoningModels(providerId, cached?.reasoning?.[providerId], true);
+      }
     }
     if (!force) return;
     if (cached && cached.v === PRICING_VERSION && cached.fetchedAt && (Date.now() - cached.fetchedAt) < PRICING_TTL_MS) return;
@@ -952,22 +960,47 @@ if (typeof importScripts === "function") {
       try {
         const res = await fetch(PRICING_URL, { signal: withTimeout() });
         if (!res.ok) return;
-        const map = extractPricing(await res.json());
+        const json = await res.json();
+        const map = extractPricing(json);
         if (!Object.keys(map).length) return; // 形式変化等で空になったら既存キャッシュ/同梱表を保持 (壊さない)
         ModelPricing.setDynamic(map);
-        await chrome.storage.local.set({ [StorageKeys.PRICING_CACHE]: { map, fetchedAt: Date.now(), v: PRICING_VERSION } });
+        const reasoning = {};
+        for (const [providerId, key] of Object.entries(REASONING_PROVIDERS)) {
+          reasoning[providerId] = json[key]?.models
+            ? ProviderApi.parseCatalogModels(providerId, json[key].models) : (cached?.reasoning?.[providerId] || []);
+          ProviderApi.setReasoningModels(providerId, reasoning[providerId], true);
+        }
+        await chrome.storage.local.set({ [StorageKeys.PRICING_CACHE]: { map, reasoning, fetchedAt: Date.now(), v: PRICING_VERSION } });
       } catch (_e) { /* 取得失敗は同梱表フォールバックで続行 (モデル一覧表示を止めない) */ }
       finally { pricingRefreshing = null; }
     })();
     await pricingRefreshing;
   }
 
-  const MODEL_LIST_CACHE_VERSION = 3;
+  const MODEL_LIST_CACHE_VERSION = 4; // Live API専用モデルを含み得る旧一覧を破棄
+  let reasoningModelsLoading = null;
+  function ensureReasoningModels() {
+    if (!reasoningModelsLoading) reasoningModelsLoading = (async () => {
+      const all = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
+      for (const providerId of Providers.ids) {
+        const cached = all[providerId];
+        if (cached && cached.version === MODEL_LIST_CACHE_VERSION) {
+          ProviderApi.setReasoningModels(providerId, cached.reasoningModels || cached.models);
+        }
+      }
+    })().catch(() => { reasoningModelsLoading = null; });
+    return reasoningModelsLoading;
+  }
   // 価格カタログの更新より先に公開されたモデルも選べるよう、価格不明を含めて返す。
   // popup は price:null を「—」として表示する。
-  function modelEntries(ids) {
+  function modelEntries(ids, providerId) {
     // name は models.dev の公式表示名 (無ければ popup が ID 表示に倒す。undefined は storage 保存時に落ちる)
-    return ids.map((id) => ({ id, price: ModelPricing.lookup(id), name: ModelPricing.displayName(id) || undefined }));
+    return (Array.isArray(ids) ? ids : []).filter(model => typeof model === "string" || (model && typeof model.id === "string")).map((model) => {
+      const id = typeof model === "string" ? model : model.id;
+      const entry = { id, price: ModelPricing.lookup(id), name: ModelPricing.displayName(id) || undefined };
+      entry.reasoning = ProviderApi.reasoningProfile(providerId, id);
+      return entry;
+    });
   }
   // Anthropic は日付入り ID をエイリアス化し、同一エイリアスは新しい順で先頭(最新)だけ残す。
   function normalizeModelList(providerId, models) {
@@ -978,7 +1011,7 @@ if (typeof importScripts === "function") {
       const id = anthropicAlias(m.id);
       if (seen.has(id)) continue;
       seen.add(id);
-      out.push({ id, created: m.created });
+      out.push({ ...m, id });
     }
     return out;
   }
@@ -1009,9 +1042,12 @@ if (typeof importScripts === "function") {
     const sorted = sortNewest(providerId, ProviderApi.filterTranslationModels(providerId, ProviderApi.parseModels(providerId, json)));
     const normalized = normalizeModelList(providerId, sorted);
     // API の新しい順で上位 10 件。価格カタログ未収録でも一覧から消さない。
-    const top = modelEntries(normalized.slice(0, 10).map((m) => m.id));
+    const reasoningModels = [...sorted, ...normalized].filter(m => Object.hasOwn(m, "reasoning"))
+      .map(({ id, reasoning }) => ({ id, reasoning }));
+    ProviderApi.setReasoningModels(providerId, reasoningModels);
+    const top = modelEntries(normalized.slice(0, 10), providerId);
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
-    cacheAll[providerId] = { models: top, fetchedAt: Date.now(), version: MODEL_LIST_CACHE_VERSION };
+    cacheAll[providerId] = { models: top, reasoningModels, fetchedAt: Date.now(), version: MODEL_LIST_CACHE_VERSION };
     await chrome.storage.local.set({ [StorageKeys.MODELS_CACHE]: cacheAll });
     if (migrate) await migrateModel(providerId, top, normalized.map((m) => m.id));
     return { ok: true, models: top };
@@ -1037,6 +1073,7 @@ if (typeof importScripts === "function") {
     const apiKey = keyFor(settings, providerId);
     // 一覧表示に使う価格を用意する (force 時のみ通信・それ以外は storage キャッシュ反映のみ)
     await ensurePricing(Boolean(force));
+    await ensureReasoningModels();
     const cacheAll = (await chrome.storage.local.get(StorageKeys.MODELS_CACHE))[StorageKeys.MODELS_CACHE] || {};
     // 旧キャッシュは価格未登録モデルや各社の新しい同梱モデルを隠すので無効化する。
     const stored = cacheAll[providerId];
@@ -1044,12 +1081,12 @@ if (typeof importScripts === "function") {
     // 同梱モデルを返すフォールバック
     const fallback = () => ({
       ok: true, fallback: true,
-      models: modelEntries(provider.models || []),
+      models: modelEntries(provider.models || [], providerId),
     });
     // API 通信 (取得) は force のときだけ = 「API キー入力後」と「モデル更新ボタン押下時」のみ。
     // それ以外 (provider 切替 / popup 起動) は通信せず、キャッシュ or 同梱フォールバックを表示する。
     if (!force) {
-      if (cached) return { ok: true, models: cached.models, cached: true };
+      if (cached) return { ok: true, models: modelEntries(cached.models, providerId), cached: true };
       return fallback();
     }
     if (!apiKey) return fallback();
@@ -1072,29 +1109,64 @@ if (typeof importScripts === "function") {
     return btoa(bin);
   }
 
-  // バイト列の先頭プレフィックスから ASCII マーカー (構造チャンクの FourCC/識別子) を探す。
-  function hasMarker(bytes, marker, limit) {
-    const lim = Math.min(bytes.length, limit), mlen = marker.length;
-    for (let i = 0; i <= lim - mlen; i++) {
-      let ok = true;
-      for (let j = 0; j < mlen; j++) { if (bytes[i + j] !== marker.charCodeAt(j)) { ok = false; break; } }
-      if (ok) return true;
-    }
-    return false;
+  // コンテナ境界上のASCII識別子を照合する。
+  function imageTagAt(bytes, offset, tag) {
+    return offset + tag.length <= bytes.length &&
+      Array.from(tag).every((ch, index) => bytes[offset + index] === ch.charCodeAt(0));
   }
 
   // アニメーション画像 (アニメ GIF / アニメ WebP / APNG) 判定。createImageBitmap は先頭フレームしかデコードしない
-  // ため canvas inpaint で焼くと元 <img> のアニメが静止画に隠れて固まる → これらは翻訳対象外にする (content が
-  // ボタンを出さない)。構造マーカーを先頭プレフィックスから検出する (静止 GIF/WebP/PNG は素通り＝誤検出ほぼ無し)。
+  // ため翻訳対象外にする。圧縮データ・コメント内の同名バイト列は判定に使わず、コンテナの境界を歩く。
   function isAnimatedImage(bytes, mime) {
-    if (!bytes || bytes.length < 16) return false;
-    const SCAN = 65536; // マーカーは先頭付近 (WebP ANIM / APNG acTL / GIF NETSCAPE2.0・先頭フレーム群の GCE) で十分
-    if (mime === "image/webp") return hasMarker(bytes, "ANIM", SCAN); // VP8X + ANIM チャンク = アニメ WebP
-    if (mime === "image/png") return hasMarker(bytes, "acTL", SCAN);  // acTL = APNG の animation control
+    if (!bytes || bytes.length < 13) return false;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (mime === "image/webp" && imageTagAt(bytes, 0, "RIFF") && imageTagAt(bytes, 8, "WEBP")) {
+      const end = Math.min(bytes.length, 8 + view.getUint32(4, true));
+      for (let offset = 12; offset + 8 <= end;) {
+        const size = view.getUint32(offset + 4, true);
+        if (size > end - offset - 8) return false;
+        if (imageTagAt(bytes, offset, "ANIM") && size === 6) return true;
+        offset += 8 + size + (size % 2); // RIFFの奇数サイズchunkは1byte paddingを持つ
+      }
+    }
+    if (mime === "image/png" && imageTagAt(bytes, 1, "PNG")) {
+      for (let offset = 8; offset + 12 <= bytes.length;) {
+        const size = view.getUint32(offset);
+        if (size > bytes.length - offset - 12) return false;
+        if (imageTagAt(bytes, offset + 4, "acTL") && size === 8 && view.getUint32(offset + 8) > 0) return true;
+        if (imageTagAt(bytes, offset + 4, "IDAT") || imageTagAt(bytes, offset + 4, "IEND")) return false;
+        offset += 12 + size;
+      }
+    }
     if (mime === "image/gif") {
-      if (hasMarker(bytes, "NETSCAPE2.0", SCAN)) return true; // ループ拡張 = アニメ GIF
-      let gce = 0; const lim = Math.min(bytes.length, SCAN) - 2; // GCE (0x21 0xF9 0x04) が 2 個以上 = 複数フレーム
-      for (let i = 0; i <= lim; i++) { if (bytes[i] === 0x21 && bytes[i + 1] === 0xF9 && bytes[i + 2] === 0x04 && ++gce >= 2) return true; }
+      if (!imageTagAt(bytes, 0, "GIF87a") && !imageTagAt(bytes, 0, "GIF89a")) return false;
+      let offset = 13 + ((bytes[10] & 0x80) ? 3 * (2 << (bytes[10] & 7)) : 0), frames = 0;
+      const skipSubBlocks = start => {
+        let cursor = start;
+        while (cursor < bytes.length) {
+          const size = bytes[cursor++];
+          if (size === 0) return cursor;
+          if (size > bytes.length - cursor) return -1;
+          cursor += size;
+        }
+        return -1;
+      };
+      while (offset < bytes.length) {
+        const tag = bytes[offset];
+        if (tag === 0x3b) return false; // trailer。ここまでに2画像あれば既にtrueを返している
+        if (tag === 0x21) {
+          if (offset + 2 > bytes.length) return false;
+          offset = skipSubBlocks(offset + 2); // 拡張の識別子/データを画像として数えない
+        } else if (tag === 0x2c) {
+          if (offset + 10 > bytes.length) return false;
+          const packed = bytes[offset + 9];
+          offset += 10 + ((packed & 0x80) ? 3 * (2 << (packed & 7)) : 0);
+          if (offset >= bytes.length) return false;
+          offset = skipSubBlocks(offset + 1); // LZW最小コードサイズの次から画像データ
+          if (offset >= 0 && ++frames >= 2) return true;
+        } else return false;
+        if (offset < 0) return false;
+      }
     }
     return false;
   }
@@ -1197,6 +1269,7 @@ if (typeof importScripts === "function") {
           sourceLang: settings.sourceLang, targetLang: settings.targetLang,
           model: useModel, apiKey,
           reasoningEffort: reasoningEffortFor(settings, providerId, useModel),
+          translationStyle: settings.translationStyle, customPrompt: settings.customPrompt,
         });
       } catch (e) {
         return { ok: false, error: "build", message: String((e && e.message) || e) };
@@ -1219,14 +1292,15 @@ if (typeof importScripts === "function") {
     const r = await runVision(model);
     if (!r.ok) return r;
 
-    const blocks = ProviderApi.parseImageBlocks(providerId, r.json);
     const usage = ProviderApi.parseUsage(providerId, r.json);
     await ensureMem(); // 既存の月次 usage を読み込んでから加算 (cold start の初回が画像翻訳でも上書きしない)
     recordUsage(providerId, usage);
+    const result = ProviderApi.parseImageResult(providerId, r.json);
+    if (!result.ok) return result;
     // image: content 側の canvas inpaint 用に取得済みバイトを返す。ページ側で cross-origin <img> を
     // 直接 draw すると canvas が taint され getImageData/toDataURL が封じられるため、SW が host_permissions で
     // 取得済みの base64 を渡し content は createImageBitmap(blob) で CORS-safe に再構築する。
-    return { ok: true, blocks, image: { base64: b64, mime } };
+    return { ...result, image: { base64: b64, mime } };
   }
 
   function imageDimensionsTooLarge(width, height) {
@@ -1592,6 +1666,7 @@ if (typeof importScripts === "function") {
       }
       return Object.assign({}, res, {
         translations,
+        ...(Array.isArray(res.failedIndices) ? { failedIndices: res.failedIndices.map(index => missIndices[index]) } : {}),
         cacheHits: texts.length - missTexts.length,
         attemptedTextCount: missTexts.length,
       });
@@ -1644,6 +1719,10 @@ if (typeof importScripts === "function") {
               // 旧 provider・旧キー・旧言語で実行されるのを防ぐ (TRANSLATE_IMAGE と同じ理由)。
               await settingsWriteChain;
               settings = resolveSettings(msg.settings, await getSettingsCached()); // quick等は最新設定を使う
+              // popup専用の言語を使う。選択範囲の翻訳は従来どおりページ翻訳と同じ言語を使う。
+              if (MessagePolicy.isExtensionPageSender(sender, extensionBase)) {
+                settings = { ...settings, sourceLang: settings.quickSourceLang, targetLang: settings.quickTargetLang };
+              }
             }
             // 復元/再翻訳で中断できるよう AbortController をタブ単位で登録する。ただし quick
             // (popup クイック翻訳 / 選択テキスト翻訳) は短い単発で、ページの復元/再翻訳 (abortTab) に
@@ -1739,7 +1818,9 @@ if (typeof importScripts === "function") {
             break;
           }
           case Actions.GET_MODELS: {
-            sendResponse(await getModelsForProvider(msg.provider, msg.force));
+            const result = await getModelsForProvider(msg.provider, msg.force);
+            const latest = await getSettings();
+            sendResponse({ ...result, currentModel: Providers.ids.includes(msg.provider) ? latest.models[msg.provider] : undefined });
             break;
           }
           default:

@@ -20,6 +20,7 @@
 
   const A = globalThis.Actions;
   if (!A) return;
+  const MIN_IMAGE_FONT_SIZE = 12; // CSS px。canvas解像度や元画像の文字サイズに依存させない
 
   let btn = null;
   let target = null;
@@ -75,7 +76,9 @@
     if (!btn) return;
     const on = isTranslated(img);
     btn.textContent = on ? "原" : "訳";
-    btn.title = on ? tr("imgRevert", "画像の翻訳を消して元に戻す") : tr("imgBtn", "画像内のテキストを翻訳");
+    btn.title = on ? (img.closest(".__rt-img-wrap").__rtPartial ?
+      tr("imgPartial", "出力上限に達したため一部のみ翻訳しました。クリックで元に戻します") :
+      tr("imgRevert", "画像の翻訳を消して元に戻す")) : tr("imgBtn", "画像内のテキストを翻訳");
     btn.classList.toggle("__rt-img-btn-on", on);
   }
 
@@ -404,7 +407,16 @@
     const rect = img.getBoundingClientRect();
     const imgH = rect.height || img.clientHeight || 0;
     const imgW = rect.width || img.clientWidth || 0;
-    blocks.forEach((blk) => {
+    const style = getComputedStyle(img);
+    if (imgW > 0 && imgH > 0 && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const fit = fitDrawRect(style.objectFit, img.naturalWidth, img.naturalHeight, imgW, imgH, style.objectPosition);
+      blocks = remapBlocksToFit(blocks, fit, imgW, imgH).filter(blockInView);
+    }
+    const items = blocks.map(blk => {
+      const r = blockPixelRect(blk, imgW, imgH);
+      return { pb: { x0: r.x, y0: r.y, x1: r.x + r.w, y1: r.y + r.h, w: r.w, h: r.h, cyPx: r.y + r.h / 2 } };
+    });
+    blocks.forEach((blk, index) => {
       const el = document.createElement("div");
       el.className = "__rt-img-block";
       if (blk.original) el.title = blk.original;
@@ -425,8 +437,8 @@
       el.style.width = `${wPct * 100}%`;
       // 高さも OCR の元枠 (box.h) に固定。min-height だと訳文が伸びたとき div が下へ膨張し隣のブロックに重なる。
       // ただし極小画像/極小 box.h で 1 行も描けない高さ (例 60px 画像 × box.h 0.03 = 1.8px) に潰れないよう、
-      // 最小フォント (9px) 1 行ぶん (~14px) を下限にする (旧 min-height が 1 行ぶん確保していた挙動の代替)。
-      const boxHpx = Math.max(14, Math.max(0.03, blk.box.h) * imgH);
+      // 最小フォント12pxの1行とpaddingを下限にする。
+      const boxHpx = Math.max(MIN_IMAGE_FONT_SIZE * 1.18 + 2, Math.max(0.03, blk.box.h) * imgH);
       if (imgH > 0) {
         el.style.height = `${boxHpx}px`;
         // 垂直位置は cy (テキストの縦中央) に帯の中心を合わせる。VLM は box.y (枠上端) より cy を桁違いに
@@ -438,8 +450,32 @@
         const topPx = Math.min(Math.max(0, cyN * imgH - boxHpx / 2), Math.max(0, imgH - boxHpx));
         el.style.top = `${topPx}px`;
         layer.appendChild(el); // clientWidth/Height 計測のため先に DOM へ
-        const targetW = Math.max(8, el.clientWidth - 8);   // 左右 padding 4px*2 (負値ガード)
-        const targetH = Math.max(8, el.clientHeight - 2);  // 上下 padding 1px*2 (負値ガード)
+        let targetW = Math.max(8, el.clientWidth - 8);
+        let targetH = Math.max(8, el.clientHeight - 2);
+        // 12pxで溢れる小さい枠は、隣の文字に重ならない余白へ先に広げる。
+        span.style.fontSize = `${MIN_IMAGE_FONT_SIZE}px`;
+        if (span.getBoundingClientRect().height > targetH + 0.5) {
+          const item = items[index], hw = availHWForFlat(items, item, imgW);
+          const align = hw.r > hw.l * 1.5 + MIN_IMAGE_FONT_SIZE ? "left"
+            : hw.l > hw.r * 1.5 + MIN_IMAGE_FONT_SIZE ? "right" : "center";
+          const width = Math.min(imgW, item.pb.w + (align === "left" ? hw.r : align === "right" ? hw.l : 2 * Math.min(hw.l, hw.r)));
+          const left = align === "left" ? item.pb.x0 : align === "right" ? item.pb.x1 - width : (item.pb.x0 + item.pb.x1 - width) / 2;
+          el.style.left = `${Math.max(0, Math.min(imgW - width, left))}px`;
+          el.style.width = `${width}px`;
+          span.style.textAlign = align;
+          targetW = Math.max(8, el.clientWidth - 8);
+          const needed = span.getBoundingClientRect().height + 2;
+          let topLimit = 0, bottomLimit = imgH;
+          for (const other of items) {
+            if (other === item || other.pb.x1 <= left || other.pb.x0 >= left + width) continue;
+            if (other.pb.cyPx < item.pb.cyPx) topLimit = Math.max(topLimit, other.pb.y1 + 2);
+            else bottomLimit = Math.min(bottomLimit, other.pb.y0 - 2);
+          }
+          const height = Math.max(boxHpx, Math.min(needed, bottomLimit - topLimit));
+          el.style.height = `${height}px`;
+          el.style.top = `${Math.max(topLimit, Math.min(bottomLimit - height, cyN * imgH - height / 2))}px`;
+          targetH = Math.max(8, el.clientHeight - 2);
+        }
         // 「文字が枠を埋める1行ぶんの高さ」を文字面積モデルで推定し、フォント上限にする。これを常に効かせて、
         // 原文 (original) が来ないとき上限が箱の高さ (最大48px) に張り付き、短い訳文が巨大化するのを防ぐ。
         // 面積モデル: 行高 L・文字幅≈0.6L とすると len·0.6·L² ≈ boxW·boxH → L = √(boxW·boxH / (len·0.6))。
@@ -448,9 +484,9 @@
         const effLen = origLen > 1 ? origLen : Math.max(2, (blk.translation || "").trim().length) * 2;
         const lineHpx = Math.sqrt((targetW * boxHpx) / (effLen * 0.6));
         // 単一行の箱 (高さが小さい) は箱の高さで頭打ち、複数行の箱は1行ぶんに抑える。絶対上限も 40px に控える。
-        const maxFs = Math.min(40, Math.max(9, Math.round(Math.min(boxHpx, lineHpx) / 1.15)));
-        fitFontSize(span, targetW, targetH, 9, maxFs);
-        // 9px でも枠に収まらない多行訳文は、中央寄せだと全行が均等に欠ける。上寄せにして先頭行を必ず丸ごと残す。
+        const maxFs = Math.min(40, Math.max(MIN_IMAGE_FONT_SIZE, Math.round(Math.min(boxHpx, lineHpx) / 1.15)));
+        fitFontSize(span, targetW, targetH, MIN_IMAGE_FONT_SIZE, maxFs);
+        // 周囲の余白を使っても収まらない場合は上寄せにし、先頭行を残す。
         if (span.getBoundingClientRect().height > targetH + 0.5) el.style.alignItems = "flex-start";
       } else {
         el.style.top = `${blk.box.y * 100}%`; // 画像高さ不明時は cy→px 換算できないので従来どおり box.y
@@ -482,6 +518,12 @@
   // レターボックス透明画素をサンプリングから除外するのに使う (null=全面=恒等)。renderInpaint の描画区間は
   // await を挟まない同期処理なので、set→使用→finally で null クリアまで他の renderInpaint と競合しない。
   let inpaintFit = null;
+  function imageContentBounds(W, H) {
+    return inpaintFit ? {
+      x0: Math.max(0, Math.ceil(inpaintFit.dx)), y0: Math.max(0, Math.ceil(inpaintFit.dy)),
+      x1: Math.min(W, Math.floor(inpaintFit.dx + inpaintFit.dw)), y1: Math.min(H, Math.floor(inpaintFit.dy + inpaintFit.dh)),
+    } : { x0: 0, y0: 0, x1: W, y1: H };
+  }
 
   // box の外周リング (内側=文字部分は除外) をサンプリングし、背景の代表色・平坦さ(std)・明暗・不透明度(alpha)を返す。
   // 平坦なら「背景色 fill で原文を消す」、textured なら「半透明の帯で隠す」を選ぶ判断に使う。alpha は透過背景の保護用。
@@ -518,6 +560,8 @@
     const lines = [];
     let line = "";
     for (const ch of String(text)) {
+      if (ch === "\r") continue;
+      if (ch === "\n") { lines.push(line); line = ""; continue; }
       const test = line + ch;
       if (ch !== " " && line && ctx.measureText(test).width > maxWidth) {
         lines.push(line); line = ch;
@@ -525,18 +569,34 @@
         line = test;
       }
     }
-    if (line) lines.push(line);
-    return lines.length ? lines : [String(text)];
+    lines.push(line);
+    return lines;
+  }
+
+  // font-sizeのemではなく実際の文字面を測り、英字とCJKのベースライン差も含めて中央を合わせる。
+  function canvasLineMetrics(ctx, lines, fontSize) {
+    let ascent = 0, descent = 0;
+    for (const line of lines) {
+      const metrics = ctx.measureText(line || "Mg");
+      ascent = Math.max(ascent, Number(metrics.actualBoundingBoxAscent) || 0);
+      descent = Math.max(descent, Number(metrics.actualBoundingBoxDescent) || 0);
+    }
+    if (ascent + descent <= 0) { ascent = fontSize * 0.8; descent = fontSize * 0.2; }
+    const lineHeight = Math.max(fontSize * 1.18, ascent + descent);
+    return { ascent, descent, lineHeight, height: ascent + descent + Math.max(0, lines.length - 1) * lineHeight };
   }
 
   // 枠 (innerW×innerH) に収まる最大フォント(px)と折り返し行を二分探索で求める (canvas 版 fitFontSize)。
-  function fitCanvasFont(ctx, text, innerW, innerH, family) {
-    let lo = 7, hi = Math.max(7, Math.floor(innerH)), best = 7, bestLines = [String(text)];
+  function fitCanvasFont(ctx, text, innerW, innerH, family, minFs = MIN_IMAGE_FONT_SIZE, maxFs = innerH) {
+    const minimum = Math.max(1, Math.ceil(minFs));
+    let lo = minimum, hi = Math.max(minimum, Math.floor(maxFs)), best = minimum;
+    ctx.font = `600 ${minimum}px ${family}`;
+    let bestLines = wrapCanvasText(ctx, text, innerW);
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       ctx.font = `600 ${mid}px ${family}`;
       const lines = wrapCanvasText(ctx, text, innerW);
-      const fits = lines.length * mid * 1.18 <= innerH && lines.every((l) => ctx.measureText(l).width <= innerW);
+      const fits = canvasLineMetrics(ctx, lines, mid).height <= innerH && lines.every((l) => ctx.measureText(l).width <= innerW);
       if (fits) { best = mid; bestLines = lines; lo = mid + 1; } else hi = mid - 1;
     }
     return { fontSize: best, lines: bestLines };
@@ -556,8 +616,9 @@
   function snapToInk(ctx, x, y, w, h, bg, W, H) {
     // 左を厚く(行頭の取りこぼし対策・字高 1 文字ぶんは必ず左を見る)、右と上下は控えめ。
     const mxL = Math.max(w * 0.30, h * 0.7), mxR = w * 0.14, my = h * 0.28;
-    const sx = Math.max(0, Math.floor(x - mxL)), sy = Math.max(0, Math.floor(y - my));
-    const ex = Math.min(W, Math.ceil(x + w + mxR)), ey = Math.min(H, Math.ceil(y + h + my));
+    const bounds = imageContentBounds(W, H);
+    const sx = Math.max(bounds.x0, Math.floor(x - mxL)), sy = Math.max(bounds.y0, Math.floor(y - my));
+    const ex = Math.min(bounds.x1, Math.ceil(x + w + mxR)), ey = Math.min(bounds.y1, Math.ceil(y + h + my));
     const rw = ex - sx, rh = ey - sy;
     if (rw < 3 || rh < 3) return null;
     let d;
@@ -568,6 +629,7 @@
       for (let px = 0; px < rw; px += step) {
         sampled++;
         const o = (py * rw + px) * 4;
+        if (d[o + 3] < 128) continue;
         const dr = d[o] - bg[0], dg = d[o + 1] - bg[1], db = d[o + 2] - bg[2];
         if (dr * dr + dg * dg + db * db > 2304) { // RGB ユークリッド距離 ~48 超 = 文字インク(細い縦画/薄字/AA 縁も拾う)
           if (px < minx) minx = px; if (px > maxx) maxx = px;
@@ -586,7 +648,10 @@
     const uy = Math.min(y, iy);
     const uex = Math.min(x + w + maxExtend, Math.max(x + w, iex));
     const uey = Math.max(y + h, iey);
-    return { x: ux, y: uy, w: Math.max(2, uex - ux), h: Math.max(2, uey - uy) };
+    // 消去域はunionのまま保持し、文字の配置・サイズには余白を含まないinkを使う。
+    const inkX = Math.max(x - maxExtend, sx + minx), inkRight = Math.min(x + w + maxExtend, sx + maxx + step);
+    return { x: ux, y: uy, w: Math.max(2, uex - ux), h: Math.max(2, uey - uy),
+      ink: { x: inkX, y: sy + miny, w: Math.max(2, inkRight - inkX), h: Math.max(2, maxy - miny + step) } };
   }
 
   // ===== 行間ストリップ埋め (症状: 段落の行間に原文の黒帯が残る) =====
@@ -656,7 +721,6 @@
                                   // 大きく焼き、同 px だと窮屈な CJK の可読性を確保する。行重なりは avail*availClamp(<1.0)
                                   // クランプ + wrap/fitCanvasFont の縦予算で構造的に防ぐ(各行高さ ≤ 隣行ピッチの 90%)ので、
                                   // 隣に余白がある行(見出し/孤立行)だけが ABS_MAX まで実際に伸び、密な行は avail で頭打ちになる
-  const MIN_READABLE_PHYS = 12;   // 表示換算の可読下限 px (scale で物理 px へ換算)
   const ABS_MAX = 40;             // 焼き込みフォントの絶対上限 px (短語/極短 box の暴発防止)
 
   function median(arr) {
@@ -670,11 +734,17 @@
   // 連結判定 (shouldLinkRowsPitch) の色条件は両方 flat のときだけ要求する。cyPx=描画と同じ縦中央。
   function pixelBoxOf(ctx, blk, W, H) {
     if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
-    const { x, y, w, h } = blockPixelRect(blk, W, H);
-    const st = ringStats(ctx, x, y, w, h, W, H);
+    const rect = blockPixelRect(blk, W, H);
+    const st = ringStats(ctx, rect.x, rect.y, rect.w, rect.h, W, H);
+    const flat = !!(st && st.std < 24 && (st.alpha == null || st.alpha >= 0.5));
+    const snap = flat ? snapToInk(ctx, rect.x, rect.y, rect.w, rect.h, st.color, W, H) : null;
+    const { x, y, w, h } = snap ? snap.ink : rect;
+    blk.__rtTextBox = { x, y, w, h };
+    blk.__rtEraseBox = snap || rect;
+    blk.__rtBackground = st;
     // cyPx は描画と同じ「クランプ後の縦中央」(y+h/2)。pitch 計測も availPitch も実際の描画位置と一致させる
     // (端でクランプされた行を cyN*H にすると gap を過小評価し font が不要に縮む)。
-    return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, cyPx: y + h / 2, color: st ? st.color : [128, 128, 128], flat: !!(st && st.std < 24) };
+    return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, cyPx: y + h / 2, color: st ? st.color : [128, 128, 128], flat };
   }
 
   // shouldLinkRows と同条件だが、色一致は「両方 flat」のときだけ要求 (textured 段落も同段落として連結し pitch を測る)。
@@ -729,11 +799,12 @@
 
   // 段落 (shouldLinkRowsPitch で連結する隣接行) ごとに pitch を測り、font = pitch*PITCH_TO_FONT で per-block 確定。
   // box.h は det 締めで信用できないため pitch (cy 間隔) を主信号にする。各 index に確定 font(px) を返す
-  // (0 = 縦書き/極小/textured で無効化 → 呼び出し側の個別 fit に委譲)。
-  function computeGroupFonts(ctx, blocks, W, H) {
+  // (0 = 縦書き/textured で無効化 → 呼び出し側の個別 fit に委譲)。
+  function computeGroupFonts(ctx, blocks, W, H, scale = 1) {
+    const minFont = Math.max(1, Math.ceil(MIN_IMAGE_FONT_SIZE * scale));
     const fonts = new Array(blocks.length).fill(0);
     const items = [];
-    blocks.forEach((blk, idx) => { const pb = pixelBoxOf(ctx, blk, W, H); if (pb && pb.h >= 4) items.push({ idx, pb, blk }); });
+    blocks.forEach((blk, idx) => { const pb = pixelBoxOf(ctx, blk, W, H); if (pb) items.push({ idx, pb, blk }); });
     if (!items.length) return fonts;
     items.sort((a, b) => a.pb.cyPx - b.pb.cyPx);
     items.forEach((it, i) => { it.avail = availPitchFor(items, i); });
@@ -768,9 +839,13 @@
       // 単独行は box.h から直接 font を復元 (tight な det/visible-glyph box は font の ~0.75 倍に痩せるため
       // H_TO_FONT で戻す)。複数行は cy 間隔 (pitch=行送り) が原文サイズの直接信号なので pitch*PITCH_TO_FONT を保つ。
       const isSingle = group.length < 2;
-      const targetFont = isSingle
+      let targetFont = isSingle
         ? Math.round(group[0].pb.h * H_TO_FONT)
         : Math.min(Math.round(pitch * PITCH_TO_FONT), Math.round(pitch * pitchClamp));
+      const measured = group.filter(it => typeof it.blk.original === "string" && it.blk.original.trim())
+        .map(it => fitCanvasFont(ctx, it.blk.original, it.pb.w, it.pb.h, CANVAS_FONT, 1, ABS_MAX * scale).fontSize);
+      if (measured.length) targetFont = median(measured);
+      targetFont = Math.max(minFont, targetFont);
       dbg("group", "lines=" + group.length, "single=" + isSingle, "pitch=" + Math.round(pitch), "target=" + targetFont);
       // --- 各 block にガード + 上限 + 折返し縮小を適用 ---
       for (const it of group) {
@@ -779,18 +854,29 @@
         if (!pb.flat) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "textured-skip"); continue; } // textured は従来 fit
         const aspect = h / w;
         if ((aspect > 2.2 && w < targetFont * 1.2) || trans.trim().length <= 1) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "vert/1char-skip"); continue; } // G2
-        if (h < 10) { fonts[it.idx] = 0; it.blk.__rtEffInnerW = 0; dbg("blk", "tiny-skip h=" + Math.round(h)); continue; } // G6 極小 box
         const innerW = Math.max(4, w - 2 * (w * 0.05));
         // 単独行は均一余白へ横展開する (英→全角で訳文が英文 box.w を超え、折返し/縮小で原文より小さくなるのを防ぐ)。
         // 左右の安全余白の小さい側ぶんだけ対称に広げる (中央寄せ描画と整合・はみ出さない)。
         // flat は背景色 fill で消すため flat 時のみ展開する。多行は box.w のまま。
         let effInnerW = innerW;
+        it.blk.__rtTextAlign = "center";
         if (isSingle && pb.flat) {
           const hw = availHWForFlat(items, it, W);
-          effInnerW = Math.min(innerW + 2 * Math.min(hw.l, hw.r), W * 0.96);
+          if (hw.r > hw.l * 1.5 + minFont) {
+            it.blk.__rtTextAlign = "left";
+            effInnerW = Math.min(innerW + hw.r, W - pb.x0);
+          } else if (hw.l > hw.r * 1.5 + minFont) {
+            it.blk.__rtTextAlign = "right";
+            effInnerW = Math.min(innerW + hw.l, pb.x1);
+          } else effInnerW = Math.min(innerW + 2 * Math.min(hw.l, hw.r), W * 0.96);
+        } else if (group.length > 1) {
+          const leftSpread = Math.max(...group.map(row => row.pb.x0)) - Math.min(...group.map(row => row.pb.x0));
+          const rightSpread = Math.max(...group.map(row => row.pb.x1)) - Math.min(...group.map(row => row.pb.x1));
+          if (leftSpread + scale < rightSpread) it.blk.__rtTextAlign = "left";
+          else if (rightSpread + scale < leftSpread) it.blk.__rtTextAlign = "right";
         }
         it.blk.__rtEffInnerW = (effInnerW > innerW + 1) ? effInnerW : 0; // 展開幅を drawInpaintBlock へ伝達 (未展開は 0)
-        let font = Math.min(targetFont, ABS_MAX);
+        let font = Math.min(targetFont, ABS_MAX * scale);
         // 面積上限 areaCap は診断ログ用に残すが font の縮小には使わない。実際のあふれは下の avail クランプ(縦)と
         // wrap/fitCanvasFont(横+縦)が捉えるので、areaCap の「1 行ぶんの面積モデル」で『2 行に折れば大きく入る訳文』
         // まで潰すのを避ける (textured 行が target を割って小さく焼かれていた主因＝logs の flat=false areaCap<target)。
@@ -804,29 +890,52 @@
         const wrapped = wrapCanvasText(ctx, trans, effInnerW);
         const vBudget = (it.avail !== Infinity) ? it.avail * availClamp : h * 2.4;
         const tooWide = wrapped.some((l) => ctx.measureText(l).width > effInnerW);
-        const tooTall = wrapped.length * font * 1.18 > vBudget;
+        const tooTall = canvasLineMetrics(ctx, wrapped, font).height > vBudget;
         if (tooWide || tooTall) {
-          const fit = fitCanvasFont(ctx, trans, effInnerW, vBudget, CANVAS_FONT);
+          const fit = fitCanvasFont(ctx, trans, effInnerW, vBudget, CANVAS_FONT, minFont, font);
           font = Math.min(font, fit.fontSize);
         }
         dbg("blk", "h=" + Math.round(h), "single=" + isSingle, "flat=" + pb.flat, "target=" + targetFont, "areaCap=" + areaCap,
           "avail=" + (it.avail === Infinity ? "inf" : Math.round(it.avail)), "eff=" + Math.round(effInnerW) + "/" + Math.round(innerW), "font=" + font, "wrap=" + wrapped.length);
-        fonts[it.idx] = font;
+        fonts[it.idx] = Math.max(minFont, font);
       }
     }
     return fonts;
   }
 
-  // 1 ブロックぶん: 原文を消し (平坦=背景色 fill / textured=半透明帯) 訳文を縦中央 (cy) に焼き込む。
-  // forcedFont>0 のとき pitch ベースの確定フォント (computeGroupFonts) を無条件採用し、元の見た目サイズへ拡大する。
-  // scale=W/表示ボックス幅 で物理可読下限を換算する。
-  function drawInpaintBlock(ctx, blk, W, H, forcedFont, scale) {
-    let { x, y, w, h } = blockPixelRect(blk, W, H);
-    const st = ringStats(ctx, x, y, w, h, W, H);
+  // 原文の文字面を基準に配置し、計測で決めたサイズにも表示上12pxの下限を適用する。
+  function layoutInpaintText(ctx, blk, W, H, forcedFont, scale = 1) {
+    const { x, y, w, h } = blk.__rtTextBox || blockPixelRect(blk, W, H);
+    const bounds = imageContentBounds(W, H);
+    const minFont = Math.max(1, Math.ceil(MIN_IMAGE_FONT_SIZE * scale));
+    let effW = Math.min(bounds.x1 - bounds.x0, Math.max(minFont, w * 0.9, blk.__rtEffInnerW || 0));
+    const fontSize = Math.max(minFont, forcedFont || fitCanvasFont(ctx, blk.translation, effW,
+      Math.max(h * 0.84, minFont), CANVAS_FONT, minFont, ABS_MAX * scale).fontSize);
+    ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
+    let lines = wrapCanvasText(ctx, blk.translation, effW);
+    const lineWidths = lines.map(line => ctx.measureText(line).width);
+    if (lineWidths.some(width => width > effW)) {
+      effW = Math.min(bounds.x1 - bounds.x0, Math.max(effW, ...lineWidths));
+      lines = wrapCanvasText(ctx, blk.translation, effW);
+    }
+    const metrics = canvasLineMetrics(ctx, lines, fontSize);
+    const textWidth = Math.max(0, ...lines.map(line => ctx.measureText(line).width));
+    const center = (value, start, end, extent) => extent >= end - start ? (start + end) / 2
+      : Math.max(start + extent / 2, Math.min(end - extent / 2, value));
+    const align = blk.__rtTextAlign || "center";
+    const desiredX = align === "left" ? x + textWidth / 2 : align === "right" ? x + w - textWidth / 2 : x + w / 2;
+    const cx = center(desiredX, bounds.x0, bounds.x1, textWidth);
+    const cy = center(y + h / 2, bounds.y0, bounds.y1, metrics.height);
+    const textX = align === "left" ? cx - textWidth / 2 : align === "right" ? cx + textWidth / 2 : cx;
+    return { fontSize, lines, metrics, width: textWidth, cx, cy, align, textX };
+  }
+
+  // 背景の計測と原文消去を描画から分離し、隣の訳文を次のblockの消去で消さない。
+  function eraseInpaintBlock(ctx, blk, W, H) {
+    const { x, y, w, h } = blk.__rtEraseBox || blockPixelRect(blk, W, H);
+    const st = blk.__rtBackground;
     const flat = st && st.std < 24; // 外周の色ブレが小さい=平坦背景 → 背景色 fill で原文を消せる
     if (flat) {
-      const snap = snapToInk(ctx, x, y, w, h, st.color, W, H); // Phase 2: 実 glyph 位置へ消去域を補正(union・広げるのみ)
-      if (snap) { x = snap.x; y = snap.y; w = snap.w; h = snap.h; }
       // 消去マージンを字高(h)基準の非対称に。横6%固定では行頭グリフ縁と行間/周囲の薄残りを覆えない。
       const dl = Math.max(3, h * 0.34); // 左: 行頭余白を厚く(行頭ゴースト対策)
       const dr = Math.max(2, h * 0.16); // 右: 訳文はみ出し抑制で控えめ
@@ -840,43 +949,31 @@
       }
     } else {
       ctx.fillStyle = "rgba(20,28,38,0.84)"; // textured: 半透明の暗い帯で隠す (従来オーバーレイ相当を canvas に焼く)
-      roundRectPath(ctx, x, y, w, h, Math.min(6, h * 0.2));
+      const layout = blk.__rtTextLayout;
+      const left = layout ? Math.min(x, layout.cx - layout.width / 2 - 2) : x;
+      const top = layout ? Math.min(y, layout.cy - layout.metrics.height / 2 - 2) : y;
+      const right = layout ? Math.max(x + w, layout.cx + layout.width / 2 + 2) : x + w;
+      const bottom = layout ? Math.max(y + h, layout.cy + layout.metrics.height / 2 + 2) : y + h;
+      roundRectPath(ctx, left, top, right - left, bottom - top, Math.min(6, h * 0.2));
       ctx.fill();
     }
-    const padX = w * 0.05, padY = h * 0.08;
-    const innerW = Math.max(4, w - 2 * padX), innerH = Math.max(4, h - 2 * padY);
-    // computeGroupFonts が flat 単独行に決めた横展開幅 (均一余白へ広げて全角訳文を原文サイズ 1 行に保つ)。未展開は box 幅。
-    const effW = (blk.__rtEffInnerW > 0) ? Math.max(innerW, blk.__rtEffInnerW) : innerW;
-    let fit; // 確定フォントが幅ゲートを通る場合は枠フィット計算を省く。
-    // forcedFont>0 は pitch + 幅 + avail(隣行間隔)の各ガードを織り込んだ重なり安全な確定値 → 無条件採用 (上方向拡大を通す)。
-    // これを minReadable で超えて底上げすると隣行/幅へ食い込むため、forcedFont があるときは底上げしない。
-    // fallback(0)のときだけ枠フィット + 物理可読下限へ底上げ (枠 innerH を割らない範囲で表示 ~12px 相当を確保)。
-    let fontSize;
-    if (forcedFont && forcedFont > 0) {
-      fontSize = forcedFont;
-    } else {
-      fit = fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
-      const minReadable = Math.round(MIN_READABLE_PHYS * Math.max(1, scale || 1));
-      fontSize = Math.max(fit.fontSize, Math.min(minReadable, Math.floor(innerH / 1.18)));
-    }
+  }
+
+  function drawInpaintBlock(ctx, blk, W, H, forcedFont, scale) {
+    const { fontSize, lines, metrics, cy, align, textX } = blk.__rtTextLayout || layoutInpaintText(ctx, blk, W, H, forcedFont, scale);
+    const st = blk.__rtBackground;
+    const flat = st && st.std < 24;
     ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`;
-    let lines = wrapCanvasText(ctx, blk.translation, effW);
-    // 幅はみ出しの最終ゲート: 1 行でも effW を超えるならこの block だけ枠フィットへ落とす。
-    if (lines.some((l) => ctx.measureText(l).width > effW)) {
-      fit ||= fitCanvasFont(ctx, blk.translation, effW, innerH, CANVAS_FONT);
-      fontSize = fit.fontSize; ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`; lines = fit.lines;
-    }
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    ctx.textAlign = align;
+    ctx.textBaseline = "alphabetic";
     ctx.fillStyle = flat ? (st.dark ? "#f5f5f5" : "#1a1a1a") : "#ffffff";
     // 同色細縁: 縮小/低面積でのコントラスト低下を補強 (太字化せず stroke を fill と同色で薄く重ねる)。
     ctx.lineJoin = "round"; ctx.lineWidth = Math.min(1.5, fontSize * 0.06); ctx.strokeStyle = ctx.fillStyle;
-    const lineH = fontSize * 1.18;
-    const startY = y + h / 2 - (lines.length - 1) * lineH / 2;
+    const startY = cy - metrics.height / 2 + metrics.ascent;
     if (!flat) { ctx.shadowColor = "rgba(0,0,0,0.55)"; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1; }
-    lines.forEach((ln, i) => ctx.strokeText(ln, x + w / 2, startY + i * lineH)); // textured は halo、flat は同色細縁
+    lines.forEach((ln, i) => ctx.strokeText(ln, textX, startY + i * metrics.lineHeight));
     ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-    lines.forEach((ln, i) => ctx.fillText(ln, x + w / 2, startY + i * lineH));   // 本体 (halo 二重を避け shadow off)
+    lines.forEach((ln, i) => ctx.fillText(ln, textX, startY + i * metrics.lineHeight));
     ctx.lineWidth = 0;
   }
 
@@ -896,11 +993,25 @@
   // object-fit:cover/contain を canvas 上で再現する描画先矩形 (canvas px)。
   // 元画像(全体)をこの矩形へ drawImage(9引数) すると、その object-fit の表示クロップ/レターボックスを複製できる。
   // fill/none/その他は全面 (= 現行と同一の恒等描画)。これで cover の X 画像等でも歪まず原文消去できる。
-  function fitDrawRect(fit, srcW, srcH, W, H) {
+  function objectPositionOffset(value, free, scale) {
+    if (["left", "top"].includes(value)) return 0;
+    if (["right", "bottom"].includes(value)) return free;
+    if (value === "center") return free / 2;
+    if (/^[+-]?[\d.]+%$/.test(value)) return free * parseFloat(value) / 100 || 0;
+    if (/^[+-]?[\d.]+px$/.test(value)) return parseFloat(value) * scale;
+    const calc = String(value).match(/^calc\(\s*([+-]?[\d.]+)%\s*([+-])\s*([\d.]+)px\s*\)$/);
+    if (calc) return free * Number(calc[1]) / 100 + (calc[2] === "+" ? 1 : -1) * Number(calc[3]) * scale;
+    return free / 2;
+  }
+
+  function fitDrawRect(fit, srcW, srcH, W, H, position = "50% 50%", scale = 1) {
     if ((fit === "cover" || fit === "contain") && srcW > 0 && srcH > 0) {
       const s = fit === "cover" ? Math.max(W / srcW, H / srcH) : Math.min(W / srcW, H / srcH);
       const dw = srcW * s, dh = srcH * s;
-      return { dx: (W - dw) / 2, dy: (H - dh) / 2, dw, dh };
+      const parts = String(position || "50% 50%").match(/calc\([^)]*\)|[^\s]+/g) || [];
+      if (parts.length === 1) parts.push("50%");
+      if (["top", "bottom"].includes(parts[0])) parts.reverse();
+      return { dx: objectPositionOffset(parts[0], W - dw, scale), dy: objectPositionOffset(parts[1], H - dh, scale), dw, dh };
     }
     return { dx: 0, dy: 0, dw: W, dh: H };
   }
@@ -946,9 +1057,10 @@
       if (rect.width >= 1 && rect.height >= 1) {
         const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
         const dispW = rect.width, dispH = rect.height;
-        const want = Math.min(dpr, Math.max(bmp.width / dispW, bmp.height / dispH)); // >=等倍 (縮小経路を消す)
-        W = Math.max(1, Math.min(INPAINT_MAX_SIDE, Math.round(dispW * want)));
-        H = Math.max(1, Math.min(INPAINT_MAX_SIDE, Math.round(dispH * want)));
+        const want = Math.min(dpr, Math.max(1, bmp.width / dispW, bmp.height / dispH));
+        const rasterScale = Math.min(want, INPAINT_MAX_SIDE / dispW, INPAINT_MAX_SIDE / dispH);
+        W = Math.max(1, Math.round(dispW * rasterScale));
+        H = Math.max(1, Math.round(dispH * rasterScale));
         scale = W / dispW; // 物理 px ↔ 論理 px 換算 (可読下限に使う)
       } else {
         const s = Math.min(1, INPAINT_MAX_SIDE / Math.max(bmp.width, bmp.height));
@@ -962,23 +1074,37 @@
       if (!ctx) throw new Error("no 2d ctx");
       ctx.imageSmoothingQuality = "high";
       // object-fit:cover/contain を canvas 上で再現してから描く (X 等の cover クロップでも歪まず原文を消す)。
-      let objFit = "fill";
-      try { objFit = getComputedStyle(img).objectFit || "fill"; } catch (_e) { objFit = "fill"; }
-      const fr = fitDrawRect(objFit, bmp.width, bmp.height, W, H);
+      let objFit = "fill", objPosition = "50% 50%";
+      try {
+        const style = getComputedStyle(img);
+        objFit = style.objectFit || "fill"; objPosition = style.objectPosition || objPosition;
+      } catch (_e) { /* 既定の全面表示を使う */ }
+      const fr = fitDrawRect(objFit, bmp.width, bmp.height, W, H, objPosition, scale);
       inpaintFit = fr; // ringStats が描画域外 (contain レターボックス) の透明画素を弾くため (finally で null クリア)
       ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, fr.dx, fr.dy, fr.dw, fr.dh);
       let fitBlocks = remapBlocksToFit(blocks, fr, W, H); // block 座標も同変換。cover で見切れた分は除外 (恒等時は元配列のまま)
       if (fitBlocks !== blocks) fitBlocks = fitBlocks.filter(blockInView);
       dbg("inpaint", W + "x" + H, "scale=" + scale.toFixed(2), "fit=" + objFit, "disp=" + Math.round(rect.width) + "x" + Math.round(rect.height), "blocks=" + fitBlocks.length);
       // 段落の行間に残る原文黒帯を先に消す (flat 同色の隣接行の隙間だけを連結 fill)。失敗は従来挙動へ。
-      try { fillInterlineStrips(ctx, fitBlocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
       let groupFonts = [];
-      try { groupFonts = computeGroupFonts(ctx, fitBlocks, W, H); } catch (_e) { groupFonts = []; } // pitch ベース統一フォント
+      try { groupFonts = computeGroupFonts(ctx, fitBlocks, W, H, scale); } catch (_e) { groupFonts = []; }
+      fitBlocks.forEach((blk, i) => {
+        if (!blk || !blk.box || !blk.translation) return;
+        blk.__rtTextLayout = layoutInpaintText(ctx, blk, W, H, groupFonts[i], scale);
+      });
+      const bounds = imageContentBounds(W, H);
+      ctx.save(); ctx.beginPath(); ctx.rect(bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0); ctx.clip();
+      try { fillInterlineStrips(ctx, fitBlocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
+      for (const blk of fitBlocks) {
+        if (!blk || !blk.box || !blk.translation) continue;
+        try { eraseInpaintBlock(ctx, blk, W, H); } catch (_e) { /* 他のblockの消去は継続 */ }
+      }
       for (let bi = 0; bi < fitBlocks.length; bi++) {
         const blk = fitBlocks[bi];
         if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) continue;
         try { drawInpaintBlock(ctx, blk, W, H, groupFonts[bi], scale); } catch (_e) { /* 1 ブロック失敗は無視して継続 */ }
       }
+      ctx.restore();
       if (isStaleImg(guard, img)) return; // 復元/差替が decode 中に起きた → wrap を作らず中止 (取り残し防止)
       const wrap = ensureWrap(img);
       wrap.querySelectorAll(".__rt-img-layer").forEach((l) => l.remove()); // 旧オーバーレイ/canvas を除去
@@ -1069,6 +1195,8 @@
       case "forbidden_target": return tr("imgErrForbidden", "この画像は取得できませんでした");
       case "image_too_large": return tr("imgErrTooLarge", "画像が大きすぎて翻訳できません");
       case "not_image": return tr("imgErrNotImage", "画像として読み取れませんでした");
+      case "output_truncated": return tr("imgErrTruncated", "出力上限に達したため翻訳を完了できませんでした");
+      case "parse": return tr("imgErrParse", "翻訳結果を読み取れませんでした。もう一度お試しください");
       case "http": return tr("imgErrHttp", "翻訳に失敗しました") + (res && res.status ? "（HTTP " + res.status + "）" : "");
       case "aborted": return tr("imgErrAborted", "翻訳を中止しました");
       default: return tr("imgErrGeneric", "翻訳に失敗しました");
@@ -1136,17 +1264,22 @@
         if (blocks.length) {
           // canvas inpaint (背景色 fill で原文消去 + 訳文焼き込み) を試し、画像バイトが無い/失敗時は HTML オーバーレイへ。
           renderTranslated(img, blocks, res.image, { myRun, url, requestId })
-            .then(() => { if (myRun === imgRunId && ownsBtn()) setBtnMode(img); }) // 翻訳済み → ボタンを「原」に切替
+            .then(() => {
+              if (isStaleImg({ myRun, url, requestId }, img)) return;
+              const wrap = img.closest(".__rt-img-wrap");
+              if (wrap) wrap.__rtPartial = !!res.partial;
+              if (ownsBtn()) setBtnMode(img);
+            }) // 翻訳済み → ボタンを「原」に切替
             .catch(() => { if (ownsBtn()) btn.textContent = "訳"; });   // 画像が消えていた等で描画失敗 → 無視
         } else if (ownsBtn()) {
-          // 「×」表示。res.ok だが空 = 翻訳対象テキスト無し/全ロゴ(正常)。res.ok===false = 失敗。
+          // 「×」表示。完全な応答の空結果は文字無し/全ロゴ(正常)。打ち切り・不正応答は失敗。
           // 失敗時は理由を title(ホバーで表示)に載せ、原因不明の無言失敗を防ぐ(ページ翻訳の errorText 相当)。
           // 失敗は読めるよう「×」を長め(4s)に保持し、文字無しは短く(1.5s)戻す。
-          const failed = !(res && res.ok);
-          btn.title = failed ? imgErrorText(res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
+          const failed = !(res && res.ok) || res.partial;
+          btn.title = failed ? imgErrorText(res?.partial ? { error: "output_truncated" } : res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
           btn.textContent = "×";
           window.setTimeout(() => {
-            if (btn && target === img) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+            if (myRun === imgRunId && ownsBtn()) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
           }, failed ? 4000 : 1500);
         }
       });

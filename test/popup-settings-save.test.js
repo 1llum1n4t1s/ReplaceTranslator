@@ -11,32 +11,189 @@ const startupHarness = () => {
   const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
   const controls = new Map();
   const requests = [];
+  const timers = new Map();
+  let nextTimer = 0;
+  let directionUpdates = 0;
+  const document = { activeElement: null, createElement: () => ({ textContent: "" }) };
   const state = { settings: SettingsSchema.normalize({}) };
   const element = id => {
-    if (!controls.has(id)) controls.set(id, { value: "", checked: false, textContent: "", listeners: {},
-      addEventListener(event, fn) { this.listeners[event] = fn; } });
+    if (!controls.has(id)) {
+      const classes = new Set();
+      controls.set(id, { value: "", checked: false, textContent: "", listeners: {},
+        classList: { add: name => classes.add(name), remove: name => classes.delete(name),
+          contains: name => classes.has(name), toggle(name, force) { if (force) classes.add(name); else classes.delete(name); } },
+        addEventListener(event, fn) { this.listeners[event] = fn; }, setAttribute() {}, focus() {},
+        replaceChildren() { this.textContent = ""; }, appendChild(child) { this.textContent += child.textContent; } });
+    }
     return controls.get(id);
   };
   const startup = popup.slice(popup.indexOf("    getActiveTab().then((tab) => {"),
     popup.indexOf('    document.querySelectorAll(".tab").forEach', popup.indexOf("  function init()")));
   const keys = popup.slice(popup.indexOf("  function reflectKeys()"), popup.indexOf("  // ---- 共通 ----"));
   const common = popup.slice(popup.indexOf("  function reflect()"), popup.indexOf("  async function getActiveTab"));
+  const quick = popup.slice(popup.indexOf("  let rerunQuickTranslate ="), popup.indexOf("  function init()"));
   const listeners = popup.slice(popup.indexOf('    $("sync-settings").addEventListener'),
     popup.indexOf("    // ショートカット変更:"));
   const api = vm.runInNewContext(`(() => {
     ${keys}
     ${common}
-    return { save, reflect, saveBlacklist, addCurrentSiteToBlacklist, bindKeyAutosave, bind() { ${listeners} }, start() { ${startup} } };
+    ${quick}
+    return { save, reflect, saveBlacklist, addCurrentSiteToBlacklist, bindKeyAutosave, setupQuickTranslate, bind() { ${listeners} }, start() { ${startup} } };
   })()`, { state, SettingsSchema, AutoTranslateBlacklist, Providers: { ids: ["openai", "xai"] },
-    Actions: { APPLY_SETTINGS: "APPLY_SETTINGS", GET_STATE: "GET_STATE" }, $: element,
+    Actions: { APPLY_SETTINGS: "APPLY_SETTINGS", GET_STATE: "GET_STATE", TRANSLATE_BATCH: "TRANSLATE_BATCH" }, $: element,
     chrome: { runtime: { lastError: null, sendMessage: (message, callback) => requests.push({ message, callback }) } },
-    getActiveTab: async () => ({ id: 1, url: "https://chatgpt.com/c/6aa436e4-b728-83ee-b1c1-c7d62b8379cb" }), document: { activeElement: null },
-    window: { setTimeout: () => 1, clearTimeout: () => {} },
+    getActiveTab: async () => ({ id: 1, url: "https://chatgpt.com/c/6aa436e4-b728-83ee-b1c1-c7d62b8379cb" }),
+    document,
+    window: { setTimeout: fn => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: id => timers.delete(id) },
     msg: key => key, setStatus: () => {}, errorText: () => "error", renderProviderList: () => {},
-    updateKeyWarning: () => {}, updateQtDir: () => {}, loadModels: () => {},
+    updateKeyWarning: () => {}, updateQtDir: () => { directionUpdates++; }, loadModels: () => {},
   });
-  return { api, state, element, requests };
+  return { api, state, element, requests, document, get directionUpdates() { return directionUpdates; },
+    runTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); } };
 };
+
+test("クイック翻訳は入力変更直後に旧応答を捨て、新しい入力の応答だけ表示する", async () => {
+  const h = startupHarness();
+  h.api.setupQuickTranslate();
+  const input = h.element("qt-in"), output = h.element("qt-out"), qt = h.element("qt");
+  input.value = "first";
+  input.listeners.input();
+  h.runTimers();
+  await Promise.resolve();
+  assert.equal(h.requests[0].message.texts[0], "first");
+  input.value = "second";
+  input.listeners.input();
+  h.requests[0].callback({ ok: true, translations: ["first translation"] });
+  assert.equal(output.textContent, "");
+  assert.equal(qt.classList.contains("busy"), true);
+  h.runTimers();
+  await Promise.resolve();
+  assert.equal(h.requests[1].message.texts[0], "second");
+  h.requests[1].callback({ ok: true, translations: ["second translation"] });
+  assert.equal(output.textContent, "second translation");
+  assert.equal(qt.classList.contains("busy"), false);
+});
+
+test("クイック翻訳は長すぎる入力とクリア後も旧応答を表示しない", async () => {
+  const h = startupHarness();
+  h.api.setupQuickTranslate();
+  const input = h.element("qt-in"), output = h.element("qt-out"), qt = h.element("qt");
+  input.value = "first";
+  input.listeners.input();
+  h.runTimers();
+  await Promise.resolve();
+  input.value = "x".repeat(5001);
+  input.listeners.input();
+  h.runTimers();
+  assert.equal(output.textContent, "qtTooLong");
+  assert.equal(qt.classList.contains("busy"), false);
+  h.requests[0].callback({ ok: true, translations: ["first translation"] });
+  assert.equal(output.textContent, "qtTooLong");
+  input.value = "new";
+  input.listeners.input();
+  h.runTimers();
+  await Promise.resolve();
+  h.element("qt-clear").listeners.click();
+  assert.equal(input.value, "");
+  assert.equal(qt.classList.contains("busy"), false);
+  h.requests[1].callback({ ok: true, translations: ["new translation"] });
+  assert.equal(output.textContent, "");
+});
+
+test("クイック翻訳は保存待ちの入力を変更すると旧送信を中止し、Ctrl+Enter は一度だけ送る", async () => {
+  const h = startupHarness();
+  h.api.setupQuickTranslate();
+  const saved = h.api.save({ quickTargetLang: "en" });
+  const input = h.element("qt-in");
+  input.value = "first";
+  input.listeners.input();
+  h.runTimers();
+  input.value = "second";
+  input.listeners.input();
+  let prevented = false;
+  input.listeners.keydown({ ctrlKey: true, key: "Enter", preventDefault() { prevented = true; } });
+  h.runTimers();
+  assert.equal(h.requests.length, 1);
+  h.requests[0].callback({ ok: true, settings: SettingsSchema.normalize({ quickTargetLang: "en" }) });
+  await saved;
+  await Promise.resolve();
+  assert.equal(prevented, true);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].message.texts[0], "second");
+  h.requests[1].callback({ ok: true, translations: ["second translation"] });
+  assert.equal(h.element("qt-out").textContent, "second translation");
+  assert.equal(h.element("qt").classList.contains("busy"), false);
+});
+
+test("クイック翻訳は連続送信の古い応答と空入力後の応答を無視する", async () => {
+  const h = startupHarness();
+  h.api.setupQuickTranslate();
+  const input = h.element("qt-in"), output = h.element("qt-out"), qt = h.element("qt");
+  input.value = "first";
+  input.listeners.input();
+  const key = { ctrlKey: true, key: "Enter", preventDefault() {} };
+  input.listeners.keydown(key);
+  await Promise.resolve();
+  input.listeners.keydown(key);
+  await Promise.resolve();
+  assert.equal(h.requests.length, 2);
+  h.requests[0].callback({ ok: true, translations: ["first translation"] });
+  assert.equal(output.textContent, "");
+  assert.equal(qt.classList.contains("busy"), true);
+  h.requests[1].callback({ ok: true, translations: ["first translation"] });
+  assert.equal(output.textContent, "first translation");
+  input.value = "second";
+  input.listeners.input();
+  h.runTimers();
+  await Promise.resolve();
+  input.value = " ";
+  input.listeners.input();
+  assert.equal(qt.classList.contains("busy"), false);
+  h.requests[2].callback({ ok: true, translations: ["second translation"] });
+  assert.equal(output.textContent, "");
+});
+
+test("追加指示の未保存入力は再描画で消えず、保存後に表示と保存値が一致する", async () => {
+  const h = startupHarness();
+  h.api.bind();
+  const input = h.element("custom-prompt");
+  input.value = "  かわいく訳して  ";
+  input.listeners.input();
+  h.api.reflect();
+  assert.equal(input.value, "  かわいく訳して  ");
+  const saved = input.listeners.blur({ target: input });
+  assert.equal(h.requests[0].message.patch.customPrompt, "  かわいく訳して  ");
+  h.requests[0].callback({ ok: true, settings: SettingsSchema.normalize({ customPrompt: input.value }) });
+  await saved;
+  h.api.reflect();
+  assert.equal(input.value, "かわいく訳して");
+  assert.equal(h.state.settings.customPrompt, "かわいく訳して");
+});
+
+test("追加指示は保存失敗後も再入力せず再試行でき、空欄にも戻せる", async () => {
+  const h = startupHarness();
+  h.api.bind();
+  const input = h.element("custom-prompt");
+  input.value = "かわいく訳して";
+  input.listeners.input();
+  let saved = input.listeners.blur({ target: input });
+  h.requests[0].callback({ ok: false, settings: SettingsSchema.normalize({}) });
+  await saved;
+  h.api.reflect();
+  assert.equal(input.value, "かわいく訳して");
+  saved = input.listeners.blur({ target: input });
+  h.requests[1].callback({ ok: true, settings: SettingsSchema.normalize({ customPrompt: input.value }) });
+  await saved;
+  assert.equal(h.state.settings.customPrompt, "かわいく訳して");
+  input.value = "";
+  input.listeners.input();
+  saved = input.listeners.blur({ target: input });
+  h.requests[2].callback({ ok: true, settings: SettingsSchema.normalize({}) });
+  await saved;
+  h.api.reflect();
+  assert.equal(h.state.settings.customPrompt, "");
+  assert.equal(input.value, "");
+});
 
 test("起動GET_STATEの遅延応答は完了済みの設定変更を巻き戻さない", async () => {
   const h = startupHarness();
@@ -155,61 +312,44 @@ test("現在のサイト追加はURLのパスを捨ててhostnameだけを保存
 });
 
 test("除外リストの保存失敗を編集中のタブに表示し、再保存で回復する", async () => {
-  const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
-  const start = popup.indexOf("  let pendingSave =");
-  const end = popup.indexOf("  async function getActiveTab", start);
-  const input = { value: "example.com" };
-  const label = { textContent: "" };
-  let fail = true;
+  const h = startupHarness();
+  const input = h.element("auto-translate-blacklist");
+  const label = h.element("blacklist-save-state");
+  input.value = "example.com";
+  h.document.activeElement = input;
   const settings = SettingsSchema.normalize({});
-  const api = vm.runInNewContext(`(() => {
-    ${popup.slice(start, end)}
-    return { saveBlacklist };
-  })()`, {
-    state: { settings }, SettingsSchema, AutoTranslateBlacklist, Actions: { APPLY_SETTINGS: "APPLY_SETTINGS" },
-    $: id => id === "auto-translate-blacklist" ? input : label,
-    document: { activeElement: input },
-    msg: key => key, setStatus: () => {},
-    chrome: { runtime: {
-      lastError: null,
-      sendMessage: (_message, callback) => callback({ ok: !fail, settings }),
-    } },
-  });
-  await api.saveBlacklist();
+  let saved = h.api.saveBlacklist();
+  h.requests[0].callback({ ok: false, settings });
+  await saved;
   assert.equal(label.textContent, "settingsSaveFailed");
   assert.equal(input.value, "example.com");
-  fail = false;
-  await api.saveBlacklist();
+  saved = h.api.saveBlacklist();
+  h.requests[1].callback({ ok: true, settings });
+  await saved;
   assert.equal(label.textContent, "blacklistSaved");
 });
 
 test("設定保存失敗時は変更した操作子だけを保存値へ戻す", async () => {
-  const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
-  const start = popup.indexOf("  let pendingSave =");
-  const end = popup.indexOf("  async function getActiveTab", start);
-  const controls = Object.fromEntries(["show-fab", "fab-opacity", "fab-opacity-val", "target",
-    "sel-mode", "auto-translate-blacklist", "key-openai"].map(id => [id, { value: "unsaved", checked: true }]));
+  const h = startupHarness();
+  const controls = Object.fromEntries(["show-fab", "fab-opacity", "fab-opacity-val", "target", "qt-target",
+    "sel-mode", "auto-translate-blacklist", "key-openai"].map(id => {
+    const control = h.element(id);
+    control.value = "unsaved";
+    control.checked = true;
+    return [id, control];
+  }));
   const settings = SettingsSchema.normalize({});
-  let directionUpdates = 0;
-  const api = vm.runInNewContext(`(() => {
-    ${popup.slice(start, end)}
-    return { save };
-  })()`, {
-    state: { settings }, SettingsSchema, Actions: { APPLY_SETTINGS: "APPLY_SETTINGS" },
-    $: id => controls[id], msg: key => key, setStatus: () => {},
-    updateQtDir: () => { directionUpdates++; },
-    chrome: { runtime: { lastError: null,
-      sendMessage: (_message, callback) => callback({ ok: false, settings }),
-    } },
-  });
-  assert.equal(await api.save({ showFab: true, fabOpacity: 0.5, targetLang: "en", selectionMode: "inline" }), false);
+  const saved = h.api.save({ showFab: true, fabOpacity: 0.5, targetLang: "en", quickTargetLang: "fr", selectionMode: "inline" });
+  h.requests[0].callback({ ok: false, settings });
+  assert.equal(await saved, false);
   assert.equal(controls["show-fab"].checked, false);
   assert.equal(controls["fab-opacity"].disabled, true);
   assert.equal(controls["fab-opacity"].value, "100");
   assert.equal(controls["fab-opacity-val"].textContent, "100%");
   assert.equal(controls.target.value, "ja");
+  assert.equal(controls["qt-target"].value, "ja");
   assert.equal(controls["sel-mode"].value, "bubble");
   assert.equal(controls["key-openai"].value, "unsaved");
   assert.equal(controls["auto-translate-blacklist"].value, "unsaved");
-  assert.equal(directionUpdates, 1);
+  assert.equal(h.directionUpdates, 1);
 });

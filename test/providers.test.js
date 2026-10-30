@@ -6,6 +6,132 @@ const g = require("./_load-actions.js");
 
 const { ProviderApi } = g;
 
+test("GPT-Liveの音声会話モデルは翻訳一覧から除き、保存済み選択も翻訳用モデルへ戻す", () => {
+  for (const provider of ["openai", "openrouter"]) {
+    const prefix = provider === "openrouter" ? "openai/" : "";
+    const ids = ["gpt-live-1", "gpt-live-1-mini", "gpt-live-1.1", "gpt-6.1-terra"].map(id => prefix + id);
+    assert.deepEqual(ProviderApi.filterTranslationModels(provider, ids.map(id => ({ id }))).map(model => model.id), [prefix + "gpt-6.1-terra"]);
+    const settings = g.SettingsSchema.normalize({ models: { [provider]: prefix + "gpt-live-1" } });
+    assert.equal(settings.models[provider], g.Providers.get(provider).defaultModel);
+  }
+});
+
+test("各社Models APIの対応値は新モデルでも同梱表・カタログより優先し、非対応値を送らない", () => {
+  const cases = [
+    ["xai", "grok-future", { capabilities: { reasoning_effort: ["high", "low"] } }, "high"],
+    ["anthropic", "claude-future", { capabilities: { effort: { supported: true, low: { supported: true }, max: { supported: true } } } }, "max"],
+    ["deepseek", "deepseek-future", { effort: { supported_levels: ["low", "high", "xhigh", "max"] } }, "xhigh"],
+    ["openrouter", "vendor/future", { reasoning: { mandatory: true, supported_efforts: ["none", "low", "high"] } }, "high"],
+  ];
+  for (const [provider, id, metadata, selected] of cases) {
+    try {
+      ProviderApi.setReasoningModels(provider, [{ id, reasoning: { mode: "effort", options: ["none", "medium"] } }], true);
+      const models = ProviderApi.parseModels(provider, { data: [{ id, ...metadata }] });
+      ProviderApi.setReasoningModels(provider, models);
+      const profile = ProviderApi.reasoningProfile(provider, id);
+      assert.ok(profile.options.includes(selected));
+      assert.ok(!profile.options.includes("medium"));
+      const body = ProviderApi.buildRequest(provider, { model: id, reasoningEffort: selected }).body;
+      assert.equal(provider === "anthropic" ? body.output_config.effort : provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort, selected);
+      assert.equal(body.temperature, undefined);
+      if (provider === "anthropic") assert.equal(body.thinking, undefined);
+    } finally {
+      ProviderApi.setReasoningModels(provider, []);
+      ProviderApi.setReasoningModels(provider, [], true);
+    }
+  }
+  try {
+    const models = ProviderApi.parseModels("anthropic", { data: [{ id: "claude-sonnet-5", capabilities: { effort: { supported: false } } }] });
+    ProviderApi.setReasoningModels("anthropic", models);
+    assert.equal(ProviderApi.reasoningProfile("anthropic", "claude-sonnet-5"), null);
+    assert.equal(ProviderApi.buildRequest("anthropic", { model: "claude-sonnet-5", reasoningEffort: "max" }).body.output_config, undefined);
+  } finally { ProviderApi.setReasoningModels("anthropic", []); }
+});
+
+test("モデルカタログの各社別effortとGeminiの予算から送信値を解決する", () => {
+  for (const provider of ["openai", "anthropic", "gemini", "xai", "groq", "fugu", "openrouter", "deepseek"]) {
+    try {
+      const models = ProviderApi.parseCatalogModels(provider, { "future-model": { reasoning: true,
+        reasoning_options: [{ type: "effort", values: ["low", "high"] }] }, malformed: { reasoning_options: [null] } });
+      ProviderApi.setReasoningModels(provider, models, true);
+      const opts = { model: "future-model", reasoningEffort: "high", stream: true };
+      const bodies = [ProviderApi.buildRequest(provider, opts).body];
+      if (g.Providers.get(provider).visionModel) bodies.push(ProviderApi.buildImageRequest(provider, opts).body);
+      for (const body of bodies) {
+        const effort = provider === "anthropic" ? body.output_config.effort : provider === "gemini"
+          ? body.generationConfig.thinkingConfig.thinkingLevel : ["fugu", "openrouter"].includes(provider)
+            ? body.reasoning.effort : body.reasoning_effort;
+        assert.equal(effort, "high", provider);
+      }
+    } finally { ProviderApi.setReasoningModels(provider, [], true); }
+  }
+  try {
+    const models = ProviderApi.parseCatalogModels("gemini", { "gemini-future": {
+      reasoning_options: [{ type: "budget_tokens", min: 128, max: 4096 }] } });
+    ProviderApi.setReasoningModels("gemini", models, true);
+    const profile = ProviderApi.reasoningProfile("gemini", "gemini-future");
+    assert.equal(profile.automatic, "budget:128");
+    assert.deepEqual(profile.options, ["budget:1024", "budget:4096"]);
+    const config = ProviderApi.buildRequest("gemini", { model: "gemini-future", reasoningEffort: "budget:8192" }).body.generationConfig;
+    assert.equal(config.thinkingConfig.thinkingBudget, 128);
+    assert.ok(config.maxOutputTokens > 128);
+  } finally { ProviderApi.setReasoningModels("gemini", [], true); }
+});
+
+test("GPT-6.1 Terra / Solは公式の推論量をネイティブとOpenRouterで選択・送信できる", () => {
+  for (const [model, automatic, options] of [
+    ["gpt-6.1-terra", "none", ["none", "low", "medium", "high", "xhigh", "max"]],
+    ["gpt-6.1-sol", "low", ["low", "medium", "high", "xhigh", "max"]],
+  ]) {
+    for (const provider of ["openai", "openrouter"]) {
+      const id = provider === "openrouter" ? `openai/${model}` : model;
+      assert.deepEqual(ProviderApi.reasoningProfile(provider, id), { automatic, options, mode: "effort" });
+      assert.deepEqual(ProviderApi.reasoningProfile(provider, `${id}-2026-10-27`).options, options);
+      for (const effort of options) {
+        const opts = { texts: ["Hello"], targetLang: "ja", model: id, reasoningEffort: effort, stream: true };
+        for (const body of [ProviderApi.buildRequest(provider, opts).body, ProviderApi.buildImageRequest(provider, opts).body]) {
+          assert.equal(provider === "openai" ? body.reasoning_effort : body.reasoning.effort, effort);
+          assert.equal(body.temperature, undefined);
+        }
+      }
+      const invalid = ProviderApi.buildRequest(provider, { model: id, reasoningEffort: "ultra" }).body;
+      assert.equal(provider === "openai" ? invalid.reasoning_effort : invalid.reasoning.effort, automatic);
+    }
+  }
+  for (const model of ["gpt-6.1-terrafoobar", "gpt-6.2-sol", "gpt-6.1-unknown"]) {
+    assert.equal(ProviderApi.reasoningProfile("openai", model), null);
+  }
+});
+
+test("カスタム選択時だけ追加指示をLLMの通常・ストリーム・画像に反映し、出力の契約を保持する", () => {
+  const opts = { texts: ["Hello"], sourceLang: "en", targetLang: "ja", translationStyle: "custom", customPrompt: "短い文で訳して" };
+  for (const provider of g.Providers.ids.filter(id => g.Providers.get(id).batch !== false)) {
+    for (const stream of [false, true]) {
+      const body = JSON.stringify(ProviderApi.buildRequest(provider, { ...opts, stream }).body);
+      assert.doesNotMatch(body, /adorable, sweet, playful/);
+      assert.match(body, /短い文で訳して/);
+      assert.match(body, /SAME length and SAME order/);
+      assert.match(body, /never override the required output format/);
+    }
+    if (g.Providers.get(provider).visionModel) {
+      const image = JSON.stringify(ProviderApi.buildImageRequest(provider, opts).body);
+      assert.doesNotMatch(image, /adorable, sweet, playful/);
+      assert.match(image, /短い文で訳して/);
+      assert.match(image, /OCR coordinates/);
+    }
+  }
+  const original = ProviderApi.buildSystemPrompt("en", "ja");
+  assert.equal(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "natural", customPrompt: " " }), original);
+  assert.equal(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "constructor" }), original);
+  for (const style of ["formal", "casual", "literal"]) {
+    assert.notEqual(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: style }), original);
+  }
+  const cute = ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "cute", customPrompt: "Use a formal tone" });
+  assert.match(cute, /adorable, sweet, playful/);
+  assert.doesNotMatch(cute, /Use a formal tone/);
+  assert.equal(ProviderApi.buildRequest("mymemory", opts).body, undefined);
+});
+
 test("辞書のプロトタイプ名やヘルパー名をプロバイダ定義として返さない", () => {
   for (const id of ["constructor", "__proto__", "toString", "get", "ids", "supportsImage"]) {
     assert.equal(g.Providers.get(id), null);
@@ -315,7 +441,9 @@ test("reasoningProfile はモデルが受理する選択肢だけを UI 向け�
   assert.deepEqual(ProviderApi.reasoningProfile("gemini", "gemini-3.1-flash-lite-image").options,
     ["minimal", "high"]);
   assert.deepEqual(ProviderApi.reasoningProfile("groq", "qwen/qwen3.6-27b").options, ["none", "default"]);
-  assert.deepEqual(ProviderApi.reasoningProfile("fugu", "fugu-ultra").options, ["high", "xhigh", "max"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("fugu", "fugu-ultra").options, ["high", "xhigh"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("fugu", "fugu-ultra-v1.1").options, ["high", "xhigh", "max"]);
+  assert.deepEqual(ProviderApi.reasoningProfile("fugu", "fugu-max").options, ["high", "xhigh"]);
   assert.equal(ProviderApi.reasoningProfile("openai", "gpt-4.1-mini"), null);
   assert.equal(ProviderApi.reasoningProfile("openrouter", "vendor/unknown"), null);
 });

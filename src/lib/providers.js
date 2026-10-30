@@ -41,7 +41,7 @@
    * 混在翻訳を担保する system 指示文を組み立てる。
    * 「すでに target 言語の要素はそのまま、それ以外のみ翻訳」を明示し、要件 A を実現する。
    */
-  function buildSystemPrompt(sourceLang, targetLang, hasContext) {
+  function buildSystemPrompt(sourceLang, targetLang, hasContext, preferences) {
     const Lang = globalThis.Lang;
     const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
     const srcName = Lang ? Lang.promptName(sourceLang) : null; // auto なら null
@@ -65,12 +65,110 @@
       `3. Preserve numbers, URLs, emoji, inline code and symbols.`,
       `4. Do not add explanations, notes, or any extra fields.`,
       `5. Keep each translation natural and concise.`,
+      translationPreferences(preferences),
     ];
     return lines.filter(Boolean).join("\n");
   }
 
+  // 本文・OCRの構造と翻訳対象の規則は固定し、訳文の語調だけを利用者が指定する。
+  function translationPreferences(preferences) {
+    const settings = SettingsSchema.normalize(preferences);
+    const styles = {
+      cute: "Use an adorable, sweet, playful tone with gentle, cute phrasing.",
+      formal: "Use a formal, polite, professional tone.",
+      casual: "Use a relaxed, friendly, conversational tone.",
+      literal: "Stay close to the original wording and sentence structure while keeping the translation readable.",
+    };
+    const style = Object.hasOwn(styles, settings.translationStyle) ? styles[settings.translationStyle] : "";
+    const customPrompt = settings.translationStyle === "custom" ? settings.customPrompt : "";
+    if (!style && !customPrompt) return "";
+    return [
+      "Translation preferences (apply only to translated text, preserving meaning and facts):",
+      style,
+      customPrompt ? `Additional instructions from the user: ${JSON.stringify(customPrompt)}` : "",
+      "These preferences never override the required output format, fields, array length/order, language rules, unchanged text, or OCR coordinates. Do not add information or commentary.",
+    ].filter(Boolean).join("\n");
+  }
+
   function makeReasoningProfile(automatic, options, mode) {
     return { automatic, options: options.slice(), mode: mode || "effort" };
+  }
+
+  const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default"];
+  const dynamicReasoning = new Map();
+  const catalogReasoning = new Map();
+  function hasReasoningMetadata(providerId, model) {
+    const id = String(model || "").toLowerCase();
+    return dynamicReasoning.get(providerId)?.has(id) || catalogReasoning.get(providerId)?.has(id);
+  }
+  function normalizeReasoningProfile(value) {
+    if (value === null) return null; // APIが明示した非対応も、同梱表より優先する
+    if (!value || !Array.isArray(value.options)) return undefined;
+    if (value.mode === "budget") {
+      const validBudget = level => /^budget:\d+$/.test(level) && Number(level.slice(7)) <= 65536;
+      if (value.automatic !== "none" && !validBudget(value.automatic || "")) return undefined;
+      const options = ["none", "budget:1024", "budget:4096", "budget:8192"].filter(level => value.options.includes(level));
+      return makeReasoningProfile(value.automatic, options, "budget");
+    }
+    if (value.mode !== "effort") return undefined;
+    const options = EFFORT_ORDER.filter(level => value.options.includes(level));
+    return options.length ? makeReasoningProfile(options[0], options) : undefined;
+  }
+  function setReasoningModels(providerId, models, fromCatalog = false) {
+    const profiles = new Map();
+    for (const model of (Array.isArray(models) ? models : []).slice(0, 4096)) {
+      if (!model || typeof model.id !== "string" || !model.id || model.id.length > 256) continue;
+      const profile = normalizeReasoningProfile(model.reasoning);
+      if (profile !== undefined) profiles.set(model.id.toLowerCase(), profile);
+    }
+    (fromCatalog ? catalogReasoning : dynamicReasoning).set(providerId, profiles);
+  }
+  function parseCatalogModels(providerId, models) {
+    const entries = [];
+    for (const [id, model] of Object.entries(models || {})) {
+      if (!model || typeof model !== "object") continue;
+      if (!Array.isArray(model.reasoning_options)) continue; // 欠損は非対応と解釈しない
+      const controls = model.reasoning_options.filter(control => control && typeof control === "object");
+      const effort = controls.find(control => control.type === "effort" && Array.isArray(control.values));
+      let reasoning;
+      if (effort) {
+        const values = providerId === "deepseek" && controls.some(control => control.type === "toggle")
+          ? ["none", ...effort.values] : effort.values;
+        reasoning = normalizeReasoningProfile({ options: values, mode: "effort" }) || null;
+      } else if (providerId === "gemini") {
+        const budget = controls.find(control => control.type === "budget_tokens");
+        if (budget && Number.isInteger(budget.min) && budget.min >= 0 && budget.min <= 65536 &&
+            Number.isInteger(budget.max) && budget.max >= budget.min) {
+          const canDisable = controls.some(control => control.type === "toggle") || budget.min === 0;
+          const options = [1024, 4096, 8192].filter(n => n >= budget.min && n <= budget.max).map(n => `budget:${n}`);
+          if (canDisable) options.unshift("none");
+          reasoning = makeReasoningProfile(canDisable ? "none" : `budget:${budget.min}`, options, "budget");
+        }
+      }
+      if (reasoning === undefined && controls.length === 0 && model.reasoning === false) reasoning = null;
+      if (reasoning !== undefined) entries.push({ id, reasoning });
+    }
+    return entries;
+  }
+  function parseReasoningProfile(providerId, model) {
+    let levels;
+    const capabilities = model.capabilities;
+    if (providerId === "anthropic") {
+      const effort = capabilities && capabilities.effort;
+      if (effort && effort.supported === false) return null;
+      if (effort && effort.supported === true) levels = EFFORT_ORDER.filter(level => effort[level]?.supported === true);
+    } else if (providerId === "deepseek" && Array.isArray(model.effort?.supported_levels)) {
+      // DeepSeekの一覧はthinking有効時のeffortのみを返す。noneはthinking.disabledへ変換する。
+      levels = ["none", ...model.effort.supported_levels];
+    } else if (providerId === "openrouter") {
+      if (Array.isArray(model.reasoning?.supported_efforts)) {
+        levels = model.reasoning.supported_efforts.filter(level => level !== "none" || model.reasoning.mandatory !== true);
+      } else if (Array.isArray(model.supported_parameters) &&
+          !model.supported_parameters.some(key => ["reasoning", "reasoning_effort"].includes(key))) return null;
+    } else if (Array.isArray(capabilities?.reasoning_effort)) levels = capabilities.reasoning_effort;
+    if (!levels) return undefined; // 能力情報がなければ、既知モデルの同梱表を使う
+    if (levels.length === 0) return null;
+    return normalizeReasoningProfile({ options: levels, mode: "effort" }) || null;
   }
 
   /**
@@ -81,12 +179,18 @@
   function reasoningProfile(providerId, model) {
     const m = String(model || "").toLowerCase();
     if (!m) return null;
+    for (const profiles of [dynamicReasoning.get(providerId), catalogReasoning.get(providerId)]) {
+      if (profiles && profiles.has(m)) {
+        const profile = profiles.get(m);
+        return profile && makeReasoningProfile(profile.automatic, profile.options, profile.mode);
+      }
+    }
 
     if (providerId === "openai") {
-      if (/^gpt-6-(?:sol|luna)(?:$|[-:])/.test(m)) {
+      if (/^(?:gpt-6-(?:sol|luna)|gpt-6\.1-terra)(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("none", ["none", "low", "medium", "high", "xhigh", "max"]);
       }
-      if (/^gpt-6-astra(?:$|[-:])/.test(m)) {
+      if (/^(?:gpt-6-astra|gpt-6\.1-sol)(?:$|[-:])/.test(m)) {
         return makeReasoningProfile("low", ["low", "medium", "high", "xhigh", "max"]);
       }
       if (/^(?:gpt-5|o[1-9])-pro(?:$|[-:])/.test(m)) return makeReasoningProfile("high", ["high"]);
@@ -180,8 +284,10 @@
       if (/^qwen\/qwen3\.8-/.test(m)) return makeReasoningProfile("none", ["none", "default", "low", "medium", "high"]);
       return null;
     }
-    if (providerId === "fugu" && /^fugu(?:-ultra)?$/.test(m)) {
-      return makeReasoningProfile("high", /ultra/.test(m) ? ["high", "xhigh", "max"] : ["high", "xhigh"]);
+    if (providerId === "fugu" && ["fugu", "fugu-ultra", "fugu-max", "fugu-cyber", "fugu-ultra-v1.0",
+      "fugu-ultra-v1.1", "fugu-ultra-v2.0", "fugu-max-v1.0", "fugu-cyber-v1.0"].includes(m)) {
+      // v1.1だけmaxが独立した深度。他の現行モデルではmaxはxhighの別名。
+      return makeReasoningProfile("high", m === "fugu-ultra-v1.1" ? ["high", "xhigh", "max"] : ["high", "xhigh"]);
     }
     return null;
   }
@@ -196,7 +302,8 @@
     const m = String(model || "").toLowerCase();
     const profile = reasoningProfile("openrouter", m);
     if (!profile) return null;
-    if (!profile.options.includes(requested) && /^google\/gemini-2\.5-pro(?:$|[-:])/.test(m)) return { max_tokens: 128 };
+    if (!hasReasoningMetadata("openrouter", m) && !profile.options.includes(requested) &&
+        /^google\/gemini-2\.5-pro(?:$|[-:])/.test(m)) return { max_tokens: 128 };
     return { effort: chosenReasoningEffort(profile, requested) };
   }
 
@@ -237,7 +344,7 @@
     }
     if (providerId === "groq" && profile) {
       body.reasoning_effort = chosenReasoningEffort(profile, requested);
-      body.temperature = 0;
+      if (!hasReasoningMetadata("groq", m)) body.temperature = 0;
       return body;
     }
     if (providerId === "fugu" && profile) {
@@ -265,7 +372,8 @@
     const m = String(model || "");
     const profile = reasoningProfile("anthropic", m);
     if (profile) {
-      const think = anthropicThinking(m);
+      // 新モデルはModels APIのeffortを使い、thinkingとの組合せはモデル既定に任せる。
+      const think = hasReasoningMetadata("anthropic", m) ? null : anthropicThinking(m);
       if (think) body.thinking = think;
       const effort = chosenReasoningEffort(profile, requested);
       body.output_config = { effort };
@@ -284,7 +392,9 @@
     const profile = reasoningProfile("gemini", m);
     if (!profile) return null;
     if (profile.mode === "budget") {
-      if (profile.options.includes(requested)) return { thinkingBudget: Number(requested.slice("budget:".length)) };
+      const effort = chosenReasoningEffort(profile, requested);
+      if (/^budget:\d+$/.test(effort)) return { thinkingBudget: Number(effort.slice("budget:".length)) };
+      if (effort === "none") return { thinkingBudget: 0 };
       return { thinkingBudget: /-(?:flash-lite|flash)(?:$|[-:])/i.test(m) ? 0 : 128 };
     }
     return { thinkingLevel: chosenReasoningEffort(profile, requested) };
@@ -296,7 +406,9 @@
     if (thinking) config.thinkingConfig = thinking;
     // Gemini 2.5 の思考 token は maxOutputTokens に含まれる。明示 budget 分だけ上限を広げ、
     // JSON 訳文用の従来枠を思考だけで食い切らないようにする（自動最小値は従来上限を維持）。
-    if (/^budget:\d+$/.test(String(requested || "")) && thinking && thinking.thinkingBudget > 0 &&
+    const budgetSelected = /^budget:\d+$/.test(String(requested || "")) ||
+      /^budget:\d+$/.test(reasoningProfile("gemini", model)?.automatic || "");
+    if (budgetSelected && thinking && thinking.thinkingBudget > 0 &&
         Number.isFinite(config.maxOutputTokens)) {
       config.maxOutputTokens += thinking.thinkingBudget;
     }
@@ -339,7 +451,7 @@
     const input = hasContext
       ? texts.map((text, index) => contexts[index] ? { text, context: contexts[index] } : text)
       : texts;
-    const system = buildSystemPrompt(o.sourceLang, o.targetLang, hasContext);
+    const system = buildSystemPrompt(o.sourceLang, o.targetLang, hasContext, o);
     const userContent = JSON.stringify(input);
 
     if (isOpenAICompat(providerId)) {
@@ -528,11 +640,15 @@
   // Gemini は created を持たないため 0 + version で、呼び出し側がバージョン降順に並べる。
   function parseModels(providerId, json) {
     if (!json || typeof json !== "object") return [];
+    const withReasoning = (entry, raw) => {
+      const reasoning = parseReasoningProfile(providerId, raw);
+      return reasoning === undefined ? entry : { ...entry, reasoning };
+    };
     if (isOpenAICompat(providerId)) {
-      return (json.data || []).map((m) => ({ id: m.id, created: Number(m.created) || 0 }));
+      return (json.data || []).map((m) => withReasoning({ id: m.id, created: Number(m.created) || 0 }, m));
     }
     if (providerId === "anthropic") {
-      return (json.data || []).map((m) => ({ id: m.id, created: Date.parse(m.created_at) || 0 }));
+      return (json.data || []).map((m) => withReasoning({ id: m.id, created: Date.parse(m.created_at) || 0 }, m));
     }
     if (providerId === "gemini") {
       return (json.models || [])
@@ -556,10 +672,12 @@
     }[providerId];
     const exclude = /embed|whisper|tts|transcribe|dall-e|image|imagine|audio|realtime|moderation|search|guard|video|veo|sora/i;
     const rolling = /latest/i;
+    const liveVoice = /(?:^|\/)gpt-live(?:-|$)/i; // Live API専用の音声会話モデル
     return (Array.isArray(models) ? models : []).filter((m) =>
       m && typeof m.id === "string" && m.id &&
       (!include || include.test(m.id)) &&
       !exclude.test(m.id) &&
+      !liveVoice.test(m.id) &&
       !rolling.test(m.id));
   }
 
@@ -569,7 +687,7 @@
     return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
   }
 
-  function buildImagePrompt(sourceLang, targetLang) {
+  function buildImagePrompt(sourceLang, targetLang, preferences) {
     const Lang = globalThis.Lang;
     const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
     const srcName = Lang ? Lang.promptName(sourceLang) : null;
@@ -587,12 +705,13 @@
       `Before answering, re-check every cy: imagine a horizontal line at y=cy; it must cut through the middle of that text. Fix any cy that sits above or below the glyphs.`,
       `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
       `If the image has no text, return {"blocks":[]}. No explanations.`,
+      translationPreferences(preferences),
     ].filter(Boolean).join("\n");
   }
 
   // Gemini 専用プロンプト。Gemini 2.5 は object detection を「box_2d = [ymin,xmin,ymax,xmax]・0..1000 正規化」で
   // 返すよう訓練されており、自由形式 {x,y,w,h} より bbox 精度が高い。parseImageBlocks で {x,y,w,h}0..1 + cy に変換する。
-  function buildImagePromptGemini(sourceLang, targetLang) {
+  function buildImagePromptGemini(sourceLang, targetLang, preferences) {
     const Lang = globalThis.Lang;
     const targetName = (Lang && Lang.promptName(targetLang)) || targetLang || "the target language";
     const srcName = Lang ? Lang.promptName(sourceLang) : null;
@@ -604,6 +723,7 @@
       `Distinguish real readable text from graphic LOGOS and BRAND WORDMARKS (a company or app name rendered as a stylized graphic mark, usually in the header or footer). For a logo or brand wordmark, copy its text into "original" unchanged and set "kind":"logo"; do not translate it. For all normal readable text set "kind":"text" and translate it. When unsure, choose "kind":"text".`,
       `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
       `If the image has no text, return [].`,
+      translationPreferences(preferences),
     ].filter(Boolean).join("\n");
   }
 
@@ -614,7 +734,7 @@
     const o = opts || {};
     const model = o.model || provider.defaultModel;
     const apiKey = o.apiKey || "";
-    const prompt = buildImagePrompt(o.sourceLang, o.targetLang);
+    const prompt = buildImagePrompt(o.sourceLang, o.targetLang, o);
     const mime = o.mimeType || "image/png";
     const b64 = o.imageBase64 || "";
 
@@ -673,7 +793,7 @@
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: {
           contents: [{ role: "user", parts: [
-            { text: buildImagePromptGemini(o.sourceLang, o.targetLang) },
+            { text: buildImagePromptGemini(o.sourceLang, o.targetLang, o) },
             { inline_data: { mime_type: mime, data: b64 } },
           ] }],
           generationConfig: geminiGenerationConfig(model,
@@ -684,12 +804,14 @@
     return null;
   }
 
-  function parseImageBlocks(providerId, json) {
-    const obj = parseJsonLoose(extractContent(providerId, json));
+  function imageRows(obj) {
+    return Array.isArray(obj) ? obj : (obj && Array.isArray(obj.blocks) ? obj.blocks : null);
+  }
+
+  function normalizeImageBlocks(providerId, blocks) {
     // Gemini はネイティブの box_2d=[ymin,xmin,ymax,xmax] 0..1000 で返す → {x,y,w,h}0..1 + cy(縦中央) へ変換。
     if (providerId === "gemini") {
-      const arr = Array.isArray(obj) ? obj : ((obj && Array.isArray(obj.blocks)) ? obj.blocks : []);
-      return arr
+      return blocks
         .filter((b) => b && Array.isArray(b.box_2d) && b.box_2d.length === 4 && typeof b.translation === "string" && b.translation)
         .map((b) => {
           const ymin = clamp01(Number(b.box_2d[0]) / 1000), xmin = clamp01(Number(b.box_2d[1]) / 1000);
@@ -707,7 +829,6 @@
           };
         });
     }
-    const blocks = (obj && Array.isArray(obj.blocks)) ? obj.blocks : (Array.isArray(obj) ? obj : []);
     return blocks
       // translation は文字列のみ採用 (オブジェクト等を String 化して "[object Object]" を画像に貼らない)。original も文字列のみ。
       .filter((b) => b && b.box && typeof b.translation === "string" && b.translation)
@@ -721,10 +842,72 @@
       });
   }
 
+  function parseImageBlocks(providerId, json) {
+    return normalizeImageBlocks(providerId, imageRows(parseJsonLoose(extractContent(providerId, json))) || []);
+  }
+
+  // 打ち切られた配列から、閉じた直下のオブジェクトだけを回収する。末尾を補完したり
+  // box_2d 等の内側の配列を応答全体と見なしたりせず、文字列中の括弧・エスケープも区別する。
+  function completeImageRows(text) {
+    const prefix = /^(?:\{\s*"blocks"\s*:\s*)?\[/.exec(text);
+    if (!prefix) return [];
+    const rows = [];
+    let cursor = prefix[0].length;
+    while (cursor < text.length) {
+      while (/\s/.test(text[cursor] || "") && cursor < text.length) cursor++;
+      if (text[cursor] !== "{") break;
+      const start = cursor;
+      let depth = 0, quoted = false, escaped = false;
+      for (; cursor < text.length; cursor++) {
+        const ch = text[cursor];
+        if (quoted) {
+          if (escaped) escaped = false;
+          else if (ch === "\\") escaped = true;
+          else if (ch === '"') quoted = false;
+        } else if (ch === '"') quoted = true;
+        else if (ch === "{" || ch === "[") depth++;
+        else if (ch === "}" || ch === "]") {
+          if (--depth === 0) { cursor++; break; }
+        }
+      }
+      if (depth !== 0 || quoted) break;
+      try { rows.push(JSON.parse(text.slice(start, cursor))); } catch (_e) { break; }
+      while (cursor < text.length && /\s/.test(text[cursor])) cursor++;
+      if (text[cursor] !== ",") break;
+      cursor++;
+    }
+    return rows;
+  }
+
+  function validImageRow(providerId, row) {
+    if (!row || typeof row.translation !== "string" || !row.translation.trim()) return false;
+    const coords = providerId === "gemini" ? row.box_2d :
+      (row.box && [row.box.x, row.box.y, row.box.w, row.box.h]);
+    return Array.isArray(coords) && coords.length === 4 && coords.every(v => typeof v === "number" && Number.isFinite(v));
+  }
+
+  function parseImageResult(providerId, json) {
+    const reason = isOpenAICompat(providerId) ? json?.choices?.[0]?.finish_reason :
+      (providerId === "anthropic" ? json?.stop_reason : json?.candidates?.[0]?.finishReason);
+    const truncated = ["LENGTH", "MAX_TOKENS"].includes(String(reason || "").toUpperCase());
+    const content = extractContent(providerId, json);
+    const text = typeof content === "string" ? content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "") : "";
+    let rows;
+    try { rows = imageRows(JSON.parse(text)); } catch (_e) { /* 打ち切り時だけ完全なブロックを救済する */ }
+    if (truncated) {
+      const blocks = normalizeImageBlocks(providerId, (rows || completeImageRows(text)).filter(row => validImageRow(providerId, row)));
+      return blocks.length ? { ok: true, blocks, partial: true } : { ok: false, error: "output_truncated" };
+    }
+    if (!rows || !rows.every(row => validImageRow(providerId, row))) return { ok: false, error: "parse" };
+    return { ok: true, blocks: normalizeImageBlocks(providerId, rows) };
+  }
+
   const ProviderApi = Object.freeze({
     promptVersion: TRANSLATION_PROMPT_VERSION,
     buildSystemPrompt,
     reasoningProfile,
+    setReasoningModels,
+    parseCatalogModels,
     buildRequest,
     extractContent,
     extractTranslations,
@@ -739,6 +922,7 @@
     buildImagePromptGemini,
     buildImageRequest,
     parseImageBlocks,
+    parseImageResult,
   });
 
   globalThis.ProviderApi = ProviderApi;

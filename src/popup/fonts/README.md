@@ -16,6 +16,8 @@
 上流 1.004 は `minus` glyph を持つ一方で U+2212 の cmap が無いため、subset 前に
 U+2212 を同 glyph へ割り当て、旧版の文字集合を維持している。
 
+次回の再生成には `fonttools[woff] 4.68.0` を使う（Brotli 1.2.1 以降を要求）。上記は現在同梱しているファイルの生成時の記録であり、入力版・文字集合・生成物ハッシュは維持する。
+
 生成物 SHA-256:
 
 - `ReplaceTranslatorSansJP-400.woff2`: `48bbd3af8d77fa3153643e976d4ba108f2f5916df3433ad6f7ff243e1073201b`

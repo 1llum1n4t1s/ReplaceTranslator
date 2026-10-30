@@ -16,6 +16,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab is-active" type="button" role="tab" data-tab="translate" aria-selected="true" data-i18n="tabTranslate">翻訳</button>
+    <button class="tab" type="button" role="tab" data-tab="quick" aria-selected="false" data-i18n="tabQuick">クイック翻訳</button>
     <button class="tab" type="button" role="tab" data-tab="api" aria-selected="false" data-i18n="tabApi">API設定</button>
     <button class="tab" type="button" role="tab" data-tab="blacklist" aria-selected="false" data-i18n="tabBlacklist">除外リスト</button>
     <span class="tab-ink" aria-hidden="true"></span>
@@ -36,6 +37,24 @@
         </div>
       </div>
 
+      <div class="row">
+        <label class="lbl" for="translation-style" data-i18n="labelTranslationStyle">翻訳スタイル</label>
+        <select id="translation-style" class="sel" aria-describedby="translation-style-help">
+          <option value="natural" data-i18n="styleNatural">自然（標準）</option>
+          <option value="cute" data-i18n="styleCute">かわいく</option>
+          <option value="formal" data-i18n="styleFormal">丁寧・フォーマル</option>
+          <option value="casual" data-i18n="styleCasual">カジュアル</option>
+          <option value="literal" data-i18n="styleLiteral">原文に忠実</option>
+          <option value="custom" data-i18n="styleCustom">カスタム</option>
+        </select>
+        <div id="translation-style-help" class="switch-desc" data-i18n="translationStyleHelp">「カスタム」を選ぶとプロンプトを入力できます。LLMで利用でき、MyMemoryは非対応です。</div>
+        <div id="custom-prompt-row" class="row prompt-options hidden">
+          <label id="custom-prompt-label" for="custom-prompt" class="lbl" data-i18n="labelCustomPrompt">カスタム翻訳プロンプト</label>
+          <textarea id="custom-prompt" class="blacklist-input" rows="3" maxlength="2000" data-i18n-placeholder="customPromptPlaceholder" aria-labelledby="custom-prompt-label" aria-describedby="custom-prompt-help" placeholder="例：やさしい言葉で、かわいらしい口調にしてください。"></textarea>
+          <div id="custom-prompt-help" class="switch-desc" data-i18n="customPromptHelp">「カスタム」選択中のみ使用します。最大2,000文字で、入力欄から離れると保存します。ページ・選択範囲・クイック翻訳・画像に共通で適用します。</div>
+        </div>
+      </div>
+
       <div id="key-warning" class="warn hidden">
         <span data-i18n="warnNoKey">このサービスの API キーが未設定です。</span>
         <button id="warn-keys" class="link-btn" type="button" data-i18n="warnSetKey">API設定へ</button>
@@ -47,33 +66,6 @@
       </div>
 
       <div id="status" class="status" aria-live="polite"></div>
-
-      <!-- クイック翻訳: ちょっとだけ訳したい人向け。上部の翻訳元⇄翻訳先を流用。 -->
-      <div class="qt" id="qt">
-        <div class="qt-head">
-          <span class="qt-title" data-i18n="qtTitle">クイック翻訳</span>
-          <span class="qt-note" data-i18n="qtNote">この欄だけ訳す</span>
-          <span class="qt-dir" id="qt-dir" aria-hidden="true"></span>
-        </div>
-        <div class="qt-body" id="qt-body">
-          <div class="qt-wrap">
-            <textarea class="qt-in" id="qt-in" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
-            <div class="qt-mid" aria-hidden="true">
-              <span class="qt-arrow">↓</span>
-              <span class="qt-spin"></span>
-            </div>
-            <div class="qt-out" id="qt-out" data-ph="訳文がここに出ます" aria-live="polite"></div>
-            <div class="qt-foot">
-              <span class="qt-count" id="qt-count">0 / 5,000</span>
-              <span class="grow"></span>
-              <button class="qt-mini" id="qt-speak-in" type="button" data-i18n="qtSpeakIn" data-i18n-title="qtSpeakInTitle" title="原文を読み上げる">🔊 原文</button>
-              <button class="qt-mini" id="qt-speak-out" type="button" data-i18n="qtSpeakOut" data-i18n-title="qtSpeakOutTitle" title="訳文を読み上げる">🔊 訳文</button>
-              <button class="qt-mini" id="qt-clear" type="button" data-i18n="qtClear">クリア</button>
-              <button class="qt-mini copy" id="qt-copy" type="button" data-i18n="qtCopy">コピー</button>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <!-- 設定群: 自動翻訳 + 各機能の表示設定 (同じ操作子に揃えて 1 枠にまとめる) -->
       <div class="opts">
@@ -135,6 +127,49 @@
           <input id="show-img-btn" type="checkbox">
         </div>
       </div>
+    </section>
+
+    <!-- クイック翻訳タブ -->
+    <section class="pane" data-pane="quick">
+      <!-- クイック翻訳: ページ翻訳とは独立した言語設定を使う。 -->
+      <div class="qt" id="qt">
+        <div class="qt-head">
+          <span class="qt-title" data-i18n="qtTitle">クイック翻訳</span>
+          <span class="qt-note" data-i18n="qtNote">この欄だけ訳す</span>
+          <span class="qt-dir" id="qt-dir" aria-hidden="true"></span>
+        </div>
+        <div class="qt-body" id="qt-body">
+          <div class="row two qt-langs">
+            <div class="col">
+              <label class="lbl" for="qt-source" data-i18n="qtSource">翻訳元（クイック）</label>
+              <select id="qt-source" class="sel"></select>
+            </div>
+            <div class="swap" aria-hidden="true">→</div>
+            <div class="col">
+              <label class="lbl" for="qt-target" data-i18n="qtTarget">翻訳先（クイック）</label>
+              <select id="qt-target" class="sel"></select>
+            </div>
+          </div>
+          <p class="switch-desc" data-i18n="qtLanguagesHelp">この欄の言語設定は、ページの自動翻訳・手動翻訳とは別に保存します。</p>
+          <div class="qt-wrap">
+            <textarea class="qt-in" id="qt-in" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
+            <div class="qt-mid" aria-hidden="true">
+              <span class="qt-arrow">↓</span>
+              <span class="qt-spin"></span>
+            </div>
+            <div class="qt-out" id="qt-out" data-ph="訳文がここに出ます" aria-live="polite"></div>
+            <div class="qt-foot">
+              <span class="qt-count" id="qt-count">0 / 5,000</span>
+              <span class="grow"></span>
+              <button class="qt-mini" id="qt-speak-in" type="button" data-i18n="qtSpeakIn" data-i18n-title="qtSpeakInTitle" title="原文を読み上げる">🔊 原文</button>
+              <button class="qt-mini" id="qt-speak-out" type="button" data-i18n="qtSpeakOut" data-i18n-title="qtSpeakOutTitle" title="訳文を読み上げる">🔊 訳文</button>
+              <button class="qt-mini" id="qt-clear" type="button" data-i18n="qtClear">クリア</button>
+              <button class="qt-mini copy" id="qt-copy" type="button" data-i18n="qtCopy">コピー</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </section>
 
     <!-- API設定タブ (サービス選択 + API キー + モデルを統合) -->
@@ -330,6 +365,7 @@
           <select id="reasoning-effort" class="sel reasoning-effort-select" aria-describedby="reasoning-effort-help"></select>
           <p id="reasoning-effort-help" class="reasoning-effort-help" data-i18n="reasoningEffortHelp">このモデル専用に保存します。「自動」は翻訳向けの最小値です。高くすると品質と引き換えに遅延・料金が増えます。</p>
         </div>
+        <p id="reasoning-effort-default" class="reasoning-effort-help hidden" data-i18n="reasoningEffortDefault">選択可能な推論深度の情報がないため、API既定を使います。モデルの「更新」で対応情報を再取得できます。</p>
       </div>
     </section>
 

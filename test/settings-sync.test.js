@@ -57,6 +57,25 @@ test("OFFは同期通信せず、明示trueだけ有効", async () => {
   assert.equal(h.reads(), 0); assert.equal(h.writes.length, 0);
 });
 
+test("翻訳スタイルと2000文字の追加指示は同期・再起動・空欄へのリセット後も保持する", async () => {
+  const remote = {}, a = harness({ remote });
+  await a.applySettingsPatch({ syncSettings: true });
+  await a.applySettingsPatch({ translationStyle: "custom", customPrompt: "あ".repeat(2000), quickSourceLang: "ja", quickTargetLang: "en" });
+  const b = harness({ remote, device: "device-b" });
+  await b.applySettingsPatch({ syncSettings: true });
+  assert.equal(b.settings().translationStyle, "custom");
+  assert.equal(b.settings().customPrompt, "あ".repeat(2000));
+  assert.equal(b.settings().quickSourceLang, "ja");
+  assert.equal(b.settings().quickTargetLang, "en");
+  assert.equal(b.settings().sourceLang, "auto");
+  assert.equal(b.settings().targetLang, "ja");
+  b.time(200);
+  await b.applySettingsPatch({ translationStyle: "natural", customPrompt: "" });
+  await a.receiveSyncedSettings();
+  assert.equal(a.settings().translationStyle, "natural");
+  assert.equal(a.settings().customPrompt, "");
+});
+
 test("V1を初参加時だけ取り込み、V2保存後に旧キーを撤去する", async () => {
   const h = harness({ initial: { apiKeys: { openai: "local-test-key" }, persistentTranslationCache: true },
     remote: { "settingsSyncV1.targetLang": "fr", "settingsSyncV1.apiKeys": { openai: "remote-test-key" } } });

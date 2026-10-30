@@ -36,6 +36,7 @@
   let bubble = null;       // バブル要素 (1 つだけ)
   let textEl = null;       // 訳文/状態テキスト
   let copyBtn = null;      // コピーボタン
+  let copySeq = 0;         // コピー完了と表示タイマーの世代
   let listening = false;   // dismiss リスナの登録状態
   let selRaf = 0;          // selectionchange の rAF coalesce
   let posRaf = 0;          // scroll/resize 再配置の rAF coalesce
@@ -174,6 +175,7 @@
     if (selRaf) { cancelAnimationFrame(selRaf); selRaf = 0; }
     if (posRaf) { cancelAnimationFrame(posRaf); posRaf = 0; }
     reqId++; // 進行中の応答を無効化 (返ってきても描かない)
+    copySeq++;
     detachListeners();
     if (!bubble) return;
     try { if (copyBtn && copyBtn._t) clearTimeout(copyBtn._t); } catch (_e) { /* noop */ }
@@ -184,6 +186,7 @@
   // kind: "loading" | "result" | "error"。hint はエラー時に bubble.title へ載せるデバッグ詳細 (任意)。
   function setState(kind, text, hint) {
     if (!bubble) return;
+    copySeq++;
     bubble.classList.remove("__rt-sel-loading", "__rt-sel-result", "__rt-sel-error");
     bubble.classList.add(kind === "error" ? "__rt-sel-error" : (kind === "result" ? "__rt-sel-result" : "__rt-sel-loading"));
     if (textEl) textEl.textContent = text || "";
@@ -219,18 +222,24 @@
     placeBubble(rect);
   }
 
-  function onCopy(e) {
+  async function onCopy(e) {
     e.stopPropagation();
     const t = (textEl && textEl.textContent) || "";
     if (!t || !copyBtn) return;
-    try { navigator.clipboard.writeText(t); } catch (_e) { /* noop */ }
-    copyBtn.textContent = tr("selCopied", "✓ コピー");
-    copyBtn.classList.add("__rt-sel-copied");
-    if (copyBtn._t) clearTimeout(copyBtn._t);
-    copyBtn._t = window.setTimeout(() => {
-      if (!copyBtn) return;
-      copyBtn.textContent = tr("selCopy", "コピー");
-      copyBtn.classList.remove("__rt-sel-copied");
+    const button = copyBtn;
+    const my = ++copySeq;
+    if (button._t) { clearTimeout(button._t); button._t = 0; }
+    button.textContent = tr("selCopy", "コピー");
+    button.classList.remove("__rt-sel-copied");
+    try { await navigator.clipboard.writeText(t); } catch (_e) { return; }
+    if (my !== copySeq || button !== copyBtn) return;
+    button.textContent = tr("selCopied", "✓ コピー");
+    button.classList.add("__rt-sel-copied");
+    button._t = window.setTimeout(() => {
+      if (my !== copySeq || button !== copyBtn) return;
+      button.textContent = tr("selCopy", "コピー");
+      button.classList.remove("__rt-sel-copied");
+      button._t = 0;
     }, 1300);
   }
 

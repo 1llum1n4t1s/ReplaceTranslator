@@ -10,6 +10,7 @@ const ROOT = path.join(__dirname, "..");
 const IMAGE_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/image-translator.js"), "utf8");
 const FAB_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/fab.js"), "utf8");
 const TRANSLATOR_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/translator.js"), "utf8");
+const SELECTION_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/selection-translator.js"), "utf8");
 const WORKER_SOURCE = fs.readFileSync(path.join(ROOT, "src/service_worker.js"), "utf8");
 
 // IIFE の content script は直接 import できないため、対象の関数宣言だけを実ソースから切り出して評価する。
@@ -46,6 +47,196 @@ const loadImageFunctions = (names, context, prelude = "") => {
   const declarations = names.map((name) => functionSource(IMAGE_SOURCE, name)).join("\n");
   return vm.runInNewContext(`(() => { ${prelude}\n${declarations}\nreturn { ${names.join(", ")} }; })()`, context);
 };
+
+test("選択翻訳のコピーは成功時だけ表示し、古い完了やタイマーは新しい状態を変更しない", async () => {
+  const timers = [];
+  const navigator = {};
+  const api = vm.runInNewContext(`(() => {
+    let reqId = 0, bubble = null, textEl = null, copyBtn = null, copySeq = 0, selRaf = 0, posRaf = 0;
+    const tr = (_key, fallback) => fallback;
+    const detachListeners = () => {};
+    const reposition = () => {};
+    ${functionSource(SELECTION_SOURCE, "removeBubble")}
+    ${functionSource(SELECTION_SOURCE, "setState")}
+    ${functionSource(SELECTION_SOURCE, "onCopy")}
+    return {
+      open: (btn) => { copyBtn = btn; textEl = { textContent: "訳文" }; bubble = { classList: { add() {}, remove() {} }, remove() {} }; },
+      copy: () => onCopy({ stopPropagation() {} }), setState, removeBubble,
+    };
+  })()`, { navigator, window: { setTimeout: (fn) => { timers.push(fn); return timers.length; } }, clearTimeout() {} });
+  const button = () => ({ textContent: "コピー", style: {}, classList: { add() {}, remove() {} } });
+  let btn = button();
+  api.open(btn);
+  navigator.clipboard = { writeText() { throw new Error("denied"); } };
+  await api.copy();
+  assert.equal(btn.textContent, "コピー");
+  navigator.clipboard = { writeText: () => Promise.reject(new Error("denied")) };
+  await api.copy();
+  assert.equal(btn.textContent, "コピー");
+  delete navigator.clipboard;
+  await api.copy();
+  assert.equal(btn.textContent, "コピー");
+
+  let resolveOld;
+  navigator.clipboard = { writeText: () => new Promise((resolve) => { resolveOld = resolve; }) };
+  const old = api.copy();
+  api.setState("result", "新しい訳文");
+  resolveOld();
+  await old;
+  assert.equal(btn.textContent, "コピー", "再翻訳前のコピー完了を無視する");
+
+  const beforeClose = api.copy();
+  api.removeBubble();
+  btn = button();
+  api.open(btn);
+  resolveOld();
+  await beforeClose;
+  assert.equal(btn.textContent, "コピー", "閉じたバブルの完了は新バブルに影響しない");
+
+  const pending = [];
+  navigator.clipboard = { writeText: () => new Promise((resolve) => { pending.push(resolve); }) };
+  const first = api.copy();
+  const second = api.copy();
+  pending[0]();
+  await first;
+  assert.equal(btn.textContent, "コピー", "古いコピーの完了は新しい操作の完了を示さない");
+  pending[1]();
+  await second;
+  assert.equal(btn.textContent, "✓ コピー");
+
+  navigator.clipboard = { writeText: () => Promise.resolve() };
+  await api.copy();
+  assert.equal(btn.textContent, "✓ コピー");
+  const oldTimer = timers.at(-1);
+  await api.copy();
+  oldTimer();
+  assert.equal(btn.textContent, "✓ コピー", "前回のタイマーは新しいコピー表示を消さない");
+  timers.at(-1)();
+  assert.equal(btn.textContent, "コピー");
+});
+
+test("ページ上限の未翻訳ノードは強参照せず、更新と復元後に再評価する", () => {
+  const api = vm.runInNewContext(`(() => {
+    const translatedNodes = new Set(), originalMap = new WeakMap(), writtenValue = new WeakMap();
+    let budgetSkippedNodes = new WeakSet(), originalReapplyAt = new WeakMap(), recentScopeWrites = new WeakMap();
+    const translationMemo = new Map(), queuedNodes = new WeakSet(), queue = [];
+    const PAGE_MAX_SINGLE_CHARS = 10, PAGE_MAX_TEXTS = 1, PAGE_MAX_CHARS = 100;
+    let pageTextCount = 1, pageCharCount = 0, droppedTransient = 0, translating = true;
+    const handleLocationChange = () => false;
+    const blockAncestor = () => null, isNmtProvider = () => true;
+    const ingest = (node) => enqueue(node, 0);
+    ${functionSource(TRANSLATOR_SOURCE, "enqueue")}
+    ${functionSource(TRANSLATOR_SOURCE, "onMutate")}
+    ${functionSource(TRANSLATOR_SOURCE, "revertTranslations")}
+    return { enqueue, onMutate, revertTranslations, translatedNodes, originalMap, writtenValue, queue,
+      resetBudget: () => { pageTextCount = 0; }, count: () => droppedTransient };
+  })()`);
+  const skipped = { nodeValue: "原文", isConnected: false };
+  const translated = { nodeValue: "訳文", isConnected: false };
+  api.translatedNodes.add(translated);
+  api.originalMap.set(translated, "元の文");
+  api.writtenValue.set(translated, "訳文");
+  api.enqueue(skipped, 0);
+  api.enqueue(skipped, 0);
+  assert.equal(api.count(), 1, "同じ上限超過ノードは重複計上しない");
+  assert.equal(api.translatedNodes.has(skipped), false, "未翻訳ノードを復元用Setに保持しない");
+  const otherSkipped = [{ nodeValue: "別の文" }, { nodeValue: "さらに別の文" }];
+  for (const node of otherSkipped) api.enqueue(node, 0);
+  assert.equal(api.count(), 3);
+  assert.equal(api.translatedNodes.size, 1, "上限超過ノードが増えても復元用Setは増えない");
+  api.resetBudget();
+  skipped.nodeValue = "変更後";
+  api.onMutate([{ type: "characterData", target: skipped }]);
+  assert.equal(api.queue.length, 1, "文字更新後は再評価する");
+  api.revertTranslations();
+  assert.equal(translated.nodeValue, "元の文", "切断済みの翻訳ノードも復元する");
+  const skippedAgain = { nodeValue: "長すぎる文章のテキストです" };
+  api.enqueue(skippedAgain, 0);
+  api.revertTranslations();
+  skippedAgain.nodeValue = "短い";
+  api.resetBudget();
+  api.enqueue(skippedAgain, 0);
+  assert.equal(api.queue.length, 2, "復元後はスキップ済み印を破棄する");
+});
+
+test("画像の旧エラー・空結果タイマーは、再翻訳の一部成功表示を上書きしない", async () => {
+  for (const response of [{ ok: true, blocks: [] }, { ok: false, error: "parse" }, { ok: false, error: "output_truncated" }]) {
+    const timers = [], state = { response, translated: false };
+    const wrap = { querySelector: () => state.translated ? {} : null };
+    const img = { src: "https://example.com/text.png", isConnected: true, closest: () => wrap };
+    const btn = { textContent: "訳", title: "", classList: { toggle: () => {} } };
+    const api = loadImageFunctions(["translateImg", "setBtnMode", "isTranslated", "isStaleImg", "imgErrorText"], {
+      img, btn, chrome: { runtime: { sendMessage: (_msg, cb) => cb(state.response) } },
+      window: { setTimeout: fn => timers.push(fn) }, tr: (key, fallback) => key === "imgPartial" ? "partial" : fallback,
+      contextAlive: () => true, dbg: () => {}, debugEnabled: () => false, filterBlocks: blocks => blocks,
+      renderTranslated: async () => { state.translated = true; },
+    }, `let imgRunId = 0, imageRequestSeq = 0; const target = img, MAX_IMAGE_PIXELS = 25000000;
+      const imageRequestIds = new WeakMap(), inflightImgs = new WeakSet(), A = { TRANSLATE_IMAGE: "TRANSLATE_IMAGE" };`);
+    api.translateImg(img);
+    assert.equal(timers.length, 1);
+    state.response = { ok: true, partial: true, blocks: [{ translation: "訳文" }] };
+    api.translateImg(img);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(btn.textContent, "原");
+    assert.equal(btn.title, "partial");
+    timers[0]();
+    assert.equal(btn.textContent, "原");
+    assert.equal(btn.title, "partial");
+  }
+});
+
+test("画像のcover/contain座標はobject-positionとCSS pxのオフセットを反映する", () => {
+  const api = loadImageFunctions(["objectPositionOffset", "fitDrawRect"], {});
+  const top = api.fitDrawRect("cover", 200, 400, 200, 200, "50% 0%");
+  assert.equal(top.dy, 0);
+  const bottom = api.fitDrawRect("contain", 400, 200, 200, 200, "right bottom");
+  assert.equal(bottom.dy, 100);
+  assert.equal(api.objectPositionOffset("calc(100% - 10px)", -100, 2), -120);
+});
+
+const imageTextContext = () => ({
+  font: "600 12px sans-serif", strokeText: () => {}, fillText: () => {},
+  measureText(text) {
+    const size = Number(this.font.match(/([\d.]+)px/)[1]);
+    return { width: Array.from(text).length * size * 0.6, actualBoundingBoxAscent: size * 0.7, actualBoundingBoxDescent: size * 0.15 };
+  },
+});
+
+test("画像の最小文字サイズは表示上12pxを保ち、改行と実際の文字面で中央を測る", () => {
+  const api = loadImageFunctions(["wrapCanvasText", "canvasLineMetrics", "fitCanvasFont", "imageContentBounds",
+    "blockPixelRect", "layoutInpaintText"], {}, 'const MIN_IMAGE_FONT_SIZE = 12, ABS_MAX = 40, CANVAS_FONT = "sans-serif"; let inpaintFit = null;');
+  for (const scale of [0.5, 1, 2, 3]) {
+    const ctx = imageTextContext();
+    const blk = { translation: "短い訳文", box: { x: 0.2, y: 0.4, w: 0.3, h: 0.02 }, cy: 0.41 };
+    const layout = api.layoutInpaintText(ctx, blk, 400 * scale, 200 * scale, 4 * scale, scale);
+    assert.ok(layout.fontSize / scale >= 12);
+    assert.ok(Math.abs(layout.cy - 82 * scale) < 0.01);
+    const fit = api.fitCanvasFont(ctx, "one\ntwo", 400 * scale, 100 * scale, "sans-serif", 12 * scale, 12 * scale);
+    assert.deepEqual(Array.from(fit.lines), ["one", "two"]);
+  }
+});
+
+test("画像のインク位置と、原文を覆う消去領域を独立して保持する", () => {
+  const ctx = { getImageData(x, y, w, h) {
+    const data = new Uint8ClampedArray(w * h * 4).fill(255);
+    for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+      if (x + px >= 24 && x + px < 56 && y + py >= 24 && y + py < 32) {
+        const offset = (py * w + px) * 4; data[offset] = data[offset + 1] = data[offset + 2] = 0;
+      }
+    }
+    return { data };
+  } };
+  const api = loadImageFunctions(["imageContentBounds", "snapToInk", "blockPixelRect", "pixelBoxOf"], {
+    ringStats: () => ({ color: [255, 255, 255], std: 0, alpha: 1 }),
+  }, "let inpaintFit = null;");
+  const blk = { translation: "訳文", box: { x: 0.1, y: 0.1, w: 0.25, h: 0.1 }, cy: 0.15 };
+  api.pixelBoxOf(ctx, blk, 200, 200);
+  assert.equal(blk.__rtTextBox.x, 24);
+  assert.equal(blk.__rtTextBox.h, 8);
+  assert.equal(blk.__rtEraseBox.x, 20);
+  assert.equal(blk.__rtEraseBox.w, 50);
+});
 
 test("open root の画像をURLフォールバックで解決する", () => {
   const lightImg = {

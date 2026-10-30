@@ -7,7 +7,7 @@
   const STATUS_KEY = StorageKeys.SETTINGS_SYNC_STATUS;
   const ALARM = "settings-sync-retry";
   const SCALARS = ["provider", "sourceLang", "targetLang", "autoTranslate", "showFab",
-    "showImageButton", "selectionMode", "fabOpacity"];
+    "showImageButton", "selectionMode", "fabOpacity", "translationStyle", "customPrompt", "quickSourceLang", "quickTargetLang"];
   const LEGACY_FIELDS = [...SCALARS, "models", "reasoningEfforts", "autoTranslateBlacklist"];
   const LEGACY_KEYS = LEGACY_FIELDS.map(key => "settingsSyncV1." + key);
   const KEYS = Array.from({ length: 64 }, (_, index) => PREFIX + index);
@@ -56,7 +56,7 @@
     if (!Object.hasOwn(record, "value")) return false;
     const value = record.value;
     if (value !== null && !["string", "boolean", "number"].includes(typeof value)) return false;
-    if (typeof value === "string" && value.length > 1000) return false;
+    if (typeof value === "string" && value.length > (p[0] === "customPrompt" ? 2000 : 1000)) return false;
     if (p[0] === "autoTranslateBlacklist") return value === true;
     const raw = p.length === 1 ? { [p[0]]: value } : p.length === 2
       ? { models: { [p[1]]: value } } : { reasoningEfforts: { [p[1]]: { [p[2]]: value } } };

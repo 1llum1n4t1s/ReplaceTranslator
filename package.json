@@ -11,7 +11,7 @@
     "lint": "eslint src/ test/"
   },
   "devDependencies": {
-    "@kagayoi/support-extension": "1.0.8",
+    "@kagayoi/support-extension": "1.0.9",
     "eslint": "^10.13.0",
     "globals": "^17.13.0",
     "web-ext": "^10.8.0"

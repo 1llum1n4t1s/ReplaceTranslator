@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * popup.js — ポップアップ UI (3タブ: 翻訳 / API設定 / 自動翻訳除外)
+ * popup.js — ポップアップ UI (翻訳 / クイック翻訳 / API設定 / 自動翻訳除外)
  *
  * - 翻訳タブ: 自動翻訳トグル / 言語(元・先) / オプション / 翻訳・復元 / status / クイック翻訳
  * - API設定タブ: サービス切替(状態) + キー入力 + 動的モデル一覧(新しい順10件 + コスト相対バー)
@@ -112,6 +112,7 @@
   }
 
   function hideReasoningEffort() {
+    $("reasoning-effort-default").classList.add("hidden");
     const row = $("reasoning-effort-row");
     row.classList.add("hidden");
     row.dataset.provider = "";
@@ -123,8 +124,10 @@
     const profile = ProviderApi.reasoningProfile(providerId, modelId);
     if (!profile || !Array.isArray(profile.options)) {
       hideReasoningEffort();
+      $("reasoning-effort-default").classList.remove("hidden");
       return;
     }
+    $("reasoning-effort-default").classList.add("hidden");
     const selectableEfforts = profile.options.filter((effort) => effort !== profile.automatic);
     if (selectableEfforts.length === 0) {
       hideReasoningEffort();
@@ -193,6 +196,7 @@
 
   function loadModels(force) {
     const requested = state.settings.provider; // 応答到着までにプロバイダが変わる可能性があるため捕捉
+    const modelAtRequest = state.settings.models[requested];
     const p = Providers.get(requested);
     const row = $("model-row");
     if (!p || p.batch === false) { // MyMemory 等はモデル概念なし
@@ -220,6 +224,11 @@
         if (force && btn) { btn.disabled = false; btn.classList.remove("is-spinning"); }
         if (requested !== state.settings.provider) return; // 別プロバイダに切替済み → 古い応答は捨てる(誤モデル保存を防ぐ)
         const models = (res && res.ok && res.models) ? res.models : [];
+        ProviderApi.setReasoningModels(requested, models);
+        // 更新で廃止モデルが移行した場合も、effortを実際の選択モデルへ保存する。
+        if (res && typeof res.currentModel === "string" && state.settings.models[requested] === modelAtRequest) {
+          state.settings.models = { ...state.settings.models, [requested]: res.currentModel };
+        }
         row.dataset.provider = requested; // 表示中の provider を記録 (次回切替時の stale 判定に使う)
         row.classList.toggle("hidden", models.length === 0);
         if (models.length) renderModelList(models, state.settings.models[requested]);
@@ -234,6 +243,11 @@
     const hasKey = !requiresKey || Boolean(state.settings.apiKeys && state.settings.apiKeys[state.settings.provider]);
     $("key-warning").classList.toggle("hidden", hasKey);
     $("translate").disabled = !hasKey;
+    const supportsPrompt = p && p.batch !== false;
+    $("translation-style").disabled = !supportsPrompt;
+    const custom = state.settings.translationStyle === "custom";
+    $("custom-prompt-row").classList.toggle("hidden", !custom);
+    $("custom-prompt").disabled = !supportsPrompt || !custom;
   }
 
   function selectProvider(id) {
@@ -294,6 +308,8 @@
 
   // ---- 共通 ----
   function reflect() {
+    $("translation-style").value = state.settings.translationStyle;
+    if (!settingsDrafts.has("custom-prompt")) $("custom-prompt").value = state.settings.customPrompt;
     $("sync-settings").checked = state.settings.syncSettings === true;
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
     $("persistent-cache").checked = state.settings.persistentTranslationCache === true;
@@ -315,6 +331,8 @@
     renderProviderList();
     $("source").value = state.settings.sourceLang;
     $("target").value = state.settings.targetLang;
+    $("qt-source").value = state.settings.quickSourceLang;
+    $("qt-target").value = state.settings.quickTargetLang;
     updateKeyWarning();
     reflectKeys();
     updateQtDir();
@@ -372,7 +390,8 @@
       persistentTranslationCache: "persistent-cache", showFab: "show-fab", showImageButton: "show-img-btn" })) {
       if (Object.hasOwn(patch, key)) $(id).checked = s[key] === true;
     }
-    for (const [key, id] of Object.entries({ sourceLang: "source", targetLang: "target", selectionMode: "sel-mode" })) {
+    for (const [key, id] of Object.entries({ sourceLang: "source", targetLang: "target", selectionMode: "sel-mode",
+      translationStyle: "translation-style", quickSourceLang: "qt-source", quickTargetLang: "qt-target" })) {
       if (Object.hasOwn(patch, key)) $(id).value = s[key];
     }
     if (Object.hasOwn(patch, "fabOpacity")) {
@@ -386,7 +405,8 @@
       updateKeyWarning();
       loadModels(false);
     }
-    if (Object.hasOwn(patch, "targetLang")) updateQtDir();
+    if (Object.hasOwn(patch, "translationStyle")) updateKeyWarning();
+    if (["quickSourceLang", "quickTargetLang"].some(key => Object.hasOwn(patch, key))) updateQtDir();
   }
 
   async function saveBlacklist() {
@@ -492,7 +512,7 @@
     return msg("statusNotInjectable", "This page cannot be translated. For a local file, allow file URL access for this extension in the browser's extension settings, then reload the page.");
   }
 
-  // ---- クイック翻訳 (ちょっとだけ訳す。上部の翻訳元⇄翻訳先を流用し TRANSLATE_BATCH に 1 件投げる) ----
+  // ---- クイック翻訳 (専用の翻訳元⇄翻訳先で TRANSLATE_BATCH に 1 件投げる) ----
   function langShort(coderef) {
     if (coderef === "auto") return msg("qtAuto", "自動");
     const l = Lang.get(coderef);
@@ -500,7 +520,7 @@
   }
   function updateQtDir() {
     const d = $("qt-dir");
-    if (d && state.settings) d.textContent = `${langShort(state.settings.sourceLang)} → ${langShort(state.settings.targetLang)}`;
+    if (d && state.settings) d.textContent = `${langShort(state.settings.quickSourceLang)} → ${langShort(state.settings.quickTargetLang)}`;
   }
   // 翻訳元/翻訳先の変更でクイック翻訳を訳し直すフック (実体は setupQuickTranslate が差す)。
   // 入力済みのまま言語を切り替えると、run() を呼ぶ経路が入力イベントしか無く旧言語の訳文が残るため。
@@ -525,10 +545,10 @@
       if (text) { const s = document.createElement("span"); s.className = "txt"; s.textContent = text; outEl.appendChild(s); }
     }
     async function run() {
+      const myReq = ++reqId;
       const text = inEl.value.trim();
       if (!text) { qt.classList.remove("busy"); render(""); return; }
       if (text.length > MAX) { qt.classList.remove("busy"); render(msg("qtTooLong", "5000文字を超えています"), true); return; }
-      const myReq = ++reqId;
       qt.classList.add("busy");
       // 直前のカード操作 (provider 切替 / 言語変更) の save が storage に確定してから送る。
       // background は保管値で翻訳するため、await せず Ctrl+Enter で debounce を飛ばすと古い設定で訳す恐れがある。
@@ -548,7 +568,8 @@
     function schedule() {
       setCount();
       window.clearTimeout(timer);
-      if (!inEl.value.trim()) { qt.classList.remove("busy"); reqId++; render(""); return; }
+      reqId++; // debounce 中も、変更前の入力に対する応答を捨てる
+      if (!inEl.value.trim()) { qt.classList.remove("busy"); render(""); return; }
       timer = window.setTimeout(run, 550); // debounce
     }
 
@@ -601,13 +622,13 @@
       };
       window.speechSynthesis.speak(u);
     }
-    if (speakInBtn) speakInBtn.addEventListener("click", () => speak(speakInBtn, inEl.value.trim(), state.settings && state.settings.sourceLang));
+    if (speakInBtn) speakInBtn.addEventListener("click", () => speak(speakInBtn, inEl.value.trim(), state.settings && state.settings.quickSourceLang));
     if (speakOutBtn) speakOutBtn.addEventListener("click", () => {
       if (outEl.classList.contains("err")) return; // エラーメッセージは読み上げない
-      speak(speakOutBtn, (outEl.textContent || "").trim(), state.settings && state.settings.targetLang);
+      speak(speakOutBtn, (outEl.textContent || "").trim(), state.settings && state.settings.quickTargetLang);
     });
 
-    clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; setCount(); render(""); stopSpeak(); inEl.focus(); });
+    clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; window.clearTimeout(timer); qt.classList.remove("busy"); setCount(); render(""); stopSpeak(); inEl.focus(); });
     copyBtn.addEventListener("click", () => {
       const t = outEl.textContent || "";
       if (!t || outEl.classList.contains("err")) return;
@@ -626,6 +647,8 @@
     setLinks();
     fillLangSelect($("source"), true);
     fillLangSelect($("target"), false);
+    fillLangSelect($("qt-source"), true);
+    fillLangSelect($("qt-target"), false);
     const showSyncStatus = (value) => {
       const messages = { pending: "settingsSyncPending", error: "settingsSyncError", synced: "settingsSyncSaved" };
       const key = Object.hasOwn(messages, value) ? messages[value] : null;
@@ -653,8 +676,10 @@
     });
     moveInk(document.querySelector(".tab.is-active"));
 
-    $("source").addEventListener("change", (e) => { save({ sourceLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
-    $("target").addEventListener("change", (e) => { save({ targetLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
+    $("source").addEventListener("change", (e) => save({ sourceLang: e.target.value }));
+    $("target").addEventListener("change", (e) => save({ targetLang: e.target.value }));
+    $("qt-source").addEventListener("change", (e) => { save({ quickSourceLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
+    $("qt-target").addEventListener("change", (e) => { save({ quickTargetLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
 
     $("translate").addEventListener("click", async () => {
       const tab = await getActiveTab();
@@ -698,6 +723,27 @@
       await save({ syncSettings: checkbox.checked });
       await reflectAfterSaves(); // 同期待ち中の後続保存も含め、未保存入力を保持して反映する
       checkbox.disabled = false;
+    });
+    $("translation-style").addEventListener("change", async (e) => {
+      const saving = save({ translationStyle: e.target.value });
+      updateKeyWarning();
+      if (await saving) rerunQuickTranslate();
+    });
+    $("custom-prompt").addEventListener("input", () => settingsDrafts.add("custom-prompt"));
+    $("custom-prompt").addEventListener("blur", async (e) => {
+      const input = e.target;
+      const submitted = input.value;
+      if (submitted.trim() === state.settings.customPrompt) {
+        settingsDrafts.delete("custom-prompt");
+        input.value = state.settings.customPrompt;
+        return;
+      }
+      if (await save({ customPrompt: submitted }, () => {
+        if (input.value === submitted) {
+          settingsDrafts.delete("custom-prompt");
+          input.value = state.settings.customPrompt;
+        }
+      })) rerunQuickTranslate();
     });
     $("persistent-cache").addEventListener("change", async (e) => {
       const checkbox = e.target;
