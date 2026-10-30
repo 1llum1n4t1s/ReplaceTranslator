@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      zip_sha256: ${{ steps.verify-zip.outputs.sha256 }}
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,6 +97,14 @@ jobs:
             -x "*.DS_Store" "*.swp" "*~"
           ls -lh replace-translator.zip
 
+      - name: 提出用ZIP実物の版・構成・source一致を検証
+        id: verify-zip
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node verify-release-package.mjs replace-translator.zip chrome "$EXPECTED_VERSION" .
+          echo "sha256=$(sha256sum replace-translator.zip | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - name: ZIP artifact を保存
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -136,6 +145,13 @@ jobs:
         with:
           name: replace-translator-zip
           path: .
+
+      - name: 検証済みZIPとアップロードする実物のhashを照合
+        env:
+          EXPECTED_SHA256: ${{ needs.package.outputs.zip_sha256 }}
+        run: |
+          test -n "$EXPECTED_SHA256"
+          echo "$EXPECTED_SHA256  replace-translator.zip" | sha256sum --check
 
       - name: バージョン pre-flight check (CWS draft の crxVersion と一致なら skip)
         id: cws-preflight
@@ -337,11 +353,7 @@ jobs:
             exit 1
           fi
           set +e
-          pnpm exec web-ext sign \
-            --source-dir=firefox-build \
-            --artifacts-dir=web-ext-artifacts \
-            --channel=listed \
-            --amo-metadata=amo-metadata.json 2>&1 | tee /tmp/web-ext.log
+          node submit-firefox.mjs 2>&1 | tee /tmp/web-ext.log
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
