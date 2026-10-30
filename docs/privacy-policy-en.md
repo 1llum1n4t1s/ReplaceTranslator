@@ -1,6 +1,6 @@
 # Privacy Policy — Replace AI Translator API
 
-Last updated: 2026-09-05
+Last updated: 2026-10-30
 
 ## Information we collect
 Replace AI Translator API's developer does not collect, store, or receive any of your data through the translation features, and the extension uses no analytics and no tracking. The text you translate — and, if you enable image translation, the images — are sent only to the translation provider you choose (see "Page text" and "Image translation" below).
@@ -17,12 +17,13 @@ The only exception is the contact form you submit yourself. Only then are the em
 
 ## Settings sync (optional)
 - Each setting carries its edit timestamp, logical counter, and a randomly generated device ID to resolve conflicts. Exclusion-rule and reasoning-preference deletion records are retained to prevent older devices from restoring removed entries. The device ID is generated within this extension; it does not use your PC name or hardware identifiers.
-- "Sync settings across PCs" is off by default. Only when you enable it on each PC, languages, translation service, models, reasoning effort, display preferences, auto-translate, and exclusion rules are stored in `chrome.storage.sync` and shared through the browser provider's sync service across PCs using the same account. They do not pass through the developer's servers.
+- "Sync settings across PCs" is off by default. Only when you enable it on each PC, languages, translation service, models, reasoning effort, translation style, additional prompts, display preferences, auto-translate, and exclusion rules are stored in `chrome.storage.sync` and shared through the browser provider's sync service across PCs using the same account. They do not pass through the developer's servers.
 - API keys, source text, translations, caches, usage counts, and your persistent-cache preference are not synced.
 - Turning it off stops sync reads and writes on that device and keeps the current local and synced settings. Synced data is handled under your browser provider's privacy policy.
 
 ## Page text
 - When you click "Translate", the text on the page is sent only to the provider's API you selected, in order to receive the translation.
+- When you use the Custom translation style, your additional prompt is sent to the same provider.
 - To reduce repeated API requests for identical text, the extension caches source text, nearby context, and translations on-device for the browser session. The same cache is stored on-device for up to 30 days (up to 2,000 entries) only when you explicitly enable "Persistent translation cache". Turning it off deletes the saved cache. This cache is never sent to the developer's servers.
 - How that text is handled is governed by each provider's privacy policy and terms:
   - OpenAI: https://openai.com/policies/

@@ -24,7 +24,8 @@ Translate the web page you are viewing in place using the cloud LLM of your choi
 - Optional settings sync — share languages, models, display preferences, and exclusions across PCs through browser sync. Off by default; API keys and translation data stay out of sync.
 - Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
-- Quick translate — translate short text right inside the popup
+- Translation styles — choose adorable, formal, and other styles; additional prompts apply only with Custom
+- Quick translate — a dedicated tab with source and target languages independent of page translation
 - Image text translation (experimental, vision-capable LLMs)
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
 
@@ -37,7 +38,7 @@ In line with each provider's terms, this extension works with API keys (API toke
 3. In the "Translate" tab, pick the source and target languages, then click "Translate". Click "Restore" to go back
 4. You can also toggle translate/restore from the floating button at the bottom-right of the page, or the right-click menu
 5. Add or remove sites where auto-translate should stay off from the "Exclusions" tab or the right-click menu
-6. Turn on image translation in the "Keys" tab, then hover an image and click the translate button to translate the text inside it (experimental, vision-capable LLMs)
+6. Select a vision-capable LLM, then hover an image and click the translate button (experimental). Configure image-button visibility in the "Translate" tab
 
 [Privacy]
 - The developer does not collect, store, or receive your data (no analytics, no tracking)

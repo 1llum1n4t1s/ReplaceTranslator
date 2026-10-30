@@ -22,7 +22,8 @@ Translate the page you are viewing in place using the cloud LLM of your choice. 
 - Optional settings sync — share languages, models, display preferences, and exclusions across PCs through browser sync. Off by default; API keys and translation data stay out of sync.
 - Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
-- Quick translate — translate short text right inside the popup
+- Translation styles — choose adorable, formal, and other styles; additional prompts apply only with Custom
+- Quick translate — a dedicated tab with source and target languages independent of page translation
 - Image text translation (experimental, vision-capable LLMs)
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
 

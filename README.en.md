@@ -15,7 +15,9 @@ A Chrome / Firefox extension that translates the page you are viewing **in place
 - **Auto-translate exclusions** — enter URLs, hosts, or wildcard rules on separate lines to stop auto-translate only on matching sites
 - **Infinite scroll friendly** — content loaded later is translated automatically
 - **Token-saving cache** — exact text matches in the same page scope and context are reused from an on-device cache; persistence across browser restarts is stored only when you explicitly opt in
-- **Image text translation (experimental)** — hover an image and click 訳 to translate the text inside it and overlay the result (vision-capable LLMs)
+- **Image text translation (experimental)** — hover an image and click 訳 to translate its text (vision-capable LLMs). Text stays at least 12 CSS px, and partial results or output errors are reported
+- **Translation styles** — choose natural, adorable, formal, and other styles. Additional instructions are editable and applied only with Custom
+- **Independent quick translation** — a dedicated tab with source and target languages saved separately from page translation
 - **Multilingual** — pick the source (auto-detect available) and target language freely
 - **Privacy-first** — API keys stay local in your browser; text is sent only to the provider you chose
 
@@ -64,7 +66,7 @@ Enable **"Auto-translate all pages"** in the "Translate" tab to translate pages 
 ### Selected text and quick translation
 
 - Select text on a page and press **Ctrl+Shift+L** (**Command+Shift+L** on Mac), or use the right-click menu. In the "Translate" tab, choose a bubble or inline bilingual display under "Selected text translation". "Change shortcuts" opens the shortcut settings.
-- Type or paste into "Quick translation" in the "Translate" tab to translate only that text. You can copy the translation or listen to the source and translation.
+- Type or paste into the "Quick translation" tab to translate only that text. Its source and target languages are independent of page translation. You can copy the result or listen to the source and translation.
 
 ### Source / target
 - **Source** — leave it on "Detect language" to use the page's main language. Auto-translate skips pages mostly in the target language with little text in other languages, but includes substantial content in another language. Manual actions such as "Translate" bypass this skip. You can also pin a specific source language.
