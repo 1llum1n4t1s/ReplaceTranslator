@@ -92,6 +92,47 @@ test("cache reuses only matching context and page scope", async () => {
   assert.match(JSON.stringify(h.requests[1].body), /bank for money/);
 });
 
+test("content grouping and batch sending carry context to the provider request", async () => {
+  let body;
+  const h = pageHarness({ initial: { provider: "anthropic", apiKeys: { anthropic: "test-key" } },
+    fetchResponse: async (url, options) => {
+      if (new URL(url).hostname !== "api.anthropic.com") return null;
+      body = JSON.parse(options.body);
+      return Response.json({ content: [{ type: "text", text: JSON.stringify({ translations: ["川岸", "銀行"] }) }] });
+    } });
+  const source = read("src/content/translator.js");
+  const extract = (name, next) => {
+    const start = source.indexOf(`  function ${name}(`);
+    const end = source.indexOf(`\n  function ${next}(`, start + 1);
+    assert.ok(start >= 0 && end > start, `${name} を取得できること`);
+    return source.slice(start, end);
+  };
+  const content = vm.runInNewContext(`(() => {
+    let batchSeq = 0;
+    const pendingBatches = new Map(), sessionId = 1, settings = {};
+    const A = { TRANSLATE_BATCH: "TRANSLATE_BATCH" };
+    const isNmtProvider = () => false;
+    const shutdown = () => {};
+    ${extract("sendBatch", "sleep")}
+    ${extract("groupBatchItems", "releaseBatchItem")}
+    return { sendBatch, groupBatchItems };
+  })()`, { TranslationBatch: h.context.TranslationBatch, chrome: { runtime: {
+    sendMessage: (message, callback) => h.send(message, pageSender("https://example.com/page")).then(callback),
+  } } });
+  const grouped = content.groupBatchItems([
+    { text: "bank", context: "river" }, { text: "bank", context: "river" },
+    { text: "bank", context: "money" },
+  ]);
+  assert.equal(grouped.length, 2);
+  assert.equal(grouped[0].members.length, 2);
+  const result = await content.sendBatch(grouped);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, ["川岸", "銀行"]);
+  assert.deepEqual(JSON.parse(body.messages[0].content), [
+    { text: "bank", context: "river" }, { text: "bank", context: "money" },
+  ]);
+});
+
 test("an already-open tab upgrades an older TranslationBatch helper before the load guard returns", () => {
   const sandbox = {
     __rtActionsLoaded: true,
