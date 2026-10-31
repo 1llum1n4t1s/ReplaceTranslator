@@ -6,6 +6,8 @@
   "styleFormal": { "message": "丁寧・フォーマル" },
   "styleCasual": { "message": "カジュアル" },
   "styleLiteral": { "message": "原文に忠実" },
+  "styleOsaka": { "message": "大阪弁" },
+  "styleIbaraki": { "message": "茨城弁" },
   "styleCustom": { "message": "カスタム" },
   "qtSource": { "message": "翻訳元（クイック）" },
   "qtTarget": { "message": "翻訳先（クイック）" },

@@ -30,7 +30,7 @@ const startupHarness = () => {
   const startup = popup.slice(popup.indexOf("    getActiveTab().then((tab) => {"),
     popup.indexOf('    document.querySelectorAll(".tab").forEach', popup.indexOf("  function init()")));
   const keys = popup.slice(popup.indexOf("  function reflectKeys()"), popup.indexOf("  // ---- 共通 ----"));
-  const common = popup.slice(popup.indexOf("  function reflect()"), popup.indexOf("  async function getActiveTab"));
+  const common = popup.slice(popup.indexOf("  function reflectStyleLanguage()"), popup.indexOf("  async function getActiveTab"));
   const quick = popup.slice(popup.indexOf("  let rerunQuickTranslate ="), popup.indexOf("  function init()"));
   const listeners = popup.slice(popup.indexOf('    $("sync-settings").addEventListener'),
     popup.indexOf("    // ショートカット変更:"));
@@ -51,6 +51,23 @@ const startupHarness = () => {
   return { api, state, element, requests, document, get directionUpdates() { return directionUpdates; },
     runTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); } };
 };
+
+test("方言の選択肢は日本語の翻訳先だけに表示し、言語変更後も保存値を保持する", () => {
+  const h = startupHarness();
+  h.state.settings = SettingsSchema.normalize({ targetLang: "ja", translationStyle: "osaka" });
+  h.api.reflect();
+  assert.equal(h.element("style-osaka").hidden, false);
+  assert.equal(h.element("translation-style").value, "osaka");
+  h.state.settings.targetLang = "en";
+  h.api.reflect();
+  assert.equal(h.element("style-osaka").hidden, true);
+  assert.equal(h.element("style-ibaraki").disabled, true);
+  assert.equal(h.element("translation-style").value, "natural");
+  assert.equal(h.state.settings.translationStyle, "osaka");
+  h.state.settings.targetLang = "ja";
+  h.api.reflect();
+  assert.equal(h.element("translation-style").value, "osaka");
+});
 
 test("クイック翻訳は入力変更直後に旧応答を捨て、新しい入力の応答だけ表示する", async () => {
   const h = startupHarness();

@@ -20,7 +20,7 @@
 
   const MAX_OUTPUT_TOKENS = 8192;
   // session translation cache の無効化用。翻訳指示の意味を変えたときだけ増やす。
-  const TRANSLATION_PROMPT_VERSION = 2;
+  const TRANSLATION_PROMPT_VERSION = 3;
   // 画像翻訳は出力(OCR+訳+bbox JSON)が大きくなりがちで生成も遅いため、上限を低めに抑える(速度/コスト優先)。
   // 文字量の多い画像(漫画・図表)では足りずに切れることがあるので、その場合はここを上げる。
   const IMAGE_MAX_OUTPUT_TOKENS = 2048;
@@ -65,21 +65,24 @@
       `3. Preserve numbers, URLs, emoji, inline code and symbols.`,
       `4. Do not add explanations, notes, or any extra fields.`,
       `5. Keep each translation natural and concise.`,
-      translationPreferences(preferences),
+      translationPreferences(preferences, targetLang),
     ];
     return lines.filter(Boolean).join("\n");
   }
 
   // 本文・OCRの構造と翻訳対象の規則は固定し、訳文の語調だけを利用者が指定する。
-  function translationPreferences(preferences) {
+  function translationPreferences(preferences, targetLang) {
     const settings = SettingsSchema.normalize(preferences);
     const styles = {
-      cute: "Use an adorable, sweet, playful tone with gentle, cute phrasing.",
+      cute: "Use a distinctly and consistently adorable, sweet, playful voice. Favor expressive, charming word choices and noticeably cute sentence endings throughout, while preserving the original meaning and avoiding added facts.",
+      osaka: "Translate into natural, recognizable Osaka dialect, using characteristic vocabulary and sentence endings consistently while preserving the original meaning.",
+      ibaraki: "Translate into natural, recognizable Ibaraki dialect, using characteristic vocabulary and sentence endings consistently while preserving the original meaning.",
       formal: "Use a formal, polite, professional tone.",
       casual: "Use a relaxed, friendly, conversational tone.",
       literal: "Stay close to the original wording and sentence structure while keeping the translation readable.",
     };
-    const style = Object.hasOwn(styles, settings.translationStyle) ? styles[settings.translationStyle] : "";
+    const dialect = ["osaka", "ibaraki"].includes(settings.translationStyle);
+    const style = (!dialect || targetLang === "ja") && Object.hasOwn(styles, settings.translationStyle) ? styles[settings.translationStyle] : "";
     const customPrompt = settings.translationStyle === "custom" ? settings.customPrompt : "";
     if (!style && !customPrompt) return "";
     return [
@@ -705,7 +708,7 @@
       `Before answering, re-check every cy: imagine a horizontal line at y=cy; it must cut through the middle of that text. Fix any cy that sits above or below the glyphs.`,
       `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
       `If the image has no text, return {"blocks":[]}. No explanations.`,
-      translationPreferences(preferences),
+      translationPreferences(preferences, targetLang),
     ].filter(Boolean).join("\n");
   }
 
@@ -723,7 +726,7 @@
       `Distinguish real readable text from graphic LOGOS and BRAND WORDMARKS (a company or app name rendered as a stylized graphic mark, usually in the header or footer). For a logo or brand wordmark, copy its text into "original" unchanged and set "kind":"logo"; do not translate it. For all normal readable text set "kind":"text" and translate it. When unsure, choose "kind":"text".`,
       `Translate each block into ${targetName}; if a block is already in ${targetName}, copy it unchanged.`,
       `If the image has no text, return [].`,
-      translationPreferences(preferences),
+      translationPreferences(preferences, targetLang),
     ].filter(Boolean).join("\n");
   }
 

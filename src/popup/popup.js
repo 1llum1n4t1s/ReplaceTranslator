@@ -307,8 +307,18 @@
   }
 
   // ---- 共通 ----
+  function reflectStyleLanguage() {
+    const japanese = state.settings.targetLang === "ja";
+    for (const id of ["style-osaka", "style-ibaraki"]) {
+      $(id).hidden = !japanese;
+      $(id).disabled = !japanese;
+    }
+    const style = state.settings.translationStyle;
+    $("translation-style").value = !japanese && ["osaka", "ibaraki"].includes(style) ? "natural" : style;
+  }
+
   function reflect() {
-    $("translation-style").value = state.settings.translationStyle;
+    reflectStyleLanguage();
     if (!settingsDrafts.has("custom-prompt")) $("custom-prompt").value = state.settings.customPrompt;
     $("sync-settings").checked = state.settings.syncSettings === true;
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
@@ -406,6 +416,7 @@
       loadModels(false);
     }
     if (Object.hasOwn(patch, "translationStyle")) updateKeyWarning();
+    if (Object.hasOwn(patch, "targetLang")) reflectStyleLanguage();
     if (["quickSourceLang", "quickTargetLang"].some(key => Object.hasOwn(patch, key))) updateQtDir();
   }
 
@@ -677,7 +688,7 @@
     moveInk(document.querySelector(".tab.is-active"));
 
     $("source").addEventListener("change", (e) => save({ sourceLang: e.target.value }));
-    $("target").addEventListener("change", (e) => save({ targetLang: e.target.value }));
+    $("target").addEventListener("change", (e) => { save({ targetLang: e.target.value }); reflectStyleLanguage(); });
     $("qt-source").addEventListener("change", (e) => { save({ quickSourceLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
     $("qt-target").addEventListener("change", (e) => { save({ quickTargetLang: e.target.value }); updateQtDir(); rerunQuickTranslate(); });
 

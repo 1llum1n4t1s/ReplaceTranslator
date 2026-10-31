@@ -439,7 +439,7 @@
       apiKeys,
       models,
       reasoningEfforts: normalizeReasoningEfforts(r.reasoningEfforts),
-      translationStyle: ["natural", "cute", "formal", "casual", "literal", "custom"].includes(r.translationStyle) ? r.translationStyle : "natural",
+      translationStyle: ["natural", "cute", "formal", "casual", "literal", "osaka", "ibaraki", "custom"].includes(r.translationStyle) ? r.translationStyle : "natural",
       customPrompt: typeof r.customPrompt === "string" ? r.customPrompt.trim().slice(0, 2000) : "",
       syncSettings: r.syncSettings === true,
       autoTranslate: Boolean(r.autoTranslate),

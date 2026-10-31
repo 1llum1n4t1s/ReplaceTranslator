@@ -6,6 +6,8 @@
   "styleFormal": { "message": "Formal / polite" },
   "styleCasual": { "message": "Casual" },
   "styleLiteral": { "message": "Close to the original" },
+  "styleOsaka": { "message": "Osaka dialect" },
+  "styleIbaraki": { "message": "Ibaraki dialect" },
   "styleCustom": { "message": "Custom" },
   "qtSource": { "message": "Source (quick)" },
   "qtTarget": { "message": "Target (quick)" },
