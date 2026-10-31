@@ -148,7 +148,6 @@ async function shoot(browser, slide, locale) {
 
     // 同梱 woff2 のロード完了を待ってから撮る（フォント未ロードでのフォールバック撮影を防ぐ）
     await page.evaluate(async () => { if (document.fonts) { await document.fonts.ready; } });
-    await new Promise((r) => setTimeout(r, 350));
 
     const outDir = path.join(DIR, 'images', locale);
     fs.mkdirSync(outDir, { recursive: true });

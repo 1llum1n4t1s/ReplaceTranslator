@@ -133,7 +133,7 @@ test("カスタム選択時だけ追加指示をLLMの通常・ストリーム�
 });
 
 test("方言は日本語への通常・ストリーム・画像翻訳にだけ適用する", () => {
-  for (const [style, dialect] of [["osaka", "Osaka"], ["ibaraki", "Ibaraki"]]) {
+  for (const [style, dialect] of [["osaka", "Kansai"], ["ibaraki", "Ibaraki"]]) {
     for (const targetLang of ["ja", "en"]) {
       const opts = { texts: ["Hello"], sourceLang: "en", targetLang, translationStyle: style };
       for (const provider of g.Providers.ids.filter(id => g.Providers.get(id).batch !== false)) {

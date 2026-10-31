@@ -1,6 +1,6 @@
 # プライバシーポリシー — Replace AI Translator API
 
-最終更新: 2026-10-30
+最終更新: 2026-11-01
 
 ## 収集する情報
 本拡張機能の開発者は、翻訳の動作から利用者のデータを収集・保存・受信しません。解析ツールやトラッキングも一切使用しません。翻訳するテキスト（および画像翻訳を有効にした場合は画像）は、利用者が選んだ翻訳プロバイダにのみ送信されます（詳細は下記「翻訳対象テキストの扱い」「画像翻訳（任意）」を参照）。
@@ -8,7 +8,7 @@
 例外は、利用者が自分でお問い合わせフォームを送信したときだけです。このときに限り、入力されたメールアドレスと問い合わせ内容が開発者（Kagayoi）のサポート窓口へ送信されます（下記「お問い合わせフォーム」を参照）。
 
 ## API キーの扱い
-- 各 LLM プロバイダ（OpenAI / Anthropic / Google / xAI）の API キーは、お使いのブラウザ内（`chrome.storage.local`）にのみ保存されます。MyMemory はキー不要です。
+- 各 LLM プロバイダの API キーは、お使いのブラウザ内（`chrome.storage.local`）にのみ保存されます。MyMemory はキー不要です。
 - API キーは、翻訳実行時に該当プロバイダの API へ認証目的でのみ送信されます。本拡張機能の開発者を含む第三者には一切送信されません。
 
 ## 自動翻訳対象外リスト
@@ -30,6 +30,10 @@
   - Anthropic: https://www.anthropic.com/legal
   - Google AI: https://ai.google.dev/gemini-api/terms
   - xAI (Grok): https://x.ai/legal/privacy-policy
+  - OpenRouter: https://openrouter.ai/privacy
+  - DeepSeek: https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html
+  - Groq: https://groq.com/privacy-policy
+  - Sakana AI (Fugu): https://console.sakana.ai/privacy-policy
   - MyMemory (Translated): https://mymemory.translated.net/doc/en/tos.php
 - 本拡張機能の開発者が運営するサーバーには、翻訳対象のテキストを一切送信しません（送信先は利用者が選んだプロバイダの API のみ）。開発者のサーバーへ送るのは、利用者が自分でお問い合わせフォームに入力した内容だけです。
 

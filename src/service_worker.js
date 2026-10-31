@@ -247,12 +247,19 @@ if (typeof importScripts === "function") {
   //      (10 並列ワーカーが同一キーを read-modify-write してロストアップデートする競合も解消)
   let tuningMem = null;   // { [provider]: BatchTuner state }
   let usageMem = null;    // tokenUsage store
+  let memLoading = null;
   let persistTimer = null;
   async function ensureMem() {
     if (tuningMem && usageMem) return;
-    const data = await chrome.storage.local.get([StorageKeys.BATCH_TUNING, StorageKeys.TOKEN_USAGE]);
-    if (!tuningMem) tuningMem = data[StorageKeys.BATCH_TUNING] || {};
-    if (!usageMem) usageMem = data[StorageKeys.TOKEN_USAGE] || {};
+    // 起動時の先読みと並行バッチで初回の保存読込を共有する。失敗後は再試行できる。
+    if (!memLoading) {
+      memLoading = (async () => {
+        const data = await chrome.storage.local.get([StorageKeys.BATCH_TUNING, StorageKeys.TOKEN_USAGE]);
+        if (!tuningMem) tuningMem = data[StorageKeys.BATCH_TUNING] || {};
+        if (!usageMem) usageMem = data[StorageKeys.TOKEN_USAGE] || {};
+      })().finally(() => { memLoading = null; });
+    }
+    await memLoading;
   }
   // 保留中の tuning/usage をまとめて storage へ書き出す (デバウンス満了時・SW suspend 直前に呼ぶ)。
   function flushPersist() {

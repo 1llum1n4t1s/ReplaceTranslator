@@ -143,7 +143,7 @@
     // partial は成功扱い (state=on のまま)。__rt-error を併用すると .__rt-on の朱地に --ink が朱で
     // 上書きされアイコンが消えるため、注記は title/aria にだけ載せる
     const label = isErr ? errText : (partialText ? `${base}（${partialText}）` : base);
-    fab.title = (isErr || isLoading) ? label : `${label}（ドラッグで移動）`;
+    fab.title = (isErr || isLoading) ? label : `${label}${tr("fabDragHint", "（ドラッグで移動）")}`;
     fab.setAttribute("aria-label", label);
     fab.setAttribute("aria-pressed", isOn ? "true" : "false");
   }

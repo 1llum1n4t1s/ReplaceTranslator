@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 // 実際のSW・共有ライブラリを読み、ブラウザー保存と外部APIだけを置換する。
-module.exports = function workerHarness({ initial = {}, disk = { settings: initial }, session = {}, catalog = {}, models = {}, fetchResponse } = {}) {
+module.exports = function workerHarness({ initial = {}, disk = { settings: initial }, session = {}, catalog = {}, models = {}, fetchResponse, localGet } = {}) {
   const root = path.join(__dirname, "..");
   const requests = [], fetches = [], partials = [];
   let listener;
@@ -27,6 +27,10 @@ module.exports = function workerHarness({ initial = {}, disk = { settings: initi
       sendMessage: async (_tabId, message) => { partials.push(structuredClone(message)); } },
     alarms: { onAlarm: event, create: async () => {}, clear: async () => true },
   };
+  if (localGet) {
+    const get = chrome.storage.local.get;
+    chrome.storage.local.get = keys => localGet(keys, get);
+  }
   const context = vm.createContext({ chrome, URL, URLSearchParams, AbortController, AbortSignal, TextDecoder,
     TextEncoder, crypto, console, structuredClone, btoa, setTimeout: () => 1, clearTimeout: () => {},
     fetch: async (url, options = {}) => {

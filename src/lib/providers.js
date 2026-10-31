@@ -20,7 +20,7 @@
 
   const MAX_OUTPUT_TOKENS = 8192;
   // session translation cache の無効化用。翻訳指示の意味を変えたときだけ増やす。
-  const TRANSLATION_PROMPT_VERSION = 3;
+  const TRANSLATION_PROMPT_VERSION = 4;
   // 画像翻訳は出力(OCR+訳+bbox JSON)が大きくなりがちで生成も遅いため、上限を低めに抑える(速度/コスト優先)。
   // 文字量の多い画像(漫画・図表)では足りずに切れることがあるので、その場合はここを上げる。
   const IMAGE_MAX_OUTPUT_TOKENS = 2048;
@@ -75,7 +75,8 @@
     const settings = SettingsSchema.normalize(preferences);
     const styles = {
       cute: "Use a distinctly and consistently adorable, sweet, playful voice. Favor expressive, charming word choices and noticeably cute sentence endings throughout, while preserving the original meaning and avoiding added facts.",
-      osaka: "Translate into natural, recognizable Osaka dialect, using characteristic vocabulary and sentence endings consistently while preserving the original meaning.",
+      // osaka は保存済み設定との互換ID。表示と翻訳指示は関西弁を使う。
+      osaka: "Translate into natural, recognizable Kansai dialect, using characteristic vocabulary and sentence endings consistently while preserving the original meaning.",
       ibaraki: "Translate into natural, recognizable Ibaraki dialect, using characteristic vocabulary and sentence endings consistently while preserving the original meaning.",
       formal: "Use a formal, polite, professional tone.",
       casual: "Use a relaxed, friendly, conversational tone.",
