@@ -53,7 +53,7 @@ node webstore/generate-screenshots.js    # → webstore/images/{ja,en}/ にス�
 ```
 
 ## リリース
-`/vava` ワークフロー（設定は `vava.config.json`）で version bump → README 同期 → `release/x.y.z` ブランチ push → GitHub Actions が Chrome Web Store / Firefox AMO へ自動申請します。
+`/vava` ワークフローで version bump → README 同期 → `release/x.y.z` ブランチ push → GitHub Actions が Chrome Web Store / Firefox AMO へ自動申請します。
 
 CI（`.github/workflows/publish.yml`）に必要な準備:
 - GitHub Secrets: `CWS_CLIENT_ID` / `CWS_CLIENT_SECRET` / `CWS_REFRESH_TOKEN` / `CWS_EXTENSION_ID` / `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`

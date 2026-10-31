@@ -70,5 +70,14 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - UI 文言は `_locales/{en,ja}/messages.json`、HTML は `data-i18n` 属性、JS は `chrome.i18n.getMessage`。文言を足すときは en/ja の両方に追加する
 
 ## リリース
-- `vava.config.json` + `.cws-id` + AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
+- `.cws-id` + AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
 - バージョン番号（`package.json` / `manifest.json`）の更新は**ゆろさんが明示的に指示したときだけ**行う
+
+### ストア掲載情報
+
+リポジトリルートで実行する。AMO 更新は公開依頼時のみ実行し、事前に同じコマンドへ `--dry-run` を付けて入力を確認する。
+
+```powershell
+node "$HOME/.agents/skills/vava/scripts/update-amo-listing.mjs" --slug 'replace-translator' --listing 'ja=webstore/store-listing.firefox.ja.txt' --listing 'en-US=webstore/store-listing.firefox.en.txt' --privacy 'ja=docs/privacy-policy.md' --privacy 'en-US=docs/privacy-policy-en.md' --name 'ja=Replace AI Translator API' --name 'en-US=Replace AI Translator API' --homepage 'https://github.com/1llum1n4t1s/ReplaceTranslator' --support-url 'https://github.com/1llum1n4t1s/ReplaceTranslator/issues' --category 'other'
+node "$HOME/.agents/skills/vava/scripts/check-store-listing.mjs" --cws --amo --slug 'replace-translator' --cws-id-file '.cws-id' --keyword 'cws.description.ja=Replace AI Translator API' --keyword 'cws.description.en=Replace AI Translator API' --keyword 'amo.summary.ja=LLM' --keyword 'amo.summary.ja=置換翻訳' --keyword 'amo.summary.en-US=LLM' --keyword 'amo.summary.en-US=in-place' --keyword 'amo.description.ja=OpenAI' --keyword 'amo.description.ja=Anthropic' --keyword 'amo.description.ja=Gemini' --keyword 'amo.description.ja=API キー' --keyword 'amo.description.en-US=OpenAI' --keyword 'amo.description.en-US=Anthropic' --keyword 'amo.description.en-US=Gemini' --keyword 'amo.description.en-US=API key'
+```

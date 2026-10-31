@@ -3,7 +3,7 @@
 // listing の単一の真実の源（single source of truth）:
 //   - webstore/store-listing.firefox.ja.txt   … 名前 / 概要 / 説明（ja）
 //   - webstore/store-listing.firefox.en.txt   … Name / Summary / Description (en-US)
-//   - vava.config.json (amo ブロック)         … categories / homepage / supportUrl
+//   - このスクリプト内の公開メタデータ … categories / homepage / supportUrl
 //   - package.json (license)                  … SPDX ライセンス slug
 //
 // これらを parse して `amo-metadata.json` を生成する。生成物は
@@ -59,9 +59,8 @@ function readJson(relPath) {
 }
 
 function main() {
-  const config = readJson('vava.config.json');
   const pkg = readJson('package.json');
-  const amo = config.amo || {};
+  const amo = {"categories":["other"],"homepage":"https://github.com/1llum1n4t1s/ReplaceTranslator","supportUrl":"https://github.com/1llum1n4t1s/ReplaceTranslator/issues"};
 
   const ja = parseListing(
     readFileSync(join(ROOT, amo.listingFiles?.ja || 'webstore/store-listing.firefox.ja.txt'), 'utf8')

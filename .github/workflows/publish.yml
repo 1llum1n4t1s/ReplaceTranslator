@@ -309,12 +309,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s inherit_errexit
-          AMO_SLUG=$(jq -r '.amo.slug // empty' vava.config.json 2>/dev/null || echo "")
-          if [ -z "${AMO_SLUG:-}" ]; then
-            echo "::warning::vava.config.json の amo.slug が取得できないため AMO pre-flight を skip"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          AMO_SLUG='replace-translator'
           versions_response=$(curl -fsS \
             -H "Accept: application/json" \
             -H "User-Agent: Mozilla/5.0" \
@@ -336,7 +331,7 @@ jobs:
       - name: AMO listing メタデータを生成
         if: ${{ steps.amo-preflight.outputs.skip != 'true' }}
         run: |
-          # webstore/store-listing.firefox.{ja,en}.txt + vava.config.json + package.json を single source として
+          # webstore/store-listing.firefox.{ja,en}.txt + package.json と update-amo-listing.mjs 内の公開メタデータを入力として
           # amo-metadata.json（名前/概要/説明/カテゴリ/homepage/support_url/version.license）を生成。
           # listed version は license 必須・初回は categories 必須なので、これを --amo-metadata で
           # 渡さないと web-ext sign が Bad Request（license/categories required）で落ちる。

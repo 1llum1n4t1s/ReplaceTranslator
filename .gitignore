@@ -8,7 +8,7 @@ temp/
 firefox-build/
 web-ext-artifacts/
 *.xpi
-# update-amo-listing.mjs が webstore/*.txt + vava.config.json から毎回生成する中間物
+# update-amo-listing.mjs が webstore/*.txt とスクリプト内の公開メタデータ から毎回生成する中間物
 amo-metadata.json
 # webstore スクショ生成の依存 (puppeteer 等・ad-hoc install。ReviewForMD と同じ隔離運用)
 webstore/node_modules/
