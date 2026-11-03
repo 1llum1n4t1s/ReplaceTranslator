@@ -139,10 +139,10 @@ FAB、選択翻訳、画像翻訳は接頭辞付きID・クラス、`all: initia
 
 画像翻訳は、平坦背景では原文のインク範囲から配置と文字サイズを補正する。原文消去領域と訳文の配置領域を分け、全ブロックの計測→消去→描画の順で処理する。Canvasの実際の文字面と明示改行を計測し、画面表示上の最低文字サイズを12pxとする。画像の`object-fit`/`object-position`をcanvasとHTMLフォールバックへ反映し、4096px上限でも縦横を同じ比率で縮める。背景が複雑な場合とモデルの検出漏れ・大きな座標誤りは、局所的な画素補正だけでは解消を保証しない。
 
-- `pnpm test` は設定スキーマ、プロバイダ変換、言語処理、ストリーム解析などの純粋ロジックと、実ソースから切り出した content / Service Worker 関数・静的契約を検証する。
-- `pnpm run lint` は `src/` と `test/` の静的規約を検証する。
-- `pnpm exec kagayoi-support-sync --check` は `src/shared/` と exact 固定した共通サポートパッケージの一致を検証する。
-- `pnpm install --frozen-lockfile` はCIと配布時の依存再現性を保証する。
+- `bun --bun run test` は設定スキーマ、プロバイダ変換、言語処理、ストリーム解析などの純粋ロジックと、実ソースから切り出した content / Service Worker 関数・静的契約を検証する。
+- `bun --bun run lint` は `src/` と `test/` の静的規約を検証する。
+- `bun --bun run kagayoi-support-sync --check` は `src/shared/` と exact 固定した共通サポートパッケージの一致を検証する。
+- `bun run deps` はCIと配布時の依存再現性を保証する。
 - ページ翻訳エンジン、ブラウザAPI、各社APIを組み合わせた統合動作は自動テストの外側にあり、拡張機能を再読み込みした実ブラウザと利用者のAPIキーで確認する。
 - ChromeとFirefoxの配布物は同じ共有ディレクトリから作り、Firefox版は生成manifestを `web-ext lint` で検証する。
 

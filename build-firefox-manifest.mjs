@@ -9,7 +9,7 @@
 // (lib 群 → 末尾に service_worker 本体)。これで Chrome(importScripts) と Firefox(scripts) の
 // ロード対象が二重管理にならず、片側更新漏れを防ぐ。
 //
-// 使い方: node build-firefox-manifest.mjs <出力先 manifest パス>
+// 使い方: bun build-firefox-manifest.mjs <出力先 manifest パス>
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 const root = dirname(fileURLToPath(import.meta.url));
 const out = process.argv[2];
 if (!out) {
-  console.error("usage: node build-firefox-manifest.mjs <output-manifest-path>");
+  console.error("usage: bun build-firefox-manifest.mjs <output-manifest-path>");
   process.exit(2);
 }
 

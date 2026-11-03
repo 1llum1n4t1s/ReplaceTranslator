@@ -49,6 +49,10 @@ Write-Host ""
 # Windows PowerShell 5.1 でも動くよう ?? (PS7+) は使わず明示的にフォールバックする
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { $PWD.Path }
 if ($scriptDir) { Set-Location $scriptDir }
+bun run deps
+if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+bun --bun run sync:support
+if ($LASTEXITCODE -ne 0) { throw "Support synchronization failed." }
 
 # Chrome/Firefox 両 variant と CI の同梱ディレクトリは package-dirs.txt を正本にする。
 # manifest.json は variant 別(Chrome=純正 / Firefox=生成)なので含めず Build-Package 内で個別に扱う。
@@ -72,7 +76,7 @@ function Build-Package {
     Write-Host "ファイルをコピー中..." -ForegroundColor Yellow
     if ($Variant -eq "firefox") {
         # Firefox は background.service_worker 非対応 → scripts 形式へ変換 (importScripts を単一ソースに生成)
-        node build-firefox-manifest.mjs "$tempDir/manifest.json"
+        bun build-firefox-manifest.mjs "$tempDir/manifest.json"
         if ($LASTEXITCODE -ne 0) { Write-Host "Firefox manifest 生成に失敗しました" -ForegroundColor Red; exit 1 }
     } else {
         Copy-Item "manifest.json" -Destination "$tempDir/manifest.json"  # Chrome はソース manifest をそのまま

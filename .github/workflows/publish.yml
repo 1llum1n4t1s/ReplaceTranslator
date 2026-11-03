@@ -8,18 +8,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   package:
     name: ZIP パッケージ作成
     runs-on: ubuntu-latest
     outputs:
+      artifact-attempt: ${{ steps.artifact-identity.outputs.attempt }}
       version: ${{ steps.version.outputs.version }}
       zip_sha256: ${{ steps.verify-zip.outputs.sha256 }}
     steps:
-      - name: リポジトリをチェックアウト
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      - name: Record native artifact producer attempt
+        id: artifact-identity
+        shell: bash
+        run: echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Checkout release commit with native git
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" submodule update --init --recursive
 
       - name: 同梱ディレクトリを取得
         run: |
@@ -51,28 +69,25 @@ jobs:
           fi
           echo "✅ ブランチ名と manifest バージョン一致: $expected"
 
-      - name: pnpm セットアップ
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 12
-
-      - name: Node セットアップ
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '26'
-          cache: 'pnpm'
+      - name: Prepare Bun build toolchain
+        shell: pwsh
+        run: ./scripts/Initialize-BunBuild.ps1 -VersionFile package.json
 
       - name: 依存インストール
-        run: pnpm install --frozen-lockfile
+        run: bun run deps
+      - name: Validate dependency security patches
+        run: bun run test:dependencies
+      - name: Sync support assets
+        run: bun --bun run sync:support
 
       - name: テスト実行
-        run: pnpm test
+        run: bun --bun run test
 
       - name: 静的検証
         run: |
-          pnpm lint
+          bun --bun run lint
           # truthy 判定だけではパス typo の壊れた ZIP を素通しするため、manifest 参照先の実在まで確認する
-          node - <<'NODE'
+          bun - <<'NODE'
           const fs = require("node:fs");
           const m = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
           const required = {
@@ -102,22 +117,26 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          node verify-release-package.mjs replace-translator.zip chrome "$EXPECTED_VERSION" .
-          echo "sha256=$(sha256sum replace-translator.zip | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          bun verify-release-package.mjs replace-translator.zip chrome "$EXPECTED_VERSION" . > "$RUNNER_TEMP/chrome-verified.json"
+          echo "sha256=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/chrome-verified.json"))["sha256"])')" >> "$GITHUB_OUTPUT"
 
       - name: ZIP artifact を保存
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: replace-translator-zip
-          path: replace-translator.zip
-          if-no-files-found: error
+        shell: pwsh
+        env:
+          R2_ARTIFACT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ARTIFACT_BUCKET: ${{ vars.R2_ARTIFACT_BUCKET }}
+          R2_ARTIFACT_ACCESS_KEY_ID: ${{ secrets.R2_ARTIFACT_ACCESS_KEY_ID }}
+          R2_ARTIFACT_SECRET_ACCESS_KEY: ${{ secrets.R2_ARTIFACT_SECRET_ACCESS_KEY }}
+        run: |
+          . ./scripts/R2Artifact.Common.ps1
+          Publish-R2Artifact -AccountId $env:R2_ARTIFACT_ACCOUNT_ID -Bucket $env:R2_ARTIFACT_BUCKET -AccessKeyId $env:R2_ARTIFACT_ACCESS_KEY_ID -SecretAccessKey $env:R2_ARTIFACT_SECRET_ACCESS_KEY -Name 'replace-translator-zip' -Path @('replace-translator.zip') | Out-Null
 
       - name: Firefox 用ソースディレクトリを構築
         run: |
           # ソース manifest.json は Chrome 純正(service_worker)。Firefox は service_worker 非対応のため
           # build-firefox-manifest.mjs で background.scripts 形式へ変換する(importScripts を単一ソースに生成)。
           mkdir -p firefox-build
-          node build-firefox-manifest.mjs firefox-build/manifest.json
+          bun build-firefox-manifest.mjs firefox-build/manifest.json
           # 同梱ディレクトリは Chrome zip と同じ package-dirs.txt 由来の $PKG_DIRS を使う。
           for d in $PKG_DIRS; do cp -r "$d" firefox-build/; done
           find firefox-build \( -name "*.DS_Store" -o -name "*.swp" -o -name "*~" \) -delete
@@ -125,14 +144,18 @@ jobs:
           ls -la firefox-build/
 
       - name: Firefox manifest 検証
-        run: pnpm exec web-ext lint --source-dir firefox-build
+        run: bun --bun run web-ext lint --source-dir firefox-build
 
       - name: Firefox source artifact を保存
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: replace-translator-firefox-source
-          path: firefox-build/
-          if-no-files-found: error
+        shell: pwsh
+        env:
+          R2_ARTIFACT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ARTIFACT_BUCKET: ${{ vars.R2_ARTIFACT_BUCKET }}
+          R2_ARTIFACT_ACCESS_KEY_ID: ${{ secrets.R2_ARTIFACT_ACCESS_KEY_ID }}
+          R2_ARTIFACT_SECRET_ACCESS_KEY: ${{ secrets.R2_ARTIFACT_SECRET_ACCESS_KEY }}
+        run: |
+          . ./scripts/R2Artifact.Common.ps1
+          Publish-R2Artifact -AccountId $env:R2_ARTIFACT_ACCOUNT_ID -Bucket $env:R2_ARTIFACT_BUCKET -AccessKeyId $env:R2_ARTIFACT_ACCESS_KEY_ID -SecretAccessKey $env:R2_ARTIFACT_SECRET_ACCESS_KEY -Name 'replace-translator-firefox-source' -Path @('firefox-build/') | Out-Null
 
   publish:
     name: Chrome Web Store にアップロード + Submit for review
@@ -140,11 +163,29 @@ jobs:
     needs: package
     environment: chrome-web-store
     steps:
+      - name: Checkout release commit with native git
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" submodule update --init --recursive
+
       - name: ZIP artifact を取得
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: replace-translator-zip
-          path: .
+        shell: pwsh
+        env:
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.package.outputs.artifact-attempt }}
+          R2_ARTIFACT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ARTIFACT_BUCKET: ${{ vars.R2_ARTIFACT_BUCKET }}
+          R2_ARTIFACT_ACCESS_KEY_ID: ${{ secrets.R2_ARTIFACT_ACCESS_KEY_ID }}
+          R2_ARTIFACT_SECRET_ACCESS_KEY: ${{ secrets.R2_ARTIFACT_SECRET_ACCESS_KEY }}
+        run: |
+          & ./scripts/Receive-ReleaseArtifact.ps1 -Name 'replace-translator-zip' -Destination '.' -RunAttempt $env:ARTIFACT_RUN_ATTEMPT
 
       - name: 検証済みZIPとアップロードする実物のhashを照合
         env:
@@ -153,118 +194,16 @@ jobs:
           test -n "$EXPECTED_SHA256"
           echo "$EXPECTED_SHA256  replace-translator.zip" | sha256sum --check
 
-      - name: バージョン pre-flight check (CWS draft の crxVersion と一致なら skip)
-        id: cws-preflight
+      - name: Chrome Web Store に検証済み ZIP を HTTP 提出
         env:
-          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
-          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
-          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
-          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
-          MANIFEST_VERSION: ${{ needs.package.outputs.version }}
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID || secrets.CWS_PUBLISHER_ID }}
         run: |
-          set -euo pipefail
-          shopt -s inherit_errexit
-          # curl 失敗 (transient な 4xx/5xx 含む) は errexit で即死させず空にフォールバックし、
-          # 下の「OAuth token 取得失敗 → publish step に委ねる」分岐を機能させる (pub_response と同形)。
-          token_response=$(curl -fsS \
-            -X POST "https://oauth2.googleapis.com/token" \
-            --data-urlencode "client_id=${CWS_CLIENT_ID}" \
-            --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
-            --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
-            --data-urlencode "grant_type=refresh_token") || token_response=""
-          access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
-          if [ -z "${access_token:-}" ]; then
-            echo "::warning::CWS pre-flight: OAuth token 取得失敗 → publish step に判定を委ねる"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # add-mask は行単位で解釈されるため、複数行 JSON 全体を渡すと2行目以降が通常ログへ漏れる。
-          # parse 済みの単一行 access token だけを登録し、OAuth 応答本文自体は一切出力しない。
-          echo "::add-mask::${access_token}"
-          # DRAFT projection の uploadState は「直近アップロードの状態」であって審査提出済みかは表さない。
-          # uploadState != FAILURE だけで skip すると、アップロード成功後に publish が失敗/タイムアウトした版を
-          # 次回も skip してしまい、未提出の下書きのまま放置される。
-          # → PUBLISHED(公開中) バージョンが manifest と一致するときだけ skip。それ以外は publish step に委ね、
-          #    publish step 側で「審査中で更新不可」を検出して安全に終了する。
-          pub_response=$(curl -fsS \
-            -H "Authorization: Bearer ${access_token}" \
-            -H "x-goog-api-version: 2" \
-            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}?projection=PUBLISHED") || pub_response=""
-          pub_version=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("crxVersion",""))' 2>/dev/null <<< "$pub_response" || echo "")
-          echo "📊 CWS published=${pub_version:-(unknown)} / manifest: ${MANIFEST_VERSION}"
-          if [ -n "$pub_version" ] && [ "$pub_version" = "$MANIFEST_VERSION" ]; then
-            echo "::notice::CWS は既に v${MANIFEST_VERSION} を公開中。CWS publish step を skip"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Chrome Web Store にアップロード + Publish API で Submit for review
-        if: ${{ steps.cws-preflight.outputs.skip != 'true' }}
-        env:
-          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
-          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
-          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
-          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
-        run: |
-          set -euo pipefail
-          shopt -s inherit_errexit
-          token_response=$(curl -fsS \
-            -X POST "https://oauth2.googleapis.com/token" \
-            --data-urlencode "client_id=${CWS_CLIENT_ID}" \
-            --data-urlencode "client_secret=${CWS_CLIENT_SECRET}" \
-            --data-urlencode "refresh_token=${CWS_REFRESH_TOKEN}" \
-            --data-urlencode "grant_type=refresh_token")
-          access_token=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' 2>/dev/null <<< "$token_response" || echo "")
-          if [ -z "${access_token:-}" ]; then
-            echo "::error::access_token のパースに失敗しました"
-            exit 1
-          fi
-          # 複数行 token_response は add-mask へ渡さない（2行目以降のログ露出を防ぐ）。
-          echo "::add-mask::${access_token}"
-
-          echo "📤 Step 1/2: Chrome Web Store に ZIP をアップロード中..."
-          # -f は使わず HTTP コードと本文を捕捉する。審査中(更新不可)なら「既に提出済み」とみなして正常終了し、
-          # 公開中バージョン未一致でも審査待ちのケースで CI を赤にしない。
-          upload_http=$(curl -sS -o /tmp/cws_upload.json -w '%{http_code}' \
-            -X PUT \
-            -H "Authorization: Bearer ${access_token}" \
-            -H "x-goog-api-version: 2" \
-            -H "Content-Type: application/zip" \
-            --data-binary @replace-translator.zip \
-            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}" || echo "000")
-          upload_response=$(cat /tmp/cws_upload.json 2>/dev/null || echo "")
-          upload_state=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("uploadState","UNKNOWN"))' 2>/dev/null <<< "$upload_response" || echo "UNKNOWN")
-          echo "📊 uploadState: ${upload_state} (HTTP ${upload_http})"
-          if [ "$upload_state" != "SUCCESS" ]; then
-            if printf '%s' "$upload_response" | grep -qiE "pending review|in review|not.?updatable|being reviewed|review in progress"; then
-              echo "::notice::アイテムは審査中で更新不可。既に提出済みとみなして正常終了します。"
-              exit 0
-            fi
-            echo "::error::アップロードが SUCCESS ではないため publish を中止します (state=${upload_state}, http=${upload_http})"
-            echo "Response: $upload_response"
-            exit 1
-          fi
-
-          echo "📨 Step 2/2: Publish API で Submit for review..."
-          publish_response=$(curl -fsS \
-            -X POST \
-            -H "Authorization: Bearer ${access_token}" \
-            -H "x-goog-api-version: 2" \
-            -H "Content-Length: 0" \
-            "https://www.googleapis.com/chromewebstore/v1.1/items/${CWS_EXTENSION_ID}/publish?publishTarget=default")
-          publish_status=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(d.get("status",[])))' 2>/dev/null <<< "$publish_response")
-          echo "📊 Publish status: ${publish_status}"
-          case "$publish_status" in
-            *OK*|*ITEM_PENDING_REVIEW*)
-              echo "🎉 Submit for review 完了！"
-              ;;
-            *)
-              echo "::error::予期しない publish status: ${publish_status}"
-              echo "Response: $publish_response"
-              exit 1
-              ;;
-          esac
+          pwsh -NoProfile -File scripts/Test-PublishCws.ps1 -WorkDirectory "$RUNNER_TEMP/cws-publisher-tests"
+          pwsh -NoProfile -File scripts/Publish-Cws.ps1 -Archive "replace-translator.zip" -ExpectedSha256 "${{ needs.package.outputs.zip_sha256 }}" -CheckExistingVersion -ExistingVersionPolicy Published
 
   publish-firefox:
     name: Firefox AMO に submission
@@ -275,90 +214,63 @@ jobs:
     # 旧 success()||failure() だと download-artifact が二次エラーで赤くなり障害切り分けを濁すため result 判定にする。
     if: ${{ needs.package.result == 'success' }}
     steps:
-      - name: リポジトリをチェックアウト
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      - name: Checkout release commit with native git
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" submodule update --init --recursive
 
       - name: Firefox source artifact を取得
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: replace-translator-firefox-source
-          path: firefox-build/
+        shell: pwsh
+        env:
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.package.outputs.artifact-attempt }}
+          R2_ARTIFACT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ARTIFACT_BUCKET: ${{ vars.R2_ARTIFACT_BUCKET }}
+          R2_ARTIFACT_ACCESS_KEY_ID: ${{ secrets.R2_ARTIFACT_ACCESS_KEY_ID }}
+          R2_ARTIFACT_SECRET_ACCESS_KEY: ${{ secrets.R2_ARTIFACT_SECRET_ACCESS_KEY }}
+        run: |
+          & ./scripts/Receive-ReleaseArtifact.ps1 -Name 'replace-translator-firefox-source' -Destination 'firefox-build/' -RunAttempt $env:ARTIFACT_RUN_ATTEMPT
 
-      - name: pnpm セットアップ
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 12
-
-      - name: Node セットアップ
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '26'
-          cache: 'pnpm'
+      - name: Prepare Bun build toolchain
+        shell: pwsh
+        run: ./scripts/Initialize-BunBuild.ps1 -VersionFile package.json
 
       - name: web-ext 依存インストール
         env:
           PUPPETEER_SKIP_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile
-
-      - name: バージョン pre-flight check (AMO に既存 version があれば skip)
-        id: amo-preflight
-        env:
-          MANIFEST_VERSION: ${{ needs.package.outputs.version }}
-        run: |
-          set -euo pipefail
-          shopt -s inherit_errexit
-          AMO_SLUG='replace-translator'
-          versions_response=$(curl -fsS \
-            -H "Accept: application/json" \
-            -H "User-Agent: Mozilla/5.0" \
-            "https://addons.mozilla.org/api/v5/addons/addon/${AMO_SLUG}/versions/") || versions_response=""
-          if [ -z "$versions_response" ]; then
-            echo "::warning::AMO pre-flight: versions list 取得失敗 (初回登録 / 一時障害) → publish step に判定を委ねる"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          exists=$(MANIFEST_VERSION="$MANIFEST_VERSION" python3 -c 'import json,sys,os; target=os.environ["MANIFEST_VERSION"]; data=json.load(sys.stdin); print("1" if any(v.get("version")==target for v in data.get("results",[])) else "0")' 2>/dev/null <<< "$versions_response" || echo "")
-          echo "📊 AMO versions check: target=${MANIFEST_VERSION} / exists=${exists:-(parse失敗)}"
-          if [ "$exists" = "1" ]; then
-            echo "::notice::AMO に既に v${MANIFEST_VERSION} が存在するため AMO publish step を skip"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: bun run deps
+      - name: Validate dependency security patches
+        run: bun run test:dependencies
+      - name: Sync support assets
+        run: bun --bun run sync:support
 
       - name: AMO listing メタデータを生成
-        if: ${{ steps.amo-preflight.outputs.skip != 'true' }}
         run: |
-          # webstore/store-listing.firefox.{ja,en}.txt + package.json と update-amo-listing.mjs 内の公開メタデータを入力として
+          # webstore/store-listing.firefox.{ja,en}.txt + package.json と scripts/New-AmoMetadata.ps1 内の公開メタデータを入力として
           # amo-metadata.json（名前/概要/説明/カテゴリ/homepage/support_url/version.license）を生成。
-          # listed version は license 必須・初回は categories 必須なので、これを --amo-metadata で
-          # 渡さないと web-ext sign が Bad Request（license/categories required）で落ちる。
-          node update-amo-listing.mjs
+          pwsh -NoProfile -File scripts/New-AmoMetadata.ps1
 
-      - name: Firefox AMO に submit (web-ext sign --channel=listed)
-        if: ${{ steps.amo-preflight.outputs.skip != 'true' }}
+      - name: Firefox AMO に HTTP submission
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: |
-          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
-            echo "::error::AMO_JWT_ISSUER / AMO_JWT_SECRET の GitHub Secrets が未設定です"
-            exit 1
-          fi
-          set +e
-          node submit-firefox.mjs 2>&1 | tee /tmp/web-ext.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            if grep -q "Approval: timeout exceeded" /tmp/web-ext.log; then
-              echo "::warning::web-ext sign が timeout exceeded で exit 1 を返したが submission は受理済み。CI green 化のため exit 0 扱いに変換します"
-            elif grep -qiE "version (already exists|conflict)" /tmp/web-ext.log; then
-              echo "::warning::AMO に既に同 version が存在するため version conflict で fail。CI green 化のため exit 0 扱いに変換します"
-            else
-              echo "::error::web-ext sign が想定外の理由で失敗しました (rc=$rc)"
-              exit "$rc"
-            fi
-          fi
-          echo "🦊 Firefox AMO への submission 送信完了 (レビュー待ち)"
+          pwsh -NoProfile -File scripts/Test-PublishAmo.ps1 -WorkDirectory "$RUNNER_TEMP/amo-publisher-tests"
+          test ! -e firefox-build/.amo-upload-uuid
+          mkdir -p web-ext-artifacts
+          ARCHIVE="$GITHUB_WORKSPACE/web-ext-artifacts/unsigned-submission.xpi"
+          test ! -e "$ARCHIVE"
+          pwsh -NoProfile -File scripts/Test-FirefoxArchive.ps1 -WorkDirectory "$RUNNER_TEMP/firefox-archive-tests"
+          pwsh -NoProfile -File scripts/New-FirefoxArchive.ps1 -SourceDirectory firefox-build -Archive "$ARCHIVE" > web-ext-artifacts/build-receipt.json
+          VERSION=$(python3 -c 'import json; print(json.load(open("firefox-build/manifest.json"))["version"])')
+          ADDON_ID=$(python3 -c 'import json; m=json.load(open("firefox-build/manifest.json")); print(m.get("browser_specific_settings",m.get("applications",{}))["gecko"]["id"])')
+          bun verify-release-package.mjs "$ARCHIVE" firefox "$VERSION" firefox-build > web-ext-artifacts/verified.json
+          SHA256=$(python3 -c 'import json; print(json.load(open("web-ext-artifacts/verified.json"))["sha256"])')
+          pwsh -NoProfile -File scripts/Publish-Amo.ps1 -Archive "$ARCHIVE" -Metadata amo-metadata.json -AddonId "$ADDON_ID" -ExpectedVersion "$VERSION" -ExpectedSha256 "$SHA256"

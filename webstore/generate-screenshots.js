@@ -5,8 +5,8 @@
 //   出力: webstore/images/{ja,en}/0N-*.png（各 1280x800・CWS/AMO 仕様）
 //
 // 依存（puppeteer）は webstore/ に隔離（.gitignore 済み）:
-//   pnpm -C webstore install        # 初回のみ
-//   node webstore/generate-screenshots.js
+//   bun run --cwd webstore deps        # 初回のみ
+//   bun webstore/generate-screenshots.js
 //
 // deviceScaleFactor=1 + clip で「ちょうど 1280x800」を出力する（2x にすると
 // 2560x1600 になり CWS にアップロードできないため等倍で撮る）。

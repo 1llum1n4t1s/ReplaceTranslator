@@ -4,11 +4,12 @@
   "type": "commonjs",
   "description": "Chrome/Firefox extension that translates the current page in-place using cloud LLMs (OpenAI, Anthropic, Google Gemini, xAI Grok) via your own API key.",
   "scripts": {
-    "sync:support": "node --preserve-symlinks-main ./node_modules/@kagayoi/support-extension/bin/kagayoi-support-sync.mjs",
-    "prebuild": "pnpm sync:support",
-    "ci:install": "pnpm install --frozen-lockfile",
-    "test": "node --test",
-    "lint": "eslint src/ test/"
+    "deps": "bun scripts/Install-Dependencies.mjs",
+    "sync:support": "bun --preserve-symlinks-main ./node_modules/@kagayoi/support-extension/bin/kagayoi-support-sync.mjs",
+    "ci:install": "bun install --frozen-lockfile",
+    "test": "bun test",
+    "lint": "eslint src/ test/",
+    "test:dependencies": "bun test ./scripts/dependency-security.test.cjs"
   },
   "devDependencies": {
     "@kagayoi/support-extension": "1.0.9",
@@ -29,5 +30,20 @@
     "page-translator"
   ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "overrides": {
+    "adm-zip": ">=0.6.1 <1",
+    "js-yaml": ">=4.3.2 <5",
+    "undici": ">=7.28.0 <9",
+    "minimatch": "^11.0.4",
+    "multimatch": "^8.0.0"
+  },
+  "packageManager": "bun@1.4.4",
+  "trustedDependencies": [],
+  "patchedDependencies": {
+    "@eslint/eslintrc@3.3.7": "patches/@eslint%2Feslintrc@3.3.7.patch",
+    "deepmerge@4.3.1": "patches/deepmerge@4.3.1.patch",
+    "@eslint/config-array@0.21.2": "patches/@eslint%2Fconfig-array@0.21.2.patch",
+    "web-ext@10.8.0": "patches/web-ext@10.8.0.patch"
+  }
 }

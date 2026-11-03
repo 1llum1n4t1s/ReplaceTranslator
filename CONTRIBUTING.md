@@ -19,11 +19,11 @@
 - `_locales/{en,ja}/messages.json` — i18n
 - `test/` — Node 標準テスト
 - `webstore/` — ストア掲載素材（`*.html` テンプレ + `generate-screenshots.js`(puppeteer) → `images/{ja,en}/`、CWS/AMO listing テキスト）
-- `update-amo-listing.mjs` — AMO listing メタデータ（`amo-metadata.json`）生成スクリプト
+- `scripts/New-AmoMetadata.ps1` — AMO listing メタデータ（`amo-metadata.json`）生成スクリプト
 
 ## セットアップ
 ```
-pnpm install
+bun install
 ```
 
 ## 開発（拡張機能の読み込み）
@@ -32,8 +32,8 @@ pnpm install
 
 ## テスト / Lint
 ```
-pnpm test        # Node 標準テスト（共有純粋関数・実ソースから抽出した関数の状態遷移・静的契約）
-pnpm run lint    # ESLint（Flat Config）
+bun --bun run test        # Node 標準テスト（共有純粋関数・実ソースから抽出した関数の状態遷移・静的契約）
+bun --bun run lint    # ESLint（Flat Config）
 ```
 
 content / Service Worker などの実ソースを検証します。実 DOM + chrome API + LLM を組み合わせた統合テストは含まれないため、API キーを使う実機確認は別途必要です。
@@ -48,8 +48,8 @@ powershell -File zip.ps1         # 単一 manifest.json から Chrome zip + Fire
 
 ### ストア掲載スクリーンショット
 ```
-pnpm -C webstore install                 # puppeteer を webstore/ に ad-hoc 導入（gitignore 済み）
-node webstore/generate-screenshots.js    # → webstore/images/{ja,en}/ にスクショ5枚(1280x800)+プロモ小(440x280)+マーキー(1400x560)
+bun run --cwd webstore deps # 隔離packageのbun.lockから依存を復元
+bun webstore/generate-screenshots.js    # → webstore/images/{ja,en}/ にスクショ5枚(1280x800)+プロモ小(440x280)+マーキー(1400x560)
 ```
 
 ## リリース
@@ -59,7 +59,7 @@ CI（`.github/workflows/publish.yml`）に必要な準備:
 - GitHub Secrets: `CWS_CLIENT_ID` / `CWS_CLIENT_SECRET` / `CWS_REFRESH_TOKEN` / `CWS_EXTENSION_ID` / `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`
 - `.cws-id` を実際の Chrome Web Store Extension ID に差し替える
 - `manifest.json` の `browser_specific_settings.gecko.id` を自分の AMO アドオン ID に合わせる
-- AMO listing（名前/概要/説明）は `webstore/store-listing.firefox.{ja,en}.txt` を編集（CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成し `web-ext sign --amo-metadata` に渡す）
+- AMO listing（名前/概要/説明）は `webstore/store-listing.firefox.{ja,en}.txt` を編集（CI で `scripts/New-AmoMetadata.ps1` が `amo-metadata.json` を生成し `scripts/Publish-Amo.ps1` に渡す）
 
 ## アーキテクチャと実装パターン
 設計の詳細・守るべきパターンは [AGENTS.md](AGENTS.md) を参照してください。

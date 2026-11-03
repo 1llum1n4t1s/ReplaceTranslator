@@ -11,6 +11,8 @@
 
 set -euo pipefail
 cd "$(dirname "$0")"
+bun run deps
+bun --bun run sync:support
 
 # Chrome/Firefox 両 variant に同梱する共有ディレクトリは package-dirs.txt を正本にする。
 # manifest.json は variant 別(Chrome=純正 / Firefox=生成)なので含めず build_pkg 内で個別に扱う。
@@ -43,7 +45,7 @@ build_pkg() {
 
   if [ "$variant" = "firefox" ]; then
     # Firefox は background.service_worker 非対応 → scripts 形式へ変換 (importScripts を単一ソースに生成)
-    node build-firefox-manifest.mjs "$tmp/manifest.json"
+    bun build-firefox-manifest.mjs "$tmp/manifest.json"
   else
     cp manifest.json "$tmp/manifest.json"  # Chrome はソース manifest (service_worker のみ) をそのまま
   fi

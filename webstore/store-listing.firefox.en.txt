@@ -1,5 +1,5 @@
 ============================================================
-Firefox AMO listing (parsed by update-amo-listing.mjs -> amo-metadata.json)
+Firefox AMO listing (parsed by scripts/New-AmoMetadata.ps1 -> amo-metadata.json)
 Sections in order: Name -> Summary -> Description. Lines before the first ■ are ignored.
 Inside the description use [brackets] for sub-headings, not ■ (a new ■ starts a new section).
 ============================================================

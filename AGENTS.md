@@ -5,18 +5,18 @@ This file provides guidance to Codex when working in this repository.
 各社クラウド LLM / 無料 NMT でページをインプレース置換翻訳する Chrome / Firefox (MV3) 拡張機能。本ファイルは LLM 向けの作業規約・実装パターン集（肯定形で記述）。全体の構造・責務・境界・データフロー・設計判断は [DESIGN.md](DESIGN.md)、機能別の実装詳細は [references/architecture.md](references/architecture.md) を正本とする。ビルドツール無しのネイティブ JS（`"type": "commonjs"`・ランタイム依存ゼロ・devDeps のみ）。
 
 ## ビルド / テスト / Lint コマンド
-- `pnpm test` — Node 標準テスト（`node --test`。共有純粋関数に加え、実ソースから切り出した content / Service Worker 関数と静的契約も検証）
-- 単一ファイル: `node --test test/providers.test.js` ／ 単一テスト名: `node --test --test-name-pattern "BatchTuner"`
-- `pnpm run lint` — ESLint（Flat Config v9+）
+- `bun --bun run test` — Bun の node:test 互換テスト（`bun test`。共有純粋関数に加え、実ソースから切り出した content / Service Worker 関数と静的契約も検証）
+- 単一ファイル: `bun test ./test/providers.test.js` ／ 単一テスト名: `bun test --test-name-pattern "BatchTuner"`
+- `bun --bun run lint` — ESLint（Flat Config v9+）
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
 - 製品ページの配信は `../vps-web/deploy/deploy-lp.ps1` を使う（配置は [DESIGN.md](DESIGN.md#製品ページの配信先)）。公開ホスト・更新ファイルの既存経路を維持する。
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]==4.68.0" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（入力版・hash・subset 契約は `src/popup/fonts/README.md`、§popup フォント参照）
-- `pnpm sync:support` — exact 固定した `@kagayoi/support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`pnpm run sync:support --check` で一致を検証する
+- `bun --bun run sync:support` — exact 固定した `@kagayoi/support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`bun --bun run sync:support --check` で一致を検証する
 
 ## 規約上の前提（設計の根拠）
 - 大手3社ともブラウザ拡張からサブスクのログインセッション流用は ToS 違反。**API トークンが唯一の正規ルート**。プロバイダ追加時も **API キー方式**で実装する
-- 翻訳エンジンと画像翻訳の一部関数・静的契約は `test/content-dom.test.js` で実ソースから検証する。ただし実 DOM + chrome API + LLM を組み合わせた統合テストは無い。変更時は `pnpm test` + `pnpm run lint` を通し、統合ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
+- 翻訳エンジンと画像翻訳の一部関数・静的契約は `test/content-dom.test.js` で実ソースから検証する。ただし実 DOM + chrome API + LLM を組み合わせた統合テストは無い。変更時は `bun --bun run test` + `bun --bun run lint` を通し、統合ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
 
 ## アーキテクチャ（3 レイヤ + lib）
 ```
@@ -70,7 +70,7 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 - UI 文言は `_locales/{en,ja}/messages.json`、HTML は `data-i18n` 属性、JS は `chrome.i18n.getMessage`。文言を足すときは en/ja の両方に追加する
 
 ## リリース
-- `.cws-id` + AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `update-amo-listing.mjs` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
+- `.cws-id` + AMO listing（`webstore/store-listing.firefox.{ja,en}.txt` を single source に、CI で `scripts/New-AmoMetadata.ps1` が `amo-metadata.json` を生成）を使い、`/vava` で version bump → CI 配信
 - バージョン番号（`package.json` / `manifest.json`）の更新は**ゆろさんが明示的に指示したときだけ**行う
 
 ### ストア掲載情報
@@ -78,6 +78,41 @@ popup(翻訳 / API設定) / FAB / 右クリック ──APPLY_SETTINGS / TRANSLA
 リポジトリルートで実行する。AMO 更新は公開依頼時のみ実行し、事前に同じコマンドへ `--dry-run` を付けて入力を確認する。
 
 ```powershell
-node "$HOME/.agents/skills/vava/scripts/update-amo-listing.mjs" --slug 'replace-translator' --listing 'ja=webstore/store-listing.firefox.ja.txt' --listing 'en-US=webstore/store-listing.firefox.en.txt' --privacy 'ja=docs/privacy-policy.md' --privacy 'en-US=docs/privacy-policy-en.md' --name 'ja=Replace AI Translator API' --name 'en-US=Replace AI Translator API' --homepage 'https://github.com/1llum1n4t1s/ReplaceTranslator' --support-url 'https://github.com/1llum1n4t1s/ReplaceTranslator/issues' --category 'other'
-node "$HOME/.agents/skills/vava/scripts/check-store-listing.mjs" --cws --amo --slug 'replace-translator' --cws-id-file '.cws-id' --keyword 'cws.description.ja=Replace AI Translator API' --keyword 'cws.description.en=Replace AI Translator API' --keyword 'amo.summary.ja=LLM' --keyword 'amo.summary.ja=置換翻訳' --keyword 'amo.summary.en-US=LLM' --keyword 'amo.summary.en-US=in-place' --keyword 'amo.description.ja=OpenAI' --keyword 'amo.description.ja=Anthropic' --keyword 'amo.description.ja=Gemini' --keyword 'amo.description.ja=API キー' --keyword 'amo.description.en-US=OpenAI' --keyword 'amo.description.en-US=Anthropic' --keyword 'amo.description.en-US=Gemini' --keyword 'amo.description.en-US=API key'
+bun "$HOME/.agents/skills/vava/scripts/update-amo-listing.mjs" --slug 'replace-translator' --listing 'ja=webstore/store-listing.firefox.ja.txt' --listing 'en-US=webstore/store-listing.firefox.en.txt' --privacy 'ja=docs/privacy-policy.md' --privacy 'en-US=docs/privacy-policy-en.md' --name 'ja=Replace AI Translator API' --name 'en-US=Replace AI Translator API' --homepage 'https://github.com/1llum1n4t1s/ReplaceTranslator' --support-url 'https://github.com/1llum1n4t1s/ReplaceTranslator/issues' --category 'other'
+bun "$HOME/.agents/skills/vava/scripts/check-store-listing.mjs" --cws --amo --slug 'replace-translator' --cws-id-file '.cws-id' --keyword 'cws.description.ja=Replace AI Translator API' --keyword 'cws.description.en=Replace AI Translator API' --keyword 'amo.summary.ja=LLM' --keyword 'amo.summary.ja=置換翻訳' --keyword 'amo.summary.en-US=LLM' --keyword 'amo.summary.en-US=in-place' --keyword 'amo.description.ja=OpenAI' --keyword 'amo.description.ja=Anthropic' --keyword 'amo.description.ja=Gemini' --keyword 'amo.description.ja=API キー' --keyword 'amo.description.en-US=OpenAI' --keyword 'amo.description.en-US=Anthropic' --keyword 'amo.description.en-US=Gemini' --keyword 'amo.description.en-US=API key'
 ```
+
+### AMO 公開のHTTP境界
+
+公開workflowは生成した最終XPIを既存の配布物検証へ通し、SHA-256・GUID・versionを `scripts/Publish-Amo.ps1`（PowerShell 7）へ渡す。旧web-ext sign/承認タイムアウトを成功化する手順に代えて、JWT認証・全ページの非公開listed版検査・upload検証・GUIDに対するPUT提出の受付応答まで確認する。XPIの同一snapshotをhash検証と送信に使い、保存UUIDの再利用・重複・不明な受付結果は停止する。CI成功は審査完了・ストア公開を意味しない。
+
+### CI中間成果物
+
+job間の検証済み成果物はprivate R2へSigV4で保存し、repository・commit・run・producer attemptのidentityと各ファイルのSHA-256/サイズを検証して復元する。設定は `vars.CLOUDFLARE_ACCOUNT_ID` / `vars.R2_ARTIFACT_BUCKET` と `secrets.R2_ARTIFACT_ACCESS_KEY_ID` / `secrets.R2_ARTIFACT_SECRET_ACCESS_KEY`。キーは当該bucket限定。`ci-artifacts/` は30日保持後にlifecycleで削除され、恒久配布とは区別する。
+
+CWSは `scripts/Publish-Cws.ps1`（PowerShell 7、API v2）を使う。既存OAuth secretsとpublisher/item IDを維持し、同期upload成功・応答ID・manifest版の一致を確認してpublishする。非同期uploadは版を確定できないため自動publishせず停止する。公開workflowはrepository単位の `queue: max` で最大100件まで直列化し、Dashboardや他の手動公開と並行しない。
+
+### CWS v2の再実行
+
+`Publish-Cws.ps1` は認証付きfetchStatusのitem identity・revision state・distributionChannelsのversionを検証する。PUBLISHED / PUBLISHED_TO_TESTERS の正常な登録版が今回versionと一致するときだけ、従来の再実行契約として「既に提出/公開済み・今回ZIPの新規送信なし」と明示して終了する。ストア配布bytesと今回ZIPの同一性を確認したとは扱わない。未提出draft・不明状態・非同期uploadは成功として扱わず停止する。新規送信はverifier receiptに一致するsnapshotを使い、同期uploadのID・版とpublish受付応答を確認する。公開はrepository単位で直列化し、外部Dashboard操作と並行しない。
+
+### ストア画像の隔離依存
+
+スクリーンショット用 puppeteer は `webstore/` の Git 除外済み package に隔離する。本体の devDependencies へは追加しない。既存環境では `bun run --cwd webstore deps` の後、`bun webstore/generate-screenshots.js` を実行する。隔離側も Bun 1.4.4、公開後24時間待機、puppeteer のみ trustedDependencies を維持する。
+
+新規環境では `webstore/package.json` に `private: true`、`packageManager: "bun@1.4.4"`、`dependencies: { "puppeteer": "25.16.0" }`、`trustedDependencies: ["puppeteer"]` と `scripts: { "deps": "bun ../scripts/Install-Dependencies.mjs", "deps:resolve": "bun install" }` を置き、`webstore/bunfig.toml` の `[install]` に `minimumReleaseAge = 86400`、`[run]` に `bun = true` を指定してから `bun run --cwd webstore deps:resolve` で隔離 lock を作る。以後は frozen install を使う。これらはローカル専用とし、強制 Git 追加しない。
+
+
+
+## Bun依存の脆弱性検出
+
+依存の固定復元は `bun run deps` を使う。lock欠落・破損を拒否し、`[run] bun=true` 経由で依存のpostinstallまでBunで実行する。Node.jsがあるPCでも通常の `bun install` を直接使う経路へ戻さない。
+
+日次と手動実行では `bun audit` でlock全体を監査する。ローカルでも同じコマンドで確認できる。BunはDependabotの通常の更新PRには対応するが、脆弱性起点の自動修正PRには未対応なので、監査失敗の調査と依存更新は別途必要。警告を除外して成功扱いにしない。
+
+
+### 依存の暫定セキュリティ修正
+
+minimatch は 11.0.4 以降、multimatch は named import 対応の 8 系へ override する。ESLint 設定の ESM 経路は @eslint/eslintrc@3.3.7 と @eslint/config-array@0.21.2 の最小 import patch で互換性を保つ。web-ext@10.8.0 の FileFilter は Windows で windowsPathsNoEscape を明示し、開発用ファイルやアーカイブの除外を維持する。
+
+CVE-2026-93753（GHSA-gcqx-w48m-w2h4）の deepmerge 4.3.1 は公式修正版が未公開のため、patches/deepmerge@4.3.1.patch で戻り値への書込みを own データ属性にし、__proto__ 経由の prototype 汚染を防ぐ。bun run test:dependencies で web-ext → addons-linter の実解決先の攻撃入力と通常 API を検証する。Bun 標準の patchedDependencies で適用し、公式修正版の採用時に patch の要否を再確認する。バージョンベースの bun audit 警告は残るため、警告を除外したり成功扱いにしない。
