@@ -8,7 +8,7 @@ temp/
 firefox-build/
 web-ext-artifacts/
 *.xpi
-# scripts/New-AmoMetadata.ps1 が webstore/*.txt とスクリプト内の公開メタデータ から毎回生成する中間物
+# scripts/New-AmoMetadata.mjs が webstore/*.txt とスクリプト内の公開メタデータ から毎回生成する中間物
 amo-metadata.json
 # webstore スクショ生成の依存 (puppeteer 等・ad-hoc install。ReviewForMD と同じ隔離運用)
 webstore/node_modules/

@@ -253,9 +253,10 @@ jobs:
 
       - name: AMO listing メタデータを生成
         run: |
-          # webstore/store-listing.firefox.{ja,en}.txt + package.json と scripts/New-AmoMetadata.ps1 内の公開メタデータを入力として
+          bun test ./scripts/New-AmoMetadata.test.mjs
+          # webstore/store-listing.firefox.{ja,en}.txt + package.json と scripts/New-AmoMetadata.mjs 内の公開メタデータを入力として
           # amo-metadata.json（名前/概要/説明/カテゴリ/homepage/support_url/version.license）を生成。
-          pwsh -NoProfile -File scripts/New-AmoMetadata.ps1
+          bun scripts/New-AmoMetadata.mjs
 
       - name: Firefox AMO に HTTP submission
         env:

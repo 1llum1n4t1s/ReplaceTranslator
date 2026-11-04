@@ -54,11 +54,17 @@ jobs:
           test "$(git rev-parse HEAD)" = "$MERGE_SHA"
           test "$(git rev-parse HEAD^1)" = "$BASE_SHA"
           test "$(git rev-parse HEAD^2)" = "$HEAD_SHA"
+      - name: Verify R2 transfer protocol offline
+        shell: pwsh
+        run: |
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests/R2Transfer/Run.ps1') -WorkRoot (Join-Path $env:RUNNER_TEMP 'r2-transfer-check')
       - name: Setup Bun
         shell: pwsh
         run: ./scripts/Initialize-BunBuild.ps1 -VersionFile package.json
       - name: Install locked dependencies
         run: bun run deps
+      - name: Validate AMO listing metadata
+        run: bun test ./scripts/New-AmoMetadata.test.mjs
       - name: Validate dependency security patches
         run: bun run test:dependencies
       - name: Sync support assets

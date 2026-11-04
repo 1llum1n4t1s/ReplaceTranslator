@@ -19,7 +19,7 @@
 - `_locales/{en,ja}/messages.json` — i18n
 - `test/` — Node 標準テスト
 - `webstore/` — ストア掲載素材（`*.html` テンプレ + `generate-screenshots.js`(puppeteer) → `images/{ja,en}/`、CWS/AMO listing テキスト）
-- `scripts/New-AmoMetadata.ps1` — AMO listing メタデータ（`amo-metadata.json`）生成スクリプト
+- `scripts/New-AmoMetadata.mjs` — AMO listing メタデータ（`amo-metadata.json`）生成スクリプト
 
 ## セットアップ
 ```
@@ -59,7 +59,7 @@ CI（`.github/workflows/publish.yml`）に必要な準備:
 - GitHub Secrets: `CWS_CLIENT_ID` / `CWS_CLIENT_SECRET` / `CWS_REFRESH_TOKEN` / `CWS_EXTENSION_ID` / `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`
 - `.cws-id` を実際の Chrome Web Store Extension ID に差し替える
 - `manifest.json` の `browser_specific_settings.gecko.id` を自分の AMO アドオン ID に合わせる
-- AMO listing（名前/概要/説明）は `webstore/store-listing.firefox.{ja,en}.txt` を編集（CI で `scripts/New-AmoMetadata.ps1` が `amo-metadata.json` を生成し `scripts/Publish-Amo.ps1` に渡す）
+- AMO listing（名前/概要/説明）は `webstore/store-listing.firefox.{ja,en}.txt` を編集（CI で `scripts/New-AmoMetadata.mjs` が `amo-metadata.json` を生成し `scripts/Publish-Amo.ps1` に渡す）
 
 ## アーキテクチャと実装パターン
 設計の詳細・守るべきパターンは [AGENTS.md](AGENTS.md) を参照してください。
