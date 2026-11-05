@@ -1,6 +1,6 @@
 {
   "name": "replace-translator",
-  "version": "1.0.32",
+  "version": "1.0.33",
   "type": "commonjs",
   "description": "Chrome/Firefox extension that translates the current page in-place using cloud LLMs (OpenAI, Anthropic, Google Gemini, xAI Grok) via your own API key.",
   "scripts": {
@@ -14,7 +14,7 @@
   "devDependencies": {
     "@kagayoi/support-extension": "1.0.9",
     "eslint": "^10.14.0",
-    "globals": "^17.13.0",
+    "globals": "^17.14.0",
     "web-ext": "^10.8.0"
   },
   "keywords": [

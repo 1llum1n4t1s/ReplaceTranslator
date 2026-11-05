@@ -81,6 +81,8 @@ jobs:
         run: bun --bun run sync:support
 
       - name: テスト実行
+        env:
+          BUN_SECURITY_TEST_ROOT: ${{ runner.temp }}
         run: bun --bun run test
 
       - name: 静的検証
@@ -195,6 +197,7 @@ jobs:
           echo "$EXPECTED_SHA256  replace-translator.zip" | sha256sum --check
 
       - name: Chrome Web Store に検証済み ZIP を HTTP 提出
+        shell: pwsh
         env:
           CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
@@ -202,8 +205,15 @@ jobs:
           EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
           PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID || secrets.CWS_PUBLISHER_ID }}
         run: |
-          pwsh -NoProfile -File scripts/Test-PublishCws.ps1 -WorkDirectory "$RUNNER_TEMP/cws-publisher-tests"
+          try { $expectedExtensionId = (Get-Content -LiteralPath '.cws-id' -Raw -ErrorAction Stop).Trim() }
+          catch { throw 'CWS extension identity validation failed' }
+          if ($expectedExtensionId -cnotmatch '^[a-p]{32}$' -or $env:EXTENSION_ID -cne $expectedExtensionId) {
+            throw 'CWS extension identity validation failed'
+          }
+          pwsh -NoProfile -File scripts/Test-PublishCws.ps1 -WorkDirectory "$env:RUNNER_TEMP/cws-publisher-tests"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh -NoProfile -File scripts/Publish-Cws.ps1 -Archive "replace-translator.zip" -ExpectedSha256 "${{ needs.package.outputs.zip_sha256 }}" -CheckExistingVersion -ExistingVersionPolicy Published
+          exit $LASTEXITCODE
 
   publish-firefox:
     name: Firefox AMO に submission
