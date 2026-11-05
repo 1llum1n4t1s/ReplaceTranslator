@@ -25,7 +25,9 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 | `src/content/selection-translator.*` | 明示操作された選択テキストを翻訳し、バブルまたはインラインで表示する |
 | `src/content/image-translator.*` | 明示操作された画像を取得し、vision対応プロバイダの結果をオーバーレイ描画する |
 | `src/shared/kagayoi-support-*` | 設定画面の問い合わせ・評価UIを提供する、共通パッケージから同期した同梱資産 |
-| `src/lib/actions.js` | メッセージ名、保存キー、設定正規化、プロバイダ定義、バッチ調整などの共有契約を定義する |
+| `src/lib/actions.js` | メッセージ名、保存キー、共通ユーティリティ、画像入力上限を定義する |
+| `src/lib/translation-core.js` | 設定正規化、プロバイダ定義、バッチ調整、送信ポリシーなどを必要時に読む |
+| `src/content/image-renderer.js` | 画像翻訳の描画・ロゴ除外・追従開始を初回画像翻訳時に読む |
 | `src/lib/settings-sync.js` | 設定同期レコードの生成・比較・マージと固定バケットへの分割を、ブラウザAPIから独立した純粋関数として提供する |
 | `src/lib/providers.js` | 各プロバイダの要求・応答・usage・モデル一覧・画像要求を共通形式へ変換する |
 | `src/lib/lang.js` | 対応言語とコード正規化を提供する |
@@ -40,7 +42,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 ### ページ翻訳
 
 1. ポップアップ、FAB、右クリック、または自動翻訳が `TRANSLATE_PAGE` を Service Worker へ送る。自動翻訳ではトップフレームのFABが初回表示とSPAのURL変化を検知し、Service Workerがその時点の自動翻訳設定とURL・ホストブラックリストを注入前に再評価する。SPAの遷移先が対象外なら旧実行を停止して原文へ戻す。
-2. Service Worker は `actions.js`、`lang.js`、`translator.js` を対象タブの全フレームへ注入し、翻訳開始を指示する。
+2. Service Worker は `actions.js`、`translation-core.js`、`lang.js`、`translator.js` を対象タブの全フレームへ注入し、翻訳開始を指示する。
 3. translator はページ主要言語を判定し、除外規則を満たすテキストノードを収集する。可視領域とその近傍を優先し、同じ原文と周辺文脈の組をまとめ、プロバイダ別の並列上限と学習済みバッチサイズに従って処理する。
 4. content script は原文と曖昧さ解消用の限定された周辺文脈を `TRANSLATE_BATCH` で Service Worker へ渡す。Service Worker はプロバイダ、モデル、モデル別の推論量、言語、origin、文脈、プロンプト版を含む完全一致キーで翻訳キャッシュを照合し、未一致分だけ選択プロバイダへAPIキー付きで送信する。
 5. Service Worker は応答を共通の文字列配列へ変換し、成功した未一致分をキャッシュへ保存して同じ入力を待つノードへ展開する。ストリーミング対応経路では確定済み要素を逐次contentへ中継し、完了時にusageとバッチ調整状態を更新する。
@@ -151,3 +153,7 @@ FAB、選択翻訳、画像翻訳は接頭辞付きID・クラス、`all: initia
 製品ページの配信HTMLは `../vps-web/lp/replacetranslator/`（編集元は `../vps-web/tools/lp/templates/`）、公開実体はVPSの `/srv/www/lp/replacetranslator/`。
 直接配信の設定は `../vps-web/deploy/caddy-sites/lp-replacetranslator.caddy` に置く。
 静的ファイルの配信スクリプトは `../vps-web/deploy/deploy-lp.ps1` にある。配信時の作業規約は [AGENTS.md](AGENTS.md#ビルド--テスト--lint-コマンド) を参照する。
+
+## 常駐と遅延読込
+
+トップフレームの常駐JSは軽量な `actions.js`、FAB、画像の操作受付に限定する。設定・翻訳ポリシーは `translation-core.js`、画像の描画は `image-renderer.js`、選択翻訳のJS/CSSは利用時に読む。選択翻訳は専用pingのackで初期化を確認する。画像rendererのロード要求は自拡張content限定とし、SWは送信元tab/frameへの固定パス注入だけを許可する。ロード待機中も復元とcontext失効を優先し、古い要求を送信・描画しない。

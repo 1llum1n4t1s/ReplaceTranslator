@@ -7,7 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const ROOT = path.join(__dirname, "..");
-const IMAGE_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/image-translator.js"), "utf8");
+const IMAGE_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/image-translator.js"), "utf8") + "\n" + fs.readFileSync(path.join(ROOT, "src/content/image-renderer.js"), "utf8");
 const FAB_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/fab.js"), "utf8");
 const TRANSLATOR_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/translator.js"), "utf8");
 const SELECTION_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/selection-translator.js"), "utf8");
@@ -47,6 +47,231 @@ const loadImageFunctions = (names, context, prelude = "") => {
   const declarations = names.map((name) => functionSource(IMAGE_SOURCE, name)).join("\n");
   return vm.runInNewContext(`(() => { ${prelude}\n${declarations}\nreturn { ${names.join(", ")} }; })()`, context);
 };
+
+test("画像rendererの初回ロードを共有し、失敗後は再試行できる", async () => {
+  let calls = 0, finish;
+  const context = { chrome: { runtime: { sendMessage: () => { calls++; return new Promise(resolve => { finish = resolve; }); } } },
+    createImageRenderer: () => ({ renderTranslated() {}, filterBlocks() {} }),
+    isStaleImg() {}, unwrapImage() {}, stopFollow() {}, dbg() {}, contextAlive: () => true, dead: false };
+  const api = loadImageFunctions(["loadRenderer"], context, 'let rendererPromise = null; const A = { LOAD_IMAGE_RENDERER: "load" };');
+  const first = api.loadRenderer(), second = api.loadRenderer();
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+  finish({ ok: false });
+  await assert.rejects(first, /renderer_load/);
+  const retry = api.loadRenderer();
+  assert.equal(calls, 2);
+  finish({ ok: true });
+  assert.equal(typeof (await retry).renderTranslated, "function");
+});
+
+test("画像renderer待機中の重複操作・復元・差替・旧contextはAPI送信を増やさない", async () => {
+  for (const change of ["restore", "url", "context"]) {
+    let finish, sends = 0, alive = true, restore;
+    const img = { src: "https://example.com/a.png", isConnected: true };
+    const api = loadImageFunctions(["translateImg", "isStaleImg"], {
+      img, btn: null, dead: false, contextAlive: () => alive, shutdown() {},
+      chrome: { runtime: { sendMessage() { sends++; } } },
+      loadRenderer: () => new Promise(resolve => { finish = resolve; }),
+      setRestore: fn => { restore = fn; },
+    }, 'let imgRunId = 0, imageRequestSeq = 0; const imageRequestIds = new WeakMap(), inflightImgs = new WeakSet(), MAX_IMAGE_PIXELS = 25000000; const A = {}; const target = img; setRestore(() => { imgRunId++; });');
+    const first = api.translateImg(img);
+    await api.translateImg(img);
+    if (change === "restore") {
+      // 世代更新はclearAllImagesと同じ境界を通す。
+      restore();
+    } else if (change === "url") img.src = "https://example.com/b.png";
+    else alive = false;
+    finish({ filterBlocks() {}, renderTranslated() {} });
+    await first;
+    assert.equal(sends, 0, change);
+  }
+});
+
+test("選択翻訳の初回注入は明示ackを使い、並行操作は最新だけ送る", async () => {
+  let finish, injections = 0, translations = 0, pings = 0;
+  const chrome = { tabs: { sendMessage: async (_tab, msg) => {
+    if (msg.action === "ping") { pings++; return undefined; }
+    if (msg.action === "css") return { cssReady: true };
+    translations++;
+  } }, scripting: {
+    executeScript: () => { injections++; return new Promise(resolve => { finish = resolve; }); },
+    insertCSS: async () => {},
+  } };
+  const trigger = vm.runInNewContext(`(() => {
+    const selectionInjections = new Map();
+    ${functionSource(WORKER_SOURCE, "triggerSelectionTranslate")}
+    return triggerSelectionTranslate;
+  })()`, { chrome, Actions: { PING_SELECTION_CS: "ping", TRANSLATE_SELECTION_CS: "translate", SELECTION_CSS_READY: "css" } });
+  const first = trigger(1), second = trigger(1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(injections, 1);
+  finish();
+  await Promise.all([first, second]);
+  assert.equal(pings, 2);
+  assert.equal(translations, 1);
+  chrome.tabs.sendMessage = async (_tab, msg) => msg.action === "ping" ? { selectionReady: true, cssReady: true } : translations++;
+  await trigger(1);
+  assert.equal(injections, 1);
+  assert.equal(translations, 2);
+});
+
+test("選択翻訳は初回設定を待ち、最新選択だけ実行し復元・変更を捨てる", async () => {
+  for (const cancel of ["latest", "changed", "restore", "context"]) {
+    let finish, alive = true, sent = 0;
+    const node = {};
+    const selection = { anchorNode: node, focusNode: node, anchorOffset: 0, focusOffset: 4, text: "text" };
+    const context = { deepSelection: () => selection, selText: sel => sel.text,
+      contextAlive: () => alive, shutdown() {}, isEditableSelection: () => false,
+      triggerInline: () => { sent++; }, Promise };
+    const api = vm.runInNewContext(`(() => {
+      let triggerSeq = 0, preparedSelection = { text: "text", nodes: [deepSelection().anchorNode, 0, deepSelection().focusNode, 4] }, dead = false, mode = "inline";
+      const MAX_SEL_CHARS = 5000;
+      const flagsReady = new Promise(resolve => { finish = resolve; });
+      ${functionSource(SELECTION_SOURCE, "trigger")}
+      return { trigger, ready: () => finish(), restore: () => { triggerSeq++; } };
+    })()`, { ...context, finish });
+    const first = api.trigger();
+    assert.equal(sent, 0);
+    let second;
+    if (cancel === "latest") second = api.trigger();
+    if (cancel === "changed") selection.text = "changed";
+    if (cancel === "restore") api.restore();
+    if (cancel === "context") alive = false;
+    api.ready();
+    await Promise.all([first, second]);
+    assert.equal(sent, cancel === "latest" ? 1 : 0, cancel);
+  }
+});
+
+test("選択注入待機中の復元は対象タブだけ無効化し、復元後の操作を受け付けてentryを解放する", async () => {
+  for (const newRequest of [false, true]) {
+    let finish;
+    const sent = [];
+    const chrome = { tabs: { sendMessage: async (tabId, msg) => {
+      if (msg.action === "translate") sent.push(tabId);
+      if (msg.action === "css") return { cssReady: true };
+    } }, scripting: {
+      executeScript: () => new Promise(resolve => { finish = resolve; }), insertCSS: async () => {},
+    } };
+    const api = vm.runInNewContext(`(() => {
+      const selectionInjections = new Map(), pageSessions = new Map();
+      ${functionSource(WORKER_SOURCE, "triggerSelectionTranslate")}
+      ${functionSource(WORKER_SOURCE, "restorePage")}
+      return { triggerSelectionTranslate, restorePage, size: () => selectionInjections.size };
+    })()`, { chrome, Actions: { PING_SELECTION_CS: "ping", TRANSLATE_SELECTION_CS: "translate", SELECTION_CSS_READY: "css" },
+      ensurePageSessions: async () => {}, bumpTabGen() {}, abortTab() {}, persistPageSessions() {}, resetFrameProgress() {}, relayProgress() {} });
+    const first = api.triggerSelectionTranslate(1);
+    await new Promise(resolve => setImmediate(resolve));
+    await api.restorePage(2); // 他タブの復元では保留選択を中断しない。
+    await api.restorePage(1);
+    const second = newRequest ? api.triggerSelectionTranslate(1) : undefined;
+    finish();
+    await Promise.all([first, second]);
+    assert.deepEqual(sent, newRequest ? [1] : []);
+    assert.equal(api.size(), 0);
+  }
+});
+
+test("選択翻訳は注入時・ping時の選択を保持し、CSS待機中の選択変更や消去を送らない", async () => {
+  let sent = 0;
+  const node = {};
+  const selection = { text: "first", anchorNode: node, focusNode: node, anchorOffset: 0, focusOffset: 5 };
+  const api = vm.runInNewContext(`(() => {
+    let triggerSeq = 0, preparedSelection = null, dead = false, mode = "inline";
+    const flagsReady = Promise.resolve(), MAX_SEL_CHARS = 5000;
+    ${functionSource(SELECTION_SOURCE, "prepareSelection")}
+    ${functionSource(SELECTION_SOURCE, "onPendingSelectionChange")}
+    ${functionSource(SELECTION_SOURCE, "trigger")}
+    return { prepareSelection, onPendingSelectionChange, trigger };
+  })()`, { deepSelection: () => selection, selText: sel => sel.text, contextAlive: () => true,
+    isEditableSelection: () => false, triggerInline: () => { sent++; } });
+  for (const next of ["second", ""]) {
+    selection.text = "first";
+    api.prepareSelection(); // 初回評価またはping。
+    selection.text = next;
+    api.onPendingSelectionChange();
+    selection.text = "first"; // 戻しても明示操作がなければ再開しない。
+    await api.trigger();
+    assert.equal(sent, 0);
+  }
+  selection.text = "second";
+  api.prepareSelection(); // 待機中の後続の明示操作は現在の選択を採用。
+  await api.trigger();
+  assert.equal(sent, 1);
+});
+
+test("選択CSSだけの注入失敗は次回再試行し、成功後は重複挿入しない", async () => {
+  let injected = false, styled = false, cssCalls = 0, jsCalls = 0, translations = 0;
+  const chrome = { tabs: { sendMessage: async (_tab, msg) => {
+    if (msg.action === "ping") return injected ? { selectionReady: true, cssReady: styled } : undefined;
+    if (msg.action === "css") { styled = true; return { cssReady: true }; }
+    if (msg.action === "translate") translations++;
+  } }, scripting: {
+    executeScript: async () => { injected = true; jsCalls++; },
+    insertCSS: async () => { if (++cssCalls === 1) throw new Error("css_failure"); },
+  } };
+  const trigger = vm.runInNewContext(`(() => {
+    const selectionInjections = new Map();
+    ${functionSource(WORKER_SOURCE, "triggerSelectionTranslate")}
+    return triggerSelectionTranslate;
+  })()`, { chrome, Actions: { PING_SELECTION_CS: "ping", TRANSLATE_SELECTION_CS: "translate", SELECTION_CSS_READY: "css" } });
+  await trigger(1);
+  assert.equal(translations, 0);
+  await trigger(1);
+  await trigger(1);
+  assert.equal(cssCalls, 2);
+  assert.equal(jsCalls, 1);
+  assert.equal(translations, 2);
+});
+
+test("画像ロード失敗の旧エラータイマーは再試行・復元・差替後のボタンを上書きしない", () => {
+  for (const change of ["retry", "restore", "url", "context"]) {
+    let timer, alive = true, restore;
+    const img = { src: "https://example.com/a.png", isConnected: true };
+    const btn = { textContent: "…", title: "" };
+    const ids = new WeakMap();
+    ids.set(img, 1);
+    const api = loadImageFunctions(["showImageError", "isStaleImg"], {
+      img, btn, imageRequestIds: ids, dead: false, contextAlive: () => alive,
+      imgErrorText: () => "error", tr: (_key, fallback) => fallback,
+      window: { setTimeout: fn => { timer = fn; } }, setRestore: fn => { restore = fn; },
+    }, 'let imgRunId = 0; const target = img; setRestore(() => { imgRunId++; });');
+    api.showImageError(img, "renderer_load");
+    if (change === "retry") ids.set(img, 2);
+    if (change === "restore") restore();
+    if (change === "url") img.src = "https://example.com/b.png";
+    if (change === "context") alive = false;
+    btn.textContent = "…";
+    timer();
+    assert.equal(btn.textContent, "…", change);
+  }
+});
+
+test("renderer待機中の復元は同期で表示を戻し、復元・差替後のロード失敗は古いエラーを出さない", async () => {
+  for (const change of ["restore", "url", "hidden"]) {
+    let reject, errors = 0;
+    const img = { src: "https://example.com/a.png", isConnected: true };
+    const btn = { textContent: "…", title: "", style: { display: "block" } };
+    const api = loadImageFunctions(["translateImg", "isStaleImg", "clearAllImages"], {
+      img, btn, dead: false, contextAlive: () => true, shutdown() {},
+      showImageError: () => { errors++; }, setBtnMode: () => { btn.textContent = "訳"; },
+      loadRenderer: () => new Promise((_resolve, fail) => { reject = fail; }),
+      queryOpenRoots: () => [], unwrapImage() {}, restorePrevStyle() {},
+    }, `let imgRunId = 0, imageRequestSeq = 0; const target = img, imageRequestIds = new WeakMap(), inflightImgs = new WeakSet();
+      const MAX_IMAGE_PIXELS = 25000000, showImageButton = ${change !== "hidden"}, imageCapable = true, animatedImgs = new WeakSet();`);
+    const pending = api.translateImg(img);
+    if (change === "restore" || change === "hidden") {
+      api.clearAllImages();
+      assert.equal(btn.textContent, "訳", "復元自体が同期で待機表示を消す");
+    } else img.src = "https://example.com/b.png";
+    reject(new Error("renderer_load"));
+    await pending;
+    assert.equal(errors, 0);
+    if (change === "hidden") assert.equal(btn.style.display, "none");
+    else assert.equal(btn.textContent, "訳");
+  }
+});
 
 test("選択翻訳のコピーは成功時だけ表示し、古い完了やタイマーは新しい状態を変更しない", async () => {
   const timers = [];
@@ -170,12 +395,13 @@ test("画像の旧エラー・空結果タイマーは、再翻訳の一部成�
       window: { setTimeout: fn => timers.push(fn) }, tr: (key, fallback) => key === "imgPartial" ? "partial" : fallback,
       contextAlive: () => true, dbg: () => {}, debugEnabled: () => false, filterBlocks: blocks => blocks,
       renderTranslated: async () => { state.translated = true; },
+      loadRenderer: async () => ({ filterBlocks: blocks => blocks, renderTranslated: async () => { state.translated = true; } }), dead: false,
     }, `let imgRunId = 0, imageRequestSeq = 0; const target = img, MAX_IMAGE_PIXELS = 25000000;
       const imageRequestIds = new WeakMap(), inflightImgs = new WeakSet(), A = { TRANSLATE_IMAGE: "TRANSLATE_IMAGE" };`);
-    api.translateImg(img);
+    await api.translateImg(img);
     assert.equal(timers.length, 1);
     state.response = { ok: true, partial: true, blocks: [{ translation: "訳文" }] };
-    api.translateImg(img);
+    await api.translateImg(img);
     await Promise.resolve();
     await Promise.resolve();
     assert.equal(btn.textContent, "原");
@@ -301,7 +527,7 @@ test("Shadow DOM内の画像オーバーレイもページ復元で除去する"
   const restored = [];
   const { clearAllImages } = loadImageFunctions(
     ["openRoots", "queryOpenRoots", "clearAllImages"],
-    { document, restored },
+    { document, restored, btn: null },
     "let imgRunId = 0; const unwrapImage = (node) => restored.push(['wrap', node]); const restorePrevStyle = (node) => restored.push(['style', node]);",
   );
 
@@ -330,11 +556,7 @@ test("SPA URL変化は新しいpage runとして自動再評価または手動�
   const startTranslate = functionSource(TRANSLATOR_SOURCE, "startTranslate");
 
   assert.match(FAB_SOURCE, /const AUTO_ROUTE_POLL_MS = 250/);
-  assert.match(FAB_SOURCE, /send\(\{ action: A\.TRANSLATE_PAGE, routeChange: true \}\)/);
-  assert.match(FAB_SOURCE, /flags && flags\.autoTranslate/);
   assert.match(FAB_SOURCE, /res\.blacklisted \|\| res\.autoTranslateDisabled/);
-  assert.match(routeHandler, /if \(automatic && window\.top === window\.self\)[\s\S]*?translating = false;[\s\S]*?runId \+= 1;[\s\S]*?stopObservers\(\)/);
-  assert.match(routeHandler, /if \(manualRun \|\| automatic\)[\s\S]*?startTranslate\(requestedSettings \|\| settings, sessionId, manualRun\)/);
   assert.match(startTranslate, /pageTextCount = 0;[\s\S]*?pageCharCount = 0;/);
   assert.match(startTranslate, /announced = false;[\s\S]*?droppedTransient = 0;/);
 

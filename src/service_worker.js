@@ -14,7 +14,7 @@
 
 // 依存ライブラリ読み込み (Chrome: importScripts / Firefox: manifest の background.scripts で既読)
 if (typeof importScripts === "function") {
-  importScripts("/src/lib/actions.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js", "/src/lib/settings-sync.js");
+  importScripts("/src/lib/actions.js", "/src/lib/translation-core.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js", "/src/lib/settings-sync.js");
 }
 
 (function () {
@@ -1325,7 +1325,7 @@ if (typeof importScripts === "function") {
     // 右クリック時の frameId 注入) が担うため、ここでは翻訳エンジン (translator.js) だけを全フレームに注入する。
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: ["src/lib/actions.js", "src/lib/lang.js", "src/content/translator.js"],
+      files: ["src/lib/actions.js", "src/lib/translation-core.js", "src/lib/lang.js", "src/content/translator.js"],
     });
   }
 
@@ -1387,6 +1387,8 @@ if (typeof importScripts === "function") {
   }
 
   async function restorePage(tabId) {
+    const selectionEntry = selectionInjections.get(`${tabId}:0`);
+    if (selectionEntry) selectionEntry.latest++;
     await ensurePageSessions(); // persist が SW 再起動前の他タブ分を消さないよう、削除前に必ず復元しておく
     bumpTabGen(tabId); // 世代を進める。await 中の translatePage の myGen を陳腐化させ、後発の APPLY_TRANSLATE_CS を止める
     abortTab(tabId); // 復元: 進行中の翻訳 fetch を中断し、無駄なネットワーク/課金枠を切る
@@ -1528,7 +1530,7 @@ if (typeof importScripts === "function") {
 
   // ---- メッセージディスパッチ ----
   // ---- 廃止モデルの動的フォールバック (404 → 同プロバイダの現行モデルへ自動切替 + 1 回再試行) ----
-  // 静的 RETIRED_MODELS(actions.js) は通信ゼロの保険。実行時に実際に 404 を食らったらこちらが自己修復するので、
+  // 静的 RETIRED_MODELS(translation-core.js) は通信ゼロの保険。実行時に実際に 404 を食らったらこちらが自己修復するので、
   // 未知の廃止 (今後どのモデルがいつ死んでも) を手動メンテ無しで吸収できる。
   const modelFallback = new Map();     // "providerId:deadModelId" -> goodModelId (解決結果のキャッシュ)
   const resolvingFallback = new Map(); // "providerId:deadModelId" -> Promise (10 並列が同時 404 でも解決を 1 回に集約)
@@ -1698,6 +1700,14 @@ if (typeof importScripts === "function") {
     (async () => {
       try {
         switch (msg.action) {
+          case Actions.LOAD_IMAGE_RENDERER: {
+            await chrome.scripting.executeScript({
+              target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+              files: ["src/content/image-renderer.js"],
+            });
+            sendResponse({ ok: true });
+            break;
+          }
           case Actions.TRANSLATION_PROGRESS: {
             // content(translator) 各フレームの進捗を background で集約し、FAB(content top) と popup へ中継する
             // (content script 間は runtime.sendMessage が直接届かないため background が転送)。
@@ -1939,9 +1949,42 @@ if (typeof importScripts === "function") {
 
   // ホットキー/右クリックで content(selection-translator) に選択テキスト翻訳の起動を合図する。
   // SW はページの選択を直接読めないため、content 側が window.getSelection() を読みバブルを出す (トップフレームのみ)。
-  function triggerSelectionTranslate(tabId) {
-    sendCsOrInject(tabId, { action: Actions.TRANSLATE_SELECTION_CS },
-      ["src/lib/actions.js", "src/content/selection-translator.js"], "src/content/selection-translator.css");
+  const selectionInjections = new Map();
+  async function triggerSelectionTranslate(tabId) {
+    if (tabId == null) return;
+    const key = `${tabId}:0`;
+    const joining = selectionInjections.has(key);
+    if (!selectionInjections.has(key)) {
+      const ready = (async () => {
+        let ack;
+        try { ack = await chrome.tabs.sendMessage(tabId, { action: Actions.PING_SELECTION_CS }, { frameId: 0 }); } catch (_e) { /* 未注入 */ }
+        const target = { tabId, frameIds: [0] };
+        if (!ack || ack.selectionReady !== true) {
+          await chrome.scripting.executeScript({ target, files: ["src/lib/actions.js", "src/content/selection-translator.js"] });
+        }
+        if (!ack || ack.cssReady !== true) {
+          await chrome.scripting.insertCSS({ target, files: ["src/content/selection-translator.css"] });
+          const styled = await chrome.tabs.sendMessage(tabId, { action: Actions.SELECTION_CSS_READY }, { frameId: 0 });
+          if (!styled || styled.cssReady !== true) throw new Error("selection_css_not_ready");
+        }
+      })();
+      selectionInjections.set(key, { ready, latest: 0, waiters: 0 });
+    }
+    const entry = selectionInjections.get(key);
+    const request = ++entry.latest;
+    entry.waiters++;
+    try {
+      const prepared = joining
+        ? chrome.tabs.sendMessage(tabId, { action: Actions.PING_SELECTION_CS }, { frameId: 0 }).catch(() => {})
+        : Promise.resolve();
+      await Promise.all([entry.ready, prepared]);
+      if (request !== entry.latest) return;
+      await chrome.tabs.sendMessage(tabId, { action: Actions.TRANSLATE_SELECTION_CS }, { frameId: 0 });
+    } catch (_e) { /* 注入不可ページ */ }
+    finally {
+      entry.waiters--;
+      if (entry.waiters === 0 && selectionInjections.get(key) === entry) selectionInjections.delete(key);
+    }
   }
 
   // 右クリック「この画像を翻訳」で content(image-translator) に画像翻訳の起動を合図する。

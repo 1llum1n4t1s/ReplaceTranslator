@@ -1,12 +1,12 @@
 "use strict";
 
 /**
- * src/lib の actions.js / lang.js / providers.js を Node から評価して globalThis から取り出すヘルパー。
+ * src/lib の actions.js / translation-core.js / lang.js / providers.js 等を Node から評価して globalThis から取り出すヘルパー。
  *
  * これらは IIFE + globalThis 公開方式なので、vm.runInThisContext で host と同じ realm で評価する
  * (sandbox 別 realm だと URL / Array.prototype 不一致で assert がすり抜けるため)。
  * 各ファイルの __rt*Loaded ガードにより複数回 require されても再評価されない。
- * 読み込み順は依存順 (providers.js は actions.js / lang.js のグローバルに依存)。
+ * 読み込み順は依存順 (translation-core.js は actions.js、providers.js は translation-core.js / lang.js のグローバルに依存)。
  */
 
 const fs = require("node:fs");
@@ -19,6 +19,7 @@ const load = (rel) => {
 };
 
 load("actions.js");
+load("translation-core.js");
 load("lang.js");
 load("model-pricing.js");
 load("providers.js");

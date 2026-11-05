@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * selection-translator.js — 選択テキストのインライン翻訳 (content script・トップフレーム常駐)
+ * selection-translator.js — 選択テキストのインライン翻訳 (content script・トップフレームへ初回操作時に注入)
  *
  * テキストを選択して割り当て可能なホットキー (manifest commands: translate-selection / 既定 Ctrl+Shift+L)
  * または右クリック「選択テキストを翻訳」を実行すると、選択範囲の近くに浮遊バブルで訳文を出す。
@@ -434,11 +434,43 @@
   }
 
   // ホットキー/右クリックの合図で起動する。選択中テキストを訳してバブル表示する。
-  function trigger() {
+  let triggerSeq = 0;
+  let preparedSelection = null;
+  let cssReady = false;
+  let flagsChanged = false;
+  let resolveFlags;
+  const flagsReady = new Promise((resolve) => { resolveFlags = resolve; });
+  function prepareSelection() {
+    const sel = deepSelection();
+    triggerSeq++;
+    preparedSelection = sel && {
+      text: selText(sel), nodes: [sel.anchorNode, sel.anchorOffset, sel.focusNode, sel.focusOffset],
+    };
+  }
+  function onPendingSelectionChange() {
+    if (!preparedSelection) return;
+    const sel = deepSelection();
+    const p = preparedSelection;
+    if (!sel || selText(sel) !== p.text || sel.anchorNode !== p.nodes[0] || sel.anchorOffset !== p.nodes[1] ||
+        sel.focusNode !== p.nodes[2] || sel.focusOffset !== p.nodes[3]) {
+      triggerSeq++;
+      preparedSelection = null;
+    }
+  }
+  async function trigger() {
     if (dead) return;
     if (!contextAlive()) { shutdown(); return; }
+    if (!preparedSelection) return;
     const sel = deepSelection();
-    const text = selText(sel);
+    const text = preparedSelection.text;
+    const snapshot = preparedSelection.nodes;
+    const pending = ++triggerSeq;
+    await flagsReady;
+    if (dead || !contextAlive()) { shutdown(); return; }
+    const current = deepSelection();
+    if (pending !== triggerSeq || !snapshot || !current || selText(current) !== text ||
+        current.anchorNode !== snapshot[0] || current.anchorOffset !== snapshot[1] ||
+        current.focusNode !== snapshot[2] || current.focusOffset !== snapshot[3]) return;
     // 上限超過は API へ送らず理由を出す。インライン経路も含めてバブルで出す (インラインは累積保持で
     // 消えないため、一時的なエラー表示をページへ残さない)。
     if (text.length > MAX_SEL_CHARS) {
@@ -466,12 +498,14 @@
     });
   }
 
-  function onRuntimeMessage(m) {
+  function onRuntimeMessage(m, _sender, sendResponse) {
     if (!contextAlive()) { shutdown(); return; }
     if (!m) return;
+    if (m.action === A.PING_SELECTION_CS) { prepareSelection(); sendResponse({ selectionReady: true, cssReady }); return; }
+    if (m.action === A.SELECTION_CSS_READY) { cssReady = true; sendResponse({ cssReady: true }); return; }
     if (m.action === A.TRANSLATE_SELECTION_CS) { trigger(); return; }
     // FAB/popup の「原文に戻す」(RESTORE_PAGE→APPLY_RESTORE_CS) で、ページ翻訳と一緒にインライン対訳も撤去する。
-    if (m.action === A.APPLY_RESTORE_CS) { clearAllInline(); return; }
+    if (m.action === A.APPLY_RESTORE_CS) { triggerSeq++; preparedSelection = null; removeBubble(); clearAllInline(); return; }
   }
 
   function shutdown() {
@@ -479,23 +513,28 @@
     dead = true;
     removeBubble();
     try { chrome.runtime.onMessage.removeListener(onRuntimeMessage); } catch (_e) { /* noop */ }
+    document.removeEventListener("selectionchange", onPendingSelectionChange);
   }
 
   // ---- 起動 ----
   try { chrome.runtime.onMessage.addListener(onRuntimeMessage); } catch (_e) { /* noop */ }
+  document.addEventListener("selectionchange", onPendingSelectionChange);
+  prepareSelection();
 
   // 表示方法フラグを読む (非機密フラグのみ。API キーは読まない)。popup の変更に storage.onChanged で即追従。
   try {
     chrome.storage.local.get(CFLAGS_KEY, (d) => {
-      if (!contextAlive()) { shutdown(); return; }
+      if (!contextAlive()) { shutdown(); resolveFlags(); return; }
       const f = d && d[CFLAGS_KEY];
-      if (f && typeof f.selectionMode === "string") mode = f.selectionMode === "inline" ? "inline" : "bubble";
+      if (!flagsChanged && f && typeof f.selectionMode === "string") mode = f.selectionMode === "inline" ? "inline" : "bubble";
+      resolveFlags();
     });
-  } catch (_e) { /* noop */ }
+  } catch (_e) { resolveFlags(); }
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (!contextAlive()) { shutdown(); return; }
       if (area !== "local" || !changes[CFLAGS_KEY]) return;
+      flagsChanged = true;
       const v = changes[CFLAGS_KEY].newValue;
       if (v && typeof v.selectionMode === "string") {
         mode = v.selectionMode === "inline" ? "inline" : "bubble";

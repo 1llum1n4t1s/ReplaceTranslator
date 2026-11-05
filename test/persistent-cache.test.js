@@ -139,6 +139,7 @@ test("an already-open tab upgrades an older TranslationBatch helper before the l
     TranslationBatch: Object.freeze({ groupExactTexts() { return []; } }),
   };
   vm.runInNewContext(read("src/lib/actions.js"), sandbox);
+  vm.runInNewContext(read("src/lib/translation-core.js"), sandbox);
   assert.equal(typeof sandbox.TranslationBatch.groupContextualTexts, "function");
   assert.equal(typeof sandbox.TranslationBatch.contextKey, "function");
 });

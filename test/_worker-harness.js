@@ -51,7 +51,7 @@ module.exports = function workerHarness({ initial = {}, disk = { settings: initi
         candidates: [{ content: { parts: [{ text }] } }] });
     },
   });
-  for (const file of ["actions", "lang", "model-pricing", "providers", "stream", "settings-sync"]) {
+  for (const file of ["actions", "translation-core", "lang", "model-pricing", "providers", "stream", "settings-sync"]) {
     vm.runInContext(fs.readFileSync(path.join(root, "src/lib", `${file}.js`), "utf8"), context);
   }
   vm.runInContext(fs.readFileSync(path.join(root, "src/service_worker.js"), "utf8"), context);

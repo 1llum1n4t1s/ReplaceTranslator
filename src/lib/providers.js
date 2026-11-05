@@ -11,7 +11,7 @@
  *
  * 実際の fetch は background(SW) が行う (API キーをページ文脈に晒さないため)。
  * これらはすべて副作用なしの純粋関数で、test/providers.test.js が直接検証する。
- * 依存: globalThis.Providers (actions.js) / globalThis.Lang (lang.js)。
+ * 依存: globalThis.Providers (translation-core.js) / globalThis.Lang (lang.js)。
  */
 
 (function () {

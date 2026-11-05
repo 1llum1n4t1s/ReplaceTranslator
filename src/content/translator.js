@@ -3,7 +3,7 @@
 /**
  * translator.js — ページ「インプレース置換翻訳」エンジン (content script)
  *
- * scripting.executeScript で actions.js / lang.js と共にオンデマンド注入される。
+ * scripting.executeScript で actions.js / translation-core.js / lang.js と共にオンデマンド注入される。
  * runtime/version-aware な __rtTranslatorLoaded ガードで同一 context の重複初期化だけを防ぐ。
  *
  * Immersive Translate の拾い方を参考にしたビューポート優先翻訳:

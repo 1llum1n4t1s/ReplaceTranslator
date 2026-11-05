@@ -5,7 +5,8 @@
 ## ディレクトリ構成
 - `manifest.json` — MV3 マニフェスト。`background` は Chrome 純正 = `service_worker` のみ（`gecko` は inline）。Firefox 用の `background.scripts` 形式はビルド時に `build-firefox-manifest.mjs` が生成する
 - `src/lib/` — 共通ライブラリ（IIFE + globalThis 公開）
-  - `actions.js` — メッセージ定数・設定スキーマ・プロバイダ定義・トークン集計ヘルパー
+  - `actions.js` — メッセージ定数・保存キー・共通ユーティリティ・画像入力上限
+  - `translation-core.js` — 設定スキーマ・プロバイダ定義・トークン集計・バッチ調整・送信ポリシー
   - `lang.js` — 言語コード ⇔ 表示名テーブル
   - `providers.js` — プロバイダ抽象（リクエスト/レスポンス/usage + モデル一覧取得。純粋関数）
   - `model-pricing.js` — モデル別の概算価格表（コスト相対表示用）

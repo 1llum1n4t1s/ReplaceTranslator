@@ -3,7 +3,7 @@
  *
  * 設計方針:
  * - `src/` の IIFE + globalThis 公開定数を明示列挙 (no-implicit-globals 違反を防ぎつつ、
- *   actions.js / lang.js / providers.js が公開する定数を読み取り専用 global として承認する)
+ *   actions.js / translation-core.js / lang.js / providers.js 等が公開する定数を読み取り専用 global として承認する)
  * - Chrome 内蔵 AI のグローバル (Translator / LanguageDetector / LanguageModel) も将来利用のため許可
  * - `test/` は Node 標準 test runner 環境
  */
@@ -11,23 +11,24 @@
 const globals = require("globals");
 
 const ACTIONS_GLOBALS = {
+  createImageRenderer: "readonly", // src/content/image-renderer.js — 遅延描画factory
   // src/lib/*.js が globalThis に公開する定数。
   // 新規 globalThis 公開を追加したら本リストにも追加すること。
   Actions: "readonly",          // src/lib/actions.js — メッセージアクション定数
   ExtUtil: "readonly",          // src/lib/actions.js — 共有小物 (tr / contextAlive / claimScript)
-  ImageRequestPolicy: "readonly", // src/lib/actions.js — 画像URLのSSRF境界
-  MessagePolicy: "readonly",    // src/lib/actions.js — runtime message送信元/対象tab境界
+  ImageRequestPolicy: "readonly", // src/lib/translation-core.js — 画像URLのSSRF境界
+  MessagePolicy: "readonly",    // src/lib/translation-core.js — runtime message送信元/対象tab境界
   RuntimeLimits: "readonly",    // src/lib/actions.js — decoder前の入力上限
-  SettingsSchema: "readonly",   // src/lib/actions.js — 設定スキーマ + normalize
+  SettingsSchema: "readonly",   // src/lib/translation-core.js — 設定スキーマ + normalize
   SettingsSync: "readonly",     // src/lib/settings-sync.js — 項目単位の同期レコード
-  AutoTranslateBlacklist: "readonly", // src/lib/actions.js — 自動翻訳除外URL/host globの正規化・照合
+  AutoTranslateBlacklist: "readonly", // src/lib/translation-core.js — 自動翻訳除外URL/host globの正規化・照合
   StorageKeys: "readonly",      // src/lib/actions.js — storage キー
-  Providers: "readonly",        // src/lib/actions.js — プロバイダ定義 (id/label/endpoint/model)
-  TokenUsage: "readonly",       // src/lib/actions.js — usage 集計ヘルパー (currentMonthKey/pruneUsage)
+  Providers: "readonly",        // src/lib/translation-core.js — プロバイダ定義 (id/label/endpoint/model)
+  TokenUsage: "readonly",       // src/lib/translation-core.js — usage 集計ヘルパー (currentMonthKey/pruneUsage)
   Lang: "readonly",             // src/lib/lang.js — 言語コード ⇔ 表示名テーブル
   ProviderApi: "readonly",      // src/lib/providers.js — buildRequest/parseResponse/parseUsage/parseModels
-  BatchTuner: "readonly",       // src/lib/actions.js — バッチサイズ自動学習
-  TranslationBatch: "readonly", // src/lib/actions.js — exact dedupe/retry/session cache key
+  BatchTuner: "readonly",       // src/lib/translation-core.js — バッチサイズ自動学習
+  TranslationBatch: "readonly", // src/lib/translation-core.js — exact dedupe/retry/session cache key
   ModelPricing: "readonly",     // src/lib/model-pricing.js — モデル別概算価格
   StreamParse: "readonly",      // src/lib/stream.js — ストリーミング JSON から translations を逐次抽出
 };
@@ -73,7 +74,7 @@ module.exports = [
     rules: COMMON_RULES,
   },
   {
-    // テスト: Node 標準 test runner + actions.js グローバル参照経路を許可
+    // テスト: Node 標準 test runner + 共有ライブラリのグローバル参照経路を許可
     files: ["test/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,

@@ -466,6 +466,9 @@ test("MessagePolicy separates extension-page and content-script privileges", () 
   assert.equal(MessagePolicy.canInvoke("GET_STATE", {}, content, base), false);
   assert.equal(MessagePolicy.canInvoke("TRANSLATE_IMAGE", {}, content, base), true);
   assert.equal(MessagePolicy.canInvoke("TRANSLATE_IMAGE", {}, popup, base), false);
+  assert.equal(MessagePolicy.canInvoke("LOAD_IMAGE_RENDERER", {}, content, base), true);
+  assert.equal(MessagePolicy.canInvoke("LOAD_IMAGE_RENDERER", {}, popup, base), false);
+  assert.equal(MessagePolicy.canInvoke("LOAD_IMAGE_RENDERER", {}, {}, base), false);
   assert.equal(MessagePolicy.canInvoke("TRANSLATE_BATCH", { quick: true }, popup, base), true);
   assert.equal(MessagePolicy.canInvoke("TRANSLATE_BATCH", { quick: false }, popup, base), false);
   assert.equal(MessagePolicy.canInvoke("TRANSLATE_PAGE", {}, content, base), true);
