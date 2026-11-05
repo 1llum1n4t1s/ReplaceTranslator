@@ -8,7 +8,7 @@
     "sync:support": "bun --preserve-symlinks-main ./node_modules/@kagayoi/support-extension/bin/kagayoi-support-sync.mjs",
     "ci:install": "bun install --frozen-lockfile",
     "test": "bun test",
-    "lint": "eslint src/ test/",
+    "lint": "bun --no-env-file --no-install --bun run eslint src/ test/",
     "test:dependencies": "bun test ./scripts/dependency-security.test.cjs"
   },
   "devDependencies": {

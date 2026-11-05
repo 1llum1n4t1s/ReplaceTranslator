@@ -7,7 +7,7 @@ This file provides guidance to Codex when working in this repository.
 ## ビルド / テスト / Lint コマンド
 - `bun --bun run test` — Bun の node:test 互換テスト（`bun test`。共有純粋関数に加え、実ソースから切り出した content / Service Worker 関数と静的契約も検証）
 - 単一ファイル: `bun test ./test/providers.test.js` ／ 単一テスト名: `bun test --test-name-pattern "BatchTuner"`
-- `bun --bun run lint` — ESLint（Flat Config v9+）
+- `bun run lint` — script内でBunを指定するESLint（Flat Config v9+）
 - `icons/icon{16,48,128}.png` は **commit 済み**（原本は `icons/icon.svg`）。ビルド時のアイコン生成は無い
 - `zip.ps1` / `zip.sh` — 単一 `manifest.json` から Chrome zip + Firefox xpi を生成（中身は同一・generate なし）
 - 製品ページの配信は `../vps-web/deploy/deploy-lp.ps1` を使う（配置は [DESIGN.md](DESIGN.md#製品ページの配信先)）。公開ホスト・更新ファイルの既存経路を維持する。
