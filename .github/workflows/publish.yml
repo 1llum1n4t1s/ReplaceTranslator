@@ -16,7 +16,7 @@ concurrency:
 jobs:
   package:
     name: ZIP パッケージ作成
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, m3mb14]
     outputs:
       artifact-attempt: ${{ steps.artifact-identity.outputs.attempt }}
       version: ${{ steps.version.outputs.version }}
@@ -159,7 +159,7 @@ jobs:
 
   publish:
     name: Chrome Web Store にアップロード + Submit for review
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, m3mb14]
     needs: package
     environment: chrome-web-store
     steps:
@@ -215,7 +215,7 @@ jobs:
 
   publish-firefox:
     name: Firefox AMO に submission
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, m3mb14]
     needs: package
     # package(テスト/ビルド/artifact 生成)が成功したときだけ走る。CWS publish ジョブとは独立(両者 needs: package)
     # なので CWS publish が失敗しても Firefox は出せる。package 失敗時は firefox-source artifact が無く、
