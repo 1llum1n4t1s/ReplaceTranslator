@@ -11,8 +11,8 @@ permissions:
 
 jobs:
   validate:
-    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'dependabot[bot]') }}
-    runs-on: [self-hosted, Linux, ARM64, m3mb14]
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     defaults:
       run:
@@ -34,8 +34,8 @@ jobs:
         run: bun test ./scripts/New-AmoMetadata.test.mjs
       - name: Validate dependency security patches
         run: bun run test:dependencies
-      - name: Sync support assets
-        run: bun --bun run sync:support
+      # コミット済みの src/shared/ と固定した @kagayoi/support-extension の一致を検証する。
+      # 直前に書き込み同期 (sync:support) を走らせると --check が常に成功してしまうため、--check だけを実行する。
       - name: Validate 1
         run: bun --bun run sync:support --check
       - name: Validate 2
