@@ -6,7 +6,7 @@
   // translation-core.js が stale marker を更新して再評価されたときは、公開 helper も現行コードへ更新する。
   globalThis.TranslationBatch = Object.freeze({
     CONTEXT_MAX_CHARS: 240,
-    groupExactTexts,
+    // groupExactTexts は本番経路から使われなくなったため撤去した (文脈なしの完全一致は groupContextualTexts(texts, []) と同じ)。
     groupContextualTexts,
     contextKey: translationContextKey,
     normalizeContexts: normalizeTranslationContexts,
@@ -15,6 +15,10 @@
     cacheKey: translationCacheKey,
     normalizeCacheRecords: normalizeTranslationCacheRecords,
     attemptedTextCount,
+    // 下の 2 つは content (translator.js) と popup (popup.js) の分岐を純関数へ寄せたもの。
+    // この Object.freeze は IIFE 先頭で評価されるため、function 宣言の巻き上げに依存する (const/let の関数式にしない)。
+    isDailyQuotaMessage,
+    classifyBatchResult,
   });
 
   const Providers = {
@@ -258,27 +262,33 @@
   const EMPTY_REASONING_EFFORTS = Object.freeze(Object.fromEntries(
     PROVIDER_IDS.map((id) => [id, Object.freeze({})])
   ));
+  // 言い換えモードのスタイル。osaka/ibaraki は翻訳スタイルと同じ ID (表示は関西弁/茨城弁) に揃える。
+  const REWRITE_STYLES = Object.freeze(["mild", "formal", "toxic", "osaka", "ibaraki", "gyaru"]);
+  // 通常翻訳の翻訳スタイル。normalize の許可リスト・popup の選択肢・providers の指示が同じ一覧を参照する
+  // (以前は各所に同じ配列を手書きしており、スタイル追加時の更新漏れで「保存できるが指示が付かない」等がずれ得た)。
+  // 廃止した casual/literal はここに含めず、normalize で natural へ移行する。
+  const TRANSLATION_STYLES = Object.freeze(["natural", "cute", "formal", "mild", "osaka", "ibaraki", "gyaru", "custom"]);
+  // 日本語専用の翻訳スタイル (方言・ギャル文字)。翻訳先が日本語以外のときは指示を付けず、popup も選択肢を隠す。
+  // 保存値は保持するので、翻訳先を日本語へ戻すとそのまま有効になる。
+  const JAPANESE_ONLY_STYLES = Object.freeze(["osaka", "ibaraki", "gyaru"]);
   const DEFAULT_SETTINGS = Object.freeze({
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
     sourceLang: "auto",          // auto = ページの主要言語を検出して翻訳元にする (検出不能時は target 以外を翻訳)
     targetLang: "ja",
     quickSourceLang: "auto",
     quickTargetLang: "ja",
-    apiKeys: Object.freeze({ openai: "", anthropic: "", gemini: "", xai: "", openrouter: "", deepseek: "", groq: "", fugu: "", mymemory: "" }),
-    models: Object.freeze({
-      openai: "gpt-5.4-mini",
-      anthropic: "claude-haiku-4-5",
-      gemini: "gemini-2.5-flash",
-      xai: "grok-4.3",
-      openrouter: "google/gemini-2.5-flash",
-      deepseek: "deepseek-flash",
-      groq: "openai/gpt-oss-120b",
-      fugu: "fugu",
-      mymemory: null,
-    }),
+    // apiKeys / models は Providers.ids の順で導出する (EMPTY_REASONING_EFFORTS と同じ方法)。
+    // 旧版はプロバイダ定義と別に手書きしており、既定モデルの bump やプロバイダ追加で二重管理になっていた。
+    // キー順は Providers.ids の順 = 旧手書きの順と同一なので、JSON 表現 (保存値・同期比較) も変わらない。
+    apiKeys: Object.freeze(Object.fromEntries(PROVIDER_IDS.map((id) => [id, ""]))),
+    models: Object.freeze(Object.fromEntries(PROVIDER_IDS.map((id) => [id, Providers[id].defaultModel]))),
     reasoningEfforts: EMPTY_REASONING_EFFORTS, // provider → model ID → 明示 effort。欠損は翻訳向け自動最小値
     translationStyle: "natural",
     customPrompt: "", // LLMへの追加翻訳指示。出力形式・翻訳対象の契約は維持する
+    // 言い換えモード: ページ翻訳だけを「同じ言語のまま書き換える」動作へ切り替える。
+    // sourceLang/targetLang/translationStyle は書き換えず保持し、OFF に戻したらそのまま従来設定で翻訳する。
+    rewriteMode: false,
+    rewriteStyle: "mild", // mild=穏やかな表現へ (全言語) / formal=丁寧・フォーマルな表現へ (全言語) / toxic=辛辣な表現へ (全言語・まろやかの逆) / osaka=関西弁 / ibaraki=茨城弁 / gyaru=ギャル文字 (方言・ギャル文字は日本語の要素を穏やかにしつつ方言へ。他言語は mild 扱い)
     syncSettings: false, // この端末でのブラウザー設定同期への明示 opt-in
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     autoTranslateBlacklist: Object.freeze([]), // 自動翻訳だけを抑止する URL/host glob の複数行リスト
@@ -351,8 +361,10 @@
       apiKeys,
       models,
       reasoningEfforts: normalizeReasoningEfforts(r.reasoningEfforts),
-      translationStyle: ["natural", "cute", "formal", "casual", "literal", "osaka", "ibaraki", "custom"].includes(r.translationStyle) ? r.translationStyle : "natural",
+      translationStyle: TRANSLATION_STYLES.includes(r.translationStyle) ? r.translationStyle : "natural", // 廃止した casual/literal は自然 (natural) へ移行する
       customPrompt: typeof r.customPrompt === "string" ? r.customPrompt.trim().slice(0, 2000) : "",
+      rewriteMode: r.rewriteMode === true, // 既定 OFF。明示 true だけ有効 (欠損・旧設定は通常翻訳のまま)
+      rewriteStyle: REWRITE_STYLES.includes(r.rewriteStyle) ? r.rewriteStyle : DEFAULT_SETTINGS.rewriteStyle,
       syncSettings: r.syncSettings === true,
       autoTranslate: Boolean(r.autoTranslate),
       autoTranslateBlacklist: normalizeAutoTranslateBlacklist(r.autoTranslateBlacklist),
@@ -392,6 +404,10 @@
     DEFAULTS: DEFAULT_SETTINGS,
     normalize: normalizeSettings,
     mergePatch: mergeSettingsPatch,
+    // スタイル一覧は凍結配列で読み取り専用に公開する (globalThis へ別名を増やさず SettingsSchema 経由で参照させる)。
+    TRANSLATION_STYLES,
+    JAPANESE_ONLY_STYLES,
+    REWRITE_STYLES,
   });
 
   // ---- トークン使用量ヘルパー ----
@@ -456,12 +472,6 @@
 
   // ---- 翻訳バッチ共通ヘルパー ----
   // content と background の双方で使う「完全一致 + 文脈」判定・リトライ判定・session cache key を純粋関数へ集約する。
-  // 正規化や trim は行わない。空白・大文字小文字・Unicode 表現を含め 1 文字でも変われば別テキストとして扱い、
-  // 編集後の文字列へ古い訳文を当てないことを最優先にする。
-  function groupExactTexts(texts) {
-    return groupContextualTexts(texts, []).map(({ text, indices }) => ({ text, indices }));
-  }
-
   function translationContextKey(text, context) {
     if (typeof text !== "string") return null;
     return JSON.stringify([text, typeof context === "string" ? context : ""]);
@@ -479,6 +489,9 @@
     );
   }
 
+  // 原文 + 文脈の完全一致でまとめる。正規化や trim は行わない。空白・大文字小文字・Unicode 表現を含め
+  // 1 文字でも変われば別テキストとして扱い、編集後の文字列へ古い訳文を当てないことを最優先にする。
+  // 文脈なし (contexts=[]) で呼べば旧 groupExactTexts と同じ「原文だけの完全一致」になる (context は "")。
   function groupContextualTexts(texts, contexts) {
     const groups = [];
     const groupByKey = new Map();
@@ -529,8 +542,11 @@
       String(scope || ""), provider, model, reasoningEffort,
       typeof s.sourceLang === "string" ? s.sourceLang : "",
       typeof s.targetLang === "string" ? s.targetLang : "",
-      typeof s.translationStyle === "string" ? s.translationStyle : "natural",
-      s.translationStyle === "custom" && typeof s.customPrompt === "string" ? s.customPrompt : "",
+      // 言い換えモードは既存のスタイル枠へ "rewrite:<style>" を入れて分ける。配列要素を増やすと
+      // 通常翻訳のキーまで変わり、既存の永続キャッシュが全て外れるため要素数は維持する。
+      s.rewriteMode === true ? "rewrite:" + (typeof s.rewriteStyle === "string" ? s.rewriteStyle : "mild")
+        : (typeof s.translationStyle === "string" ? s.translationStyle : "natural"),
+      s.rewriteMode !== true && s.translationStyle === "custom" && typeof s.customPrompt === "string" ? s.customPrompt : "",
       Number(promptVersion) || 0,
       text,
       typeof context === "string" ? context : "",
@@ -568,6 +584,50 @@
   function attemptedTextCount(res, total) {
     const count = res && Number(res.attemptedTextCount);
     return Number.isInteger(count) && count > 0 && count <= total ? count : total;
+  }
+
+  // 429 本文が「1 日上限 (RPD)」または「残高切れ (insufficient_quota)」を示すか。どちらもその日は待っても
+  // 並列を下げても解けないため、content は全体中断 (fatal)、popup は専用文言 (statusQuotaDaily) に使う。
+  // 小文字化して部分一致で判定する。per-minute を先に除外する判定は呼び出し側 (translator.js の quotaScope) に残す
+  // (popup は従来どおり per-minute を見ずにこの語だけで表示を決める = 表示条件を変えない)。
+  function isDailyQuotaMessage(message) {
+    const m = String(message || "").toLowerCase();
+    return m.includes("perday") || m.includes("per day") || m.includes("per-day") || m.includes("daily") ||
+      m.includes("insufficient_quota"); // OpenAI 互換: 残高切れ = リトライ無駄
+  }
+
+  // content (translator.js の flush worker) が TRANSLATE_BATCH の応答をどう扱うかを判定だけ行う純関数。
+  // 副作用 (訳文の適用・再キュー・attemptedTextCount による縮小・incompleteRetry・droppedTransient の加算) は
+  // 呼び出し側に残し、ここは分岐の「順序と条件」だけを固定する (テスト可能にするため切り出した)。
+  // 返り値の kind:
+  //   "apply"   = 完全な正常応答。訳文を適用しメモに登録する
+  //   "fatal"   = 全体中断して理由を通知する (キー未設定・言い換え非対応・LLM の恒久 4xx・1 日上限・全件失敗)
+  //   "partial" = 一時エラーだが部分訳文あり (MyMemory の一部 429 等)。成功分だけ適用する
+  //   "requeue" = 出力切れ / 入力サイズ超過。未訳ノードを小さい batch で再キューする
+  //   "drop"    = 訳文を伴わない失敗。処理済み扱いで飛ばす。transient=true のときだけ未訳数を partial 通知に数える
+  // options.isNmt = NMT プロバイダ (MyMemory 等) か。options.quotaScope = 呼び出し側の 429 種別判定 ("day"/"minute"/null)。
+  function classifyBatchResult(res, options) {
+    const opts = options || {};
+    // ok でも translations が配列でない応答は末尾の drop (transient でない) に落とす (旧 else-if 連鎖と同じ)。
+    if (res && res.ok && Array.isArray(res.translations)) return { kind: "apply" };
+    if (res && (res.error === "no_api_key" || res.error === "rewrite_unsupported")) return { kind: "fatal" };
+    // LLM の恒久エラー (400 リクエスト不正 / 401・403 キー無効 / 404 モデル無し) は全バッチ同型に失敗するので fatal。
+    // 入力サイズ起因の 400 (isOversize) はバッチ固有なので除外し、下の requeue へ流す。NMT は per-text 制限なので除外。
+    // status は厳密比較 (=== 400 等) のまま保つ (文字列 "400" は fatal にしない = 旧挙動)。
+    if (res && res.error === "http" &&
+        ((res.status === 400 && !isOversizeTranslation(res)) || res.status === 401 || res.status === 403 || res.status === 404) &&
+        !opts.isNmt) return { kind: "fatal" };
+    // 1 日上限 / 残高切れの 429 は何度投げても失敗するので fatal (statusQuotaDaily 表示)。NMT の 429 は除外。
+    if (res && res.error === "http" && res.status === 429 && opts.quotaScope === "day" && !opts.isNmt) return { kind: "fatal" };
+    if (res && res.allFailed) return { kind: "fatal" }; // バッチ全件失敗 (MyMemory クォータ枯渇等)
+    if (res && Array.isArray(res.translations)) return { kind: "partial" };
+    if (res && (res.error === "incomplete" || isOversizeTranslation(res))) return { kind: "requeue" };
+    // 残りは drop。レート制限・混雑・通信・SW 再起動 (stale_session) 由来だけを transient として数える。
+    // 旧実装はここでも isOversize を OR していたが、直前の requeue 分岐で必ず捕捉されるため到達せず省いた (結果は同じ)。
+    // >= 500 は旧実装どおり緩い比較のまま (Number() で整形しない)。
+    const transient = Boolean(res && (res.error === "network" || res.error === "runtime" || res.error === "stale_session" ||
+      (res.error === "http" && (res.status === 429 || res.status >= 500))));
+    return { kind: "drop", transient };
   }
 
   // runtime message の送信元を「content script」と「拡張ページ」へ分類する。

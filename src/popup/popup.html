@@ -37,16 +37,38 @@
         </div>
       </div>
 
-      <div class="row">
+      <!-- 言い換えモード: ON の間は翻訳元/翻訳先を「自動→自動」に固定し、スタイルを専用の選択肢へ入れ替える -->
+      <div class="switch-field">
+        <div class="switch-text">
+          <label class="switch-label" for="rewrite-mode" data-i18n="optRewriteMode">言い換えモード</label>
+          <div id="rewrite-mode-help" class="switch-desc" data-i18n="optRewriteModeDesc">翻訳せず、ページと同じ言語のまま書き換えます。LLMで利用でき、MyMemoryは非対応です。</div>
+        </div>
+        <input id="rewrite-mode" type="checkbox" aria-describedby="rewrite-mode-help">
+      </div>
+
+      <div id="rewrite-style-row" class="row hidden">
+        <label class="lbl" for="rewrite-style" data-i18n="labelRewriteStyle">言い換えスタイル</label>
+        <select id="rewrite-style" class="sel" aria-describedby="rewrite-style-help">
+          <option value="mild" data-i18n="rewriteStyleMild">まろやか</option>
+          <option value="formal" data-i18n="rewriteStyleFormal">フォーマル</option>
+          <option value="toxic" data-i18n="rewriteStyleToxic">トキシック</option>
+          <option value="ibaraki" data-i18n="rewriteStyleIbaraki">まろやか（茨城弁）</option>
+          <option value="osaka" data-i18n="rewriteStyleOsaka">まろやか（関西弁）</option>
+          <option value="gyaru" data-i18n="rewriteStyleGyaru">まろやか（ギャル文字）</option>
+        </select>
+        <div id="rewrite-style-help" class="switch-desc" data-i18n="rewriteStyleHelp">「まろやか」は有害・攻撃的な表現を穏やかに、「フォーマル」は丁寧な文体に、「トキシック」は逆に辛辣な口調に言い換えます。この3つは全言語で使えます。方言・ギャル文字付きは日本語の文を穏やかにしつつ方言やギャル文字にし、ほかの言語の文はまろやかに言い換えます。</div>
+      </div>
+
+      <div id="translation-style-row" class="row">
         <label class="lbl" for="translation-style" data-i18n="labelTranslationStyle">翻訳スタイル</label>
         <select id="translation-style" class="sel" aria-describedby="translation-style-help">
           <option value="natural" data-i18n="styleNatural">自然（標準）</option>
           <option value="cute" data-i18n="styleCute">かわいく</option>
           <option value="formal" data-i18n="styleFormal">丁寧・フォーマル</option>
-          <option value="casual" data-i18n="styleCasual">カジュアル</option>
-          <option value="literal" data-i18n="styleLiteral">原文に忠実</option>
+          <option value="mild" data-i18n="styleMild">まろやか</option>
           <option id="style-osaka" value="osaka" data-i18n="styleOsaka">関西弁</option>
           <option id="style-ibaraki" value="ibaraki" data-i18n="styleIbaraki">茨城弁</option>
+          <option id="style-gyaru" value="gyaru" data-i18n="styleGyaru">ギャル文字</option>
           <option value="custom" data-i18n="styleCustom">カスタム</option>
         </select>
         <div id="translation-style-help" class="switch-desc" data-i18n="translationStyleHelp">「カスタム」を選ぶとプロンプトを入力できます。LLMで利用でき、MyMemoryは非対応です。</div>
@@ -98,8 +120,8 @@
             <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
             <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
             <div class="sub-field" id="fab-opacity-row">
-              <span class="sub-label" data-i18n="optFabOpacity">不透明度</span>
-              <input id="fab-opacity" class="range" type="range" min="20" max="100" step="5" value="100">
+              <span class="sub-label" id="fab-opacity-label" data-i18n="optFabOpacity">不透明度</span>
+              <input id="fab-opacity" aria-labelledby="fab-opacity-label" class="range" type="range" min="20" max="100" step="5" value="100">
               <span class="range-val" id="fab-opacity-val">100%</span>
             </div>
           </div>
@@ -113,8 +135,8 @@
               <button id="sel-shortcut" class="link-btn" type="button" data-i18n="optSelShortcut">ショートカットを変更</button>
             </div>
             <div class="sub-field" id="sel-mode-row">
-              <span class="sub-label" data-i18n="optSelMode">表示方法</span>
-              <select id="sel-mode" class="sel sel-sm">
+              <span class="sub-label" id="sel-mode-label" data-i18n="optSelMode">表示方法</span>
+              <select id="sel-mode" class="sel sel-sm" aria-labelledby="sel-mode-label">
                 <option value="bubble" data-i18n="selModeBubble">バブル</option>
                 <option value="inline" data-i18n="selModeInline">インライン（対訳）</option>
               </select>
@@ -154,7 +176,7 @@
           </div>
           <p class="switch-desc" data-i18n="qtLanguagesHelp">この欄の言語設定は、ページの自動翻訳・手動翻訳とは別に保存します。</p>
           <div class="qt-wrap">
-            <textarea class="qt-in" id="qt-in" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
+            <textarea class="qt-in" id="qt-in" data-i18n-aria-label="qtInputLabel" aria-label="翻訳するテキスト" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
             <div class="qt-mid" aria-hidden="true">
               <span class="qt-arrow">↓</span>
               <span class="qt-spin"></span>
@@ -178,17 +200,17 @@
     <section class="pane" data-pane="api">
       <p class="note" data-i18n="optionsLead">キーはこのブラウザ内にのみ保存され、翻訳時に該当サービスの API にだけ送信されます。フォーカスを外すと自動保存します。</p>
 
-      <div id="provider-list" class="provider-list" role="radiogroup" aria-label="翻訳サービス">
+      <div id="provider-list" class="provider-list" role="radiogroup" data-i18n-aria-label="providerListLabel" aria-label="翻訳サービス">
         <!-- OpenAI -->
         <div class="provider-card" data-provider="openai">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="openai">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">OpenAI</span>
+            <span class="pi-name" id="pname-openai">OpenAI</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+              <input id="key-openai" aria-labelledby="pname-openai key-openai" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
               <button class="toggle" type="button" data-target="key-openai" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -202,12 +224,12 @@
         <div class="provider-card" data-provider="anthropic">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="anthropic">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">Anthropic (Claude)</span>
+            <span class="pi-name" id="pname-anthropic">Anthropic (Claude)</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+              <input id="key-anthropic" aria-labelledby="pname-anthropic key-anthropic" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
               <button class="toggle" type="button" data-target="key-anthropic" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -221,12 +243,12 @@
         <div class="provider-card" data-provider="gemini">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="gemini">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">Google Gemini</span>
+            <span class="pi-name" id="pname-gemini">Google Gemini</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-gemini" type="password" autocomplete="off" spellcheck="false" placeholder="AIza...">
+              <input id="key-gemini" aria-labelledby="pname-gemini key-gemini" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="AIza...">
               <button class="toggle" type="button" data-target="key-gemini" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -240,12 +262,12 @@
         <div class="provider-card" data-provider="xai">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="xai">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">xAI (Grok)</span>
+            <span class="pi-name" id="pname-xai">xAI (Grok)</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-xai" type="password" autocomplete="off" spellcheck="false" placeholder="xai-...">
+              <input id="key-xai" aria-labelledby="pname-xai key-xai" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="xai-...">
               <button class="toggle" type="button" data-target="key-xai" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -259,12 +281,12 @@
         <div class="provider-card" data-provider="openrouter">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="openrouter">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">OpenRouter</span>
+            <span class="pi-name" id="pname-openrouter">OpenRouter</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-openrouter" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-...">
+              <input id="key-openrouter" aria-labelledby="pname-openrouter key-openrouter" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-...">
               <button class="toggle" type="button" data-target="key-openrouter" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -278,12 +300,12 @@
         <div class="provider-card" data-provider="deepseek">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="deepseek">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">DeepSeek</span>
+            <span class="pi-name" id="pname-deepseek">DeepSeek</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-deepseek" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+              <input id="key-deepseek" aria-labelledby="pname-deepseek key-deepseek" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
               <button class="toggle" type="button" data-target="key-deepseek" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -297,12 +319,12 @@
         <div class="provider-card" data-provider="groq">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="groq">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">Groq</span>
+            <span class="pi-name" id="pname-groq">Groq</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-groq" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
+              <input id="key-groq" aria-labelledby="pname-groq key-groq" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
               <button class="toggle" type="button" data-target="key-groq" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -316,12 +338,12 @@
         <div class="provider-card" data-provider="fugu">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="fugu">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">Sakana AI (Fugu)</span>
+            <span class="pi-name" id="pname-fugu">Sakana AI (Fugu)</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-fugu" type="password" autocomplete="off" spellcheck="false">
+              <input id="key-fugu" aria-labelledby="pname-fugu key-fugu" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false">
               <button class="toggle" type="button" data-target="key-fugu" data-i18n="optShow">表示</button>
             </div>
             <div class="pc-foot">
@@ -335,12 +357,12 @@
         <div class="provider-card" data-provider="mymemory">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="mymemory">
             <span class="pi-radio" aria-hidden="true"></span>
-            <span class="pi-name">MyMemory</span>
+            <span class="pi-name" id="pname-mymemory">MyMemory</span>
             <span class="pi-badge" data-badge aria-hidden="true"></span>
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-mymemory" type="email" autocomplete="off" spellcheck="false" placeholder="you@example.com (任意)">
+              <input id="key-mymemory" aria-labelledby="pname-mymemory key-mymemory" data-i18n-aria-label="ariaMyMemoryEmail" aria-label="メールアドレス（任意）" type="email" autocomplete="off" spellcheck="false" placeholder="you@example.com (任意)">
             </div>
             <div class="pc-foot">
               <span class="hint" data-i18n="optMyMemoryNote">キー不要。メールを入れると無料枠が増えます。</span>
@@ -375,12 +397,12 @@
     <section class="pane" data-pane="blacklist">
       <div class="blacklist-card">
         <div class="blacklist-head">
-          <h2 class="blacklist-title" data-i18n="blacklistTitle">自動翻訳ブラックリスト</h2>
+          <h2 class="blacklist-title" id="blacklist-title" data-i18n="blacklistTitle">自動翻訳ブラックリスト</h2>
           <span id="blacklist-save-state" class="blacklist-save-state" aria-live="polite"></span>
         </div>
-        <p class="blacklist-desc" data-i18n="blacklistDesc">1行に1件入力してください。登録したURLまたはホストでは自動翻訳を行いません。手動翻訳は引き続き利用できます。</p>
+        <p class="blacklist-desc" id="blacklist-desc" data-i18n="blacklistDesc">1行に1件入力してください。登録したURLまたはホストでは自動翻訳を行いません。手動翻訳は引き続き利用できます。</p>
         <button id="blacklist-add-current" class="btn ghost blacklist-current-btn" type="button" data-i18n="blacklistAddCurrentSite">現在のサイトを追加</button>
-        <textarea id="auto-translate-blacklist" class="blacklist-input" rows="11" maxlength="20000" spellcheck="false" autocomplete="off" data-i18n-placeholder="blacklistPlaceholder" placeholder="192.168.*&#10;https://photos.google.com/&#10;x.com"></textarea>
+        <textarea id="auto-translate-blacklist" aria-labelledby="blacklist-title" aria-describedby="blacklist-desc" class="blacklist-input" rows="11" maxlength="20000" spellcheck="false" autocomplete="off" data-i18n-placeholder="blacklistPlaceholder" placeholder="192.168.*&#10;https://photos.google.com/&#10;x.com"></textarea>
         <p class="blacklist-help" data-i18n="blacklistHelp">* は任意の文字列に一致します。URLは指定したパス以下、ホスト名はそのホスト全体が対象です。</p>
       </div>
     </section>

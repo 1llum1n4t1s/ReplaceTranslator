@@ -5,9 +5,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { SettingsSchema, AutoTranslateBlacklist } = require("./_load-actions.js");
+const { SettingsSchema, AutoTranslateBlacklist, Providers } = require("./_load-actions.js");
 
-const startupHarness = () => {
+// keyWarning: true のときは updateKeyWarning を実ソースから切り出して使う (既定はスタブ)。
+// プロバイダ別の操作可否 (MyMemory で言い換えを無効化する等) を実装どおりに確かめるため。
+const startupHarness = ({ keyWarning = false } = {}) => {
   const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
   const controls = new Map();
   const requests = [];
@@ -15,6 +17,8 @@ const startupHarness = () => {
   let nextTimer = 0;
   let directionUpdates = 0;
   const document = { activeElement: null, createElement: () => ({ textContent: "" }) };
+  const navigator = {}; // クイック翻訳のコピー (navigator.clipboard) をテストごとに差し替える
+  const window = { setTimeout: fn => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: id => timers.delete(id) };
   const state = { settings: SettingsSchema.normalize({}) };
   const element = id => {
     if (!controls.has(id)) {
@@ -34,21 +38,24 @@ const startupHarness = () => {
   const quick = popup.slice(popup.indexOf("  let rerunQuickTranslate ="), popup.indexOf("  function init()"));
   const listeners = popup.slice(popup.indexOf('    $("sync-settings").addEventListener'),
     popup.indexOf("    // ショートカット変更:"));
+  const keyWarningSource = keyWarning
+    ? popup.slice(popup.indexOf("  function updateKeyWarning()"), popup.indexOf("  function selectProvider("))
+    : "";
   const api = vm.runInNewContext(`(() => {
+    ${keyWarningSource}
     ${keys}
     ${common}
     ${quick}
     return { save, reflect, saveBlacklist, addCurrentSiteToBlacklist, bindKeyAutosave, setupQuickTranslate, bind() { ${listeners} }, start() { ${startup} } };
-  })()`, { state, SettingsSchema, AutoTranslateBlacklist, Providers: { ids: ["openai", "xai"] },
+  })()`, { state, SettingsSchema, AutoTranslateBlacklist, Providers: { ids: ["openai", "xai"], get: id => Providers.get(id) },
     Actions: { APPLY_SETTINGS: "APPLY_SETTINGS", GET_STATE: "GET_STATE", TRANSLATE_BATCH: "TRANSLATE_BATCH" }, $: element,
     chrome: { runtime: { lastError: null, sendMessage: (message, callback) => requests.push({ message, callback }) } },
     getActiveTab: async () => ({ id: 1, url: "https://chatgpt.com/c/6aa436e4-b728-83ee-b1c1-c7d62b8379cb" }),
-    document,
-    window: { setTimeout: fn => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: id => timers.delete(id) },
+    document, navigator, window,
     msg: key => key, setStatus: () => {}, errorText: () => "error", renderProviderList: () => {},
     updateKeyWarning: () => {}, updateQtDir: () => { directionUpdates++; }, loadModels: () => {},
   });
-  return { api, state, element, requests, document, get directionUpdates() { return directionUpdates; },
+  return { api, state, element, requests, document, navigator, timers, get directionUpdates() { return directionUpdates; },
     runTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); } };
 };
 
@@ -66,6 +73,124 @@ test("方言の選択肢は日本語の翻訳先だけに表示し、言語変�
   assert.equal(h.state.settings.translationStyle, "osaka");
   h.state.settings.targetLang = "ja";
   h.api.reflect();
+  assert.equal(h.element("translation-style").value, "osaka");
+});
+
+test("ギャル文字の選択肢も日本語の翻訳先だけに表示し、保存値を保持する", () => {
+  const h = startupHarness();
+  h.state.settings = SettingsSchema.normalize({ targetLang: "ja", translationStyle: "gyaru" });
+  h.api.reflect();
+  assert.equal(h.element("style-gyaru").hidden, false);
+  assert.equal(h.element("translation-style").value, "gyaru");
+  h.state.settings.targetLang = "en";
+  h.api.reflect();
+  assert.equal(h.element("style-gyaru").hidden, true);
+  assert.equal(h.element("style-gyaru").disabled, true);
+  assert.equal(h.element("translation-style").value, "natural");
+  assert.equal(h.state.settings.translationStyle, "gyaru");
+});
+
+test("言い換えモードは翻訳元/翻訳先を自動で固定表示し、スタイル欄を入れ替え、OFFで従来設定へ戻す", () => {
+  const h = startupHarness();
+  h.api.bind();
+  h.state.settings = SettingsSchema.normalize({ sourceLang: "en", targetLang: "fr", translationStyle: "formal" });
+  h.api.reflect();
+  assert.equal(h.element("rewrite-mode").checked, false);
+  assert.equal(h.element("source").value, "en");
+  assert.equal(h.element("target").value, "fr");
+  assert.equal(h.element("source").disabled, false);
+  assert.equal(h.element("rewrite-style-row").classList.contains("hidden"), true);
+  assert.equal(h.element("translation-style-row").classList.contains("hidden"), false);
+
+  h.element("rewrite-mode").checked = true;
+  h.element("rewrite-mode").listeners.change({ target: h.element("rewrite-mode") });
+  // rewriteMode だけを保存し、翻訳元/翻訳先/翻訳スタイルの保存値には触れない
+  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteMode: true });
+  assert.equal(h.element("source").value, "auto");
+  assert.equal(h.element("target").value, "auto");
+  assert.equal(h.element("source").disabled, true);
+  assert.equal(h.element("target").disabled, true);
+  assert.equal(h.element("target-rewrite-auto").hidden, false);
+  assert.equal(h.element("rewrite-style-row").classList.contains("hidden"), false);
+  assert.equal(h.element("translation-style-row").classList.contains("hidden"), true);
+  assert.equal(h.element("rewrite-style").value, "mild");
+  assert.equal(h.state.settings.sourceLang, "en");
+  assert.equal(h.state.settings.targetLang, "fr");
+  assert.equal(h.state.settings.translationStyle, "formal");
+
+  h.element("rewrite-style").listeners.change({ target: { value: "ibaraki" } });
+  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteStyle: "ibaraki" });
+
+  h.element("rewrite-mode").checked = false;
+  h.element("rewrite-mode").listeners.change({ target: h.element("rewrite-mode") });
+  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteMode: false });
+  assert.equal(h.element("source").value, "en");
+  assert.equal(h.element("target").value, "fr");
+  assert.equal(h.element("source").disabled, false);
+  assert.equal(h.element("target-rewrite-auto").hidden, true);
+  assert.equal(h.element("translation-style-row").classList.contains("hidden"), false);
+});
+
+test("言い換えの方言は翻訳元/翻訳先が自動のままでも選択でき、言語を固定しない", () => {
+  const h = startupHarness();
+  for (const style of ["osaka", "ibaraki", "gyaru"]) {
+    h.state.settings = SettingsSchema.normalize({ rewriteMode: true, rewriteStyle: style, sourceLang: "en", targetLang: "fr" });
+    h.api.reflect();
+    assert.equal(h.element("rewrite-style").value, style);
+    assert.equal(h.element("source").value, "auto");
+    assert.equal(h.element("target").value, "auto");
+  }
+});
+
+test("MyMemory では言い換えをONにできず、同期で来たONは外す操作だけ許可する", () => {
+  const h = startupHarness({ keyWarning: true });
+  h.api.bind();
+  // OFF の保存値: NMT はプロンプトを持たないので ON にさせない。
+  h.state.settings = SettingsSchema.normalize({ provider: "mymemory", rewriteMode: false });
+  h.api.reflect();
+  assert.equal(h.element("rewrite-mode").disabled, true);
+  // スタイル選択は provider がプロンプト非対応なら ON/OFF に関わらず無効 (popup.js updateKeyWarning の実装どおり)。
+  assert.equal(h.element("rewrite-style").disabled, true);
+
+  // 別PCから同期で来た ON: チェックを外す操作だけ許可する (スタイル選択は引き続き無効)。
+  h.state.settings = SettingsSchema.normalize({ provider: "mymemory", rewriteMode: true });
+  h.api.reflect();
+  assert.equal(h.element("rewrite-mode").checked, true);
+  assert.equal(h.element("rewrite-mode").disabled, false);
+  assert.equal(h.element("rewrite-style").disabled, true);
+
+  // OFF にすると再び無効へ戻り、もう ON にはできない。
+  h.element("rewrite-mode").checked = false;
+  h.element("rewrite-mode").listeners.change({ target: h.element("rewrite-mode") });
+  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteMode: false });
+  assert.equal(h.element("rewrite-mode").disabled, true);
+  assert.equal(h.element("rewrite-style").disabled, true);
+});
+
+test("翻訳スタイルの保存失敗時、翻訳先が日本語以外なら方言の保存値を自然として表示する", async () => {
+  const h = startupHarness();
+  h.api.bind();
+  h.state.settings = SettingsSchema.normalize({ targetLang: "en", translationStyle: "osaka" });
+  h.api.reflect();
+  assert.equal(h.element("translation-style").value, "natural");
+  // 利用者が「かわいく」を選ぶが、保存が失敗する。
+  h.element("translation-style").value = "cute";
+  h.element("translation-style").listeners.change({ target: { value: "cute" } });
+  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { translationStyle: "cute" });
+  h.requests.at(-1).callback({ ok: false });
+  await Promise.resolve();
+  // 保存値 (osaka) は保持しつつ、非表示・無効の方言 option ではなく自然を表示する。
+  assert.equal(h.state.settings.translationStyle, "osaka");
+  assert.equal(h.element("translation-style").value, "natural");
+  assert.equal(h.element("style-osaka").hidden, true);
+
+  // 翻訳先が日本語なら、方言の保存値をそのまま表示に戻す。
+  h.state.settings = SettingsSchema.normalize({ targetLang: "ja", translationStyle: "osaka" });
+  h.api.reflect();
+  h.element("translation-style").value = "cute";
+  h.element("translation-style").listeners.change({ target: { value: "cute" } });
+  h.requests.at(-1).callback({ ok: false });
+  await Promise.resolve();
   assert.equal(h.element("translation-style").value, "osaka");
 });
 
@@ -140,6 +265,95 @@ test("クイック翻訳は保存待ちの入力を変更すると旧送信を�
   h.requests[1].callback({ ok: true, translations: ["second translation"] });
   assert.equal(h.element("qt-out").textContent, "second translation");
   assert.equal(h.element("qt").classList.contains("busy"), false);
+});
+
+test("popup は aria-label を UI 言語に合わせ、共有部品が参照する文書言語は変えず、翻訳元の自動判定も UI 言語で出す", () => {
+  const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
+  const i18n = popup.slice(popup.indexOf("  function applyI18n()"), popup.indexOf("  // ---- タブ ----"));
+  const langs = popup.slice(popup.indexOf("  function option(value, label)"), popup.indexOf("  // ---- 翻訳タブ: サービス一覧 ----"));
+  const messages = { qtInputLabel: "Text to translate", langSourceAuto: "Detect language" };
+  const labelled = { getAttribute: () => "qtInputLabel", attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } };
+  const missing = { getAttribute: () => "unknownKey", attrs: { "aria-label": "既定" }, setAttribute(name, value) { this.attrs[name] = value; } };
+  const document = {
+    documentElement: { lang: "ja" },
+    querySelectorAll: (selector) => selector === "[data-i18n-aria-label]" ? [labelled, missing] : [],
+    createElement: () => ({ value: "", textContent: "" }),
+  };
+  const api = vm.runInNewContext(`(() => { ${i18n}\n${langs}\nreturn { applyI18n, fillLangSelect }; })()`, {
+    document, chrome: { i18n: { getMessage: (key) => messages[key] || "" } },
+    msg: (key, fallback) => messages[key] || fallback,
+    Lang: { LANGUAGES: [{ code: "auto", native: "自動判定" }, { code: "ja", native: "日本語" }], targets: () => [{ code: "ja", native: "日本語" }] },
+  });
+  api.applyI18n();
+  assert.equal(labelled.attrs["aria-label"], "Text to translate");
+  assert.equal(missing.attrs["aria-label"], "既定", "未定義キーは HTML の既定名を保つ");
+  assert.equal(document.documentElement.lang, "ja", "共有サポート部品の表示言語を変えないよう <html lang> は書き換えない");
+  const options = [];
+  api.fillLangSelect({ replaceChildren() {}, appendChild: (o) => options.push([o.value, o.textContent]) }, true);
+  assert.deepEqual(options, [["auto", "Detect language"], ["ja", "日本語"]]);
+});
+
+// 選択バブルのコピー (content-dom.test.js) と同じ形: 失敗時は成功表示を出さず、古い完了・古いタイマーは新しい状態を変えない。
+test("クイック翻訳のコピーは成功時だけ表示し、古い完了やタイマーは新しい状態を変更しない", async () => {
+  const h = startupHarness();
+  h.api.setupQuickTranslate();
+  const btn = h.element("qt-copy"), output = h.element("qt-out"), input = h.element("qt-in");
+  const copy = () => btn.listeners.click();
+  output.textContent = "訳文";
+
+  h.navigator.clipboard = { writeText() { throw new Error("denied"); } };
+  await copy();
+  assert.equal(btn.textContent, "qtCopy", "同期例外では成功表示しない");
+  h.navigator.clipboard = { writeText: () => Promise.reject(new Error("denied")) };
+  await copy();
+  assert.equal(btn.textContent, "qtCopy", "reject では成功表示しない (未処理 reject も残さない)");
+  delete h.navigator.clipboard;
+  await copy();
+  assert.equal(btn.textContent, "qtCopy", "clipboard 非対応では成功表示しない");
+
+  // コピー待機中に訳文が描き直されたら、旧訳文のコピー完了は表示しない。
+  let resolveOld;
+  h.navigator.clipboard = { writeText: () => new Promise((resolve) => { resolveOld = resolve; }) };
+  const old = copy();
+  input.value = "next";
+  input.listeners.keydown({ ctrlKey: true, key: "Enter", preventDefault() {} });
+  await Promise.resolve();
+  await Promise.resolve();
+  h.requests.at(-1).callback({ ok: true, translations: ["新しい訳文"] });
+  assert.equal(output.textContent, "新しい訳文");
+  resolveOld();
+  await old;
+  assert.equal(btn.textContent, "qtCopy", "再翻訳前のコピー完了を無視する");
+
+  // クリアも旧コピーの完了を無効化する。
+  const beforeClear = copy();
+  h.element("qt-clear").listeners.click();
+  resolveOld();
+  await beforeClear;
+  assert.equal(btn.textContent, "qtCopy", "クリア前のコピー完了を表示しない");
+
+  output.textContent = "訳文";
+  const pending = [];
+  h.navigator.clipboard = { writeText: () => new Promise((resolve) => { pending.push(resolve); }) };
+  const first = copy();
+  const second = copy();
+  pending[0]();
+  await first;
+  assert.equal(btn.textContent, "qtCopy", "古いコピーの完了は新しい操作の完了を示さない");
+  pending[1]();
+  await second;
+  assert.equal(btn.textContent, "qtCopied");
+  assert.equal(btn.classList.contains("done"), true);
+
+  h.navigator.clipboard = { writeText: () => Promise.resolve() };
+  await copy();
+  const oldTimer = [...h.timers.values()].at(-1);
+  await copy();
+  oldTimer();
+  assert.equal(btn.textContent, "qtCopied", "前回のタイマーは新しいコピー表示を消さない");
+  [...h.timers.values()].at(-1)();
+  assert.equal(btn.textContent, "qtCopy");
+  assert.equal(btn.classList.contains("done"), false);
 });
 
 test("クイック翻訳は連続送信の古い応答と空入力後の応答を無視する", async () => {

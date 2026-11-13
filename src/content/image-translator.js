@@ -75,7 +75,7 @@
     if (!btn) return;
     const on = isTranslated(img);
     btn.textContent = on ? "原" : "訳";
-    btn.title = on ? (img.closest(".__rt-img-wrap").__rtPartial ?
+    btn.ariaLabel = btn.title = on ? (img.closest(".__rt-img-wrap").__rtPartial ?
       tr("imgPartial", "出力上限に達したため一部のみ翻訳しました。クリックで元に戻します") :
       tr("imgRevert", "画像の翻訳を消して元に戻す")) : tr("imgBtn", "画像内のテキストを翻訳");
     btn.classList.toggle("__rt-img-btn-on", on);
@@ -86,11 +86,11 @@
   function showImageError(img, error) {
     if (!btn || target !== img) return;
     const guard = { myRun: imgRunId, url: img.currentSrc || img.src, requestId: imageRequestIds.get(img) };
-    btn.title = imgErrorText({ error });
+    btn.ariaLabel = btn.title = imgErrorText({ error });
     btn.textContent = "×";
     window.setTimeout(() => {
       if (!dead && contextAlive() && btn && target === img && imageRequestIds.get(img) === guard.requestId && !isStaleImg(guard, img)) {
-        btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳");
+        btn.textContent = "訳"; btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳");
       }
     }, 4000);
   }
@@ -101,7 +101,10 @@
     btn.className = "__rt-img-btn";
     btn.type = "button";
     btn.textContent = "訳";
-    btn.title = tr("imgBtn", "画像内のテキストを翻訳");
+    // 見た目の文字は「訳」「原」「×」「…」の 1 文字だけなので、支援技術向けの名前 (aria-label) は title と同じ文言にする。
+    // title を変える箇所では必ず ariaLabel も同時に代入する (ARIA 属性反映: Chrome 81+ / Firefox 119+ で対応し、
+    // 本拡張の下限 Chrome 116 / Firefox 142 を満たす)。「…」(処理中) の間は直前の名前を保つ (title と同じ扱い)。
+    btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳");
     btn.addEventListener("click", (e) => {
       if (!e.isTrusted) return; // 合成 click を無視 (サイトが勝手に OCR させ、ページ内の機微画像を vision へ送るのを防ぐ)
       e.preventDefault();
@@ -153,10 +156,14 @@
   }
 
   function coversVideo(el, x, y) {
+    // VIDEO でも shadow host でもない要素は、可視判定の結果にかかわらず false。imgAtPoint は重なった全要素を
+    // ここへ通すため、先に isShown (祖先まで getComputedStyle を読む) を呼ぶと通常ページのホバーごとに
+    // 重なりの深さの二乗程度の style 読み出しが走る。安価な型判定で先に弾き、該当要素だけ可視判定する。
+    const isVideo = el.tagName === "VIDEO";
+    const root = isVideo ? null : el.shadowRoot;
+    if (!isVideo && (!root || typeof root.elementsFromPoint !== "function")) return false;
     if (!isShown(el)) return false;                     // 透明レイヤーは動画ごと無視して奥のサムネを生かす
-    if (el.tagName === "VIDEO") return true;
-    const root = el.shadowRoot;
-    if (!root || typeof root.elementsFromPoint !== "function") return false;
+    if (isVideo) return true;
     // ShadowRoot.elementsFromPoint は shadow 内の要素だけでなくホストの祖先 (light DOM 側のスタック) も返す。
     // 祖先へ再帰すると「祖先の root が子孫ホストを返し返す」相互再帰になり、shadow ネストが深いサイト
     // (Reddit の shreddit-* 等) で指数的に発散しメインスレッドを塞ぐ (= クリック不可のページ応答停止)。
@@ -180,9 +187,11 @@
     }
   }
 
-  function queryOpenRoots(selector) {
+  // roots を渡すと、その配列 (openRoots() を一度だけ展開したもの) を使う。clearAllImages のように
+  // 複数セレクタを続けて引くとき、open root の全 DOM 走査 (querySelectorAll("*")) を 1 回に抑えるため。
+  function queryOpenRoots(selector, roots = openRoots()) {
     const matches = [];
-    for (const root of openRoots()) {
+    for (const root of roots) {
       try { matches.push(...root.querySelectorAll(selector)); } catch (_e) { /* noop */ }
     }
     return matches;
@@ -446,9 +455,9 @@
         if (res && res.error === "animated") {
           animatedImgs.add(img);
           if (ownsBtn()) {
-            btn.title = imgErrorText(res);
+            btn.ariaLabel = btn.title = imgErrorText(res);
             btn.textContent = "×";
-            window.setTimeout(() => { if (btn && target === img) { btn.style.display = "none"; btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); } }, 2000);
+            window.setTimeout(() => { if (btn && target === img) { btn.style.display = "none"; btn.textContent = "訳"; btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳"); } }, 2000);
           }
           return;
         }
@@ -468,10 +477,10 @@
           // 失敗時は理由を title(ホバーで表示)に載せ、原因不明の無言失敗を防ぐ(ページ翻訳の errorText 相当)。
           // 失敗は読めるよう「×」を長め(4s)に保持し、文字無しは短く(1.5s)戻す。
           const failed = !(res && res.ok) || res.partial;
-          btn.title = failed ? imgErrorText(res?.partial ? { error: "output_truncated" } : res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
+          btn.ariaLabel = btn.title = failed ? imgErrorText(res?.partial ? { error: "output_truncated" } : res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
           btn.textContent = "×";
           window.setTimeout(() => {
-            if (myRun === imgRunId && ownsBtn()) { btn.textContent = "訳"; btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+            if (myRun === imgRunId && ownsBtn()) { btn.textContent = "訳"; btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
           }, failed ? 4000 : 1500);
         }
       });
@@ -519,11 +528,16 @@
   // 元の DOM 構造 (img が親の直接の子) に戻す (原文復元と連動)。
   function clearAllImages() {
     imgRunId++; // 世代を進めて進行中ホバー OCR の遅延描画を無効化する
-    queryOpenRoots(".__rt-img-wrap").forEach(unwrapImage);
+    // open root の列挙 (document + 開いた shadowRoot の全 DOM 走査) は 1 回だけ行い、3 段の後始末で共有する。
+    // 各段のセレクタ照会は前段の処理後に行う (unwrap で DOM が変わった後の状態を見る) ので、旧実装と同じ順序
+    // 「全 root の wrap 解除 → 全 root の style 復元 → 全 root の layer 除去」を保つ。unwrap は shadowRoot を
+    // 増減させないため、root の集合を先に固定しても結果は変わらない。
+    const roots = Array.from(openRoots());
+    queryOpenRoots(".__rt-img-wrap", roots).forEach(unwrapImage);
     // 念のため: ラッパー解除前に取り残された __rtPrevStyle 付き img/picture があれば素の状態へ戻す (二重防御)
-    queryOpenRoots("img[style*='100%']").forEach(restorePrevStyle);
+    queryOpenRoots("img[style*='100%']", roots).forEach(restorePrevStyle);
     // ラッパー無しで残っているレイヤーがあれば後始末
-    queryOpenRoots(".__rt-img-layer").forEach((l) => l.remove());
+    queryOpenRoots(".__rt-img-layer", roots).forEach((l) => l.remove());
     if (btn && target) {
       setBtnMode(target);
       if (!target.isConnected || !showImageButton || !imageCapable || animatedImgs.has(target)) btn.style.display = "none";

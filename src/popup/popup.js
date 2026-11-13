@@ -3,7 +3,8 @@
 /**
  * popup.js — ポップアップ UI (翻訳 / クイック翻訳 / API設定 / 自動翻訳除外)
  *
- * - 翻訳タブ: 自動翻訳トグル / 言語(元・先) / オプション / 翻訳・復元 / status / クイック翻訳
+ * - 翻訳タブ: 自動翻訳トグル / 言語(元・先) / オプション / 翻訳・復元 / status
+ * - クイック翻訳タブ: 入力テキストの翻訳 (言語はページ翻訳と独立した quickSourceLang / quickTargetLang)
  * - API設定タブ: サービス切替(状態) + キー入力 + 動的モデル一覧(新しい順10件 + コスト相対バー)
  * - 除外リストタブ: 自動翻訳しないURL/ホストglobを複数行で編集
  * モデルは GET_MODELS で動的取得し、選択中が消えていれば background がマイグレーションする。
@@ -27,6 +28,16 @@
       const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-placeholder"));
       if (m) el.placeholder = m;
     });
+    // 可視テキストが無い操作部品のアクセシブル名 (aria-label) も UI 言語に合わせる。
+    // 可視テキストがある部品は HTML 側で aria-labelledby を使い、ここでは扱わない。
+    document.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
+      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-aria-label"));
+      if (m) el.setAttribute("aria-label", m);
+    });
+    // <html lang> は popup.html の "ja" 固定のまま変えない。同じ文書に載る共有サポート部品
+    // (src/shared/kagayoi-support-*.js) が documentElement.lang で自身の表示言語を決めるため、ここで
+    // 書き換えると英語 UI でサポート欄の言語が変わる (しかも init は DOMContentLoaded 後なので、先に接続済みの
+    // フッターと後から開くポップアップで言語が食い違う)。変更する場合は共有部品の挙動と合わせて判断する。
   }
 
   // ---- タブ ----
@@ -56,7 +67,10 @@
   }
   function fillLangSelect(sel, includeAuto) {
     sel.replaceChildren();
-    (includeAuto ? Lang.LANGUAGES : Lang.targets()).forEach((l) => sel.appendChild(option(l.code, l.native)));
+    // 各言語はその言語自身の表記 (native) で並べるが、"auto" だけは言語名ではなく操作名なので UI 言語で出す
+    // (lang.js の native は「自動判定」固定のため、英語 UI でも日本語が出ていた)。lang.js の表は変えない。
+    (includeAuto ? Lang.LANGUAGES : Lang.targets()).forEach((l) =>
+      sel.appendChild(option(l.code, l.code === "auto" ? msg("langSourceAuto", l.native) : l.native)));
   }
 
   // ---- 翻訳タブ: サービス一覧 ----
@@ -245,6 +259,10 @@
     $("translate").disabled = !hasKey;
     const supportsPrompt = p && p.batch !== false;
     $("translation-style").disabled = !supportsPrompt;
+    // 言い換えはLLMのプロンプトで実現するため NMT では ON にさせない。ただし別PCから同期された ON を
+    // 戻せるよう、ON のときはチェックを外す操作だけ許可する。
+    $("rewrite-mode").disabled = !supportsPrompt && state.settings.rewriteMode !== true;
+    $("rewrite-style").disabled = !supportsPrompt;
     const custom = state.settings.translationStyle === "custom";
     $("custom-prompt-row").classList.toggle("hidden", !custom);
     $("custom-prompt").disabled = !supportsPrompt || !custom;
@@ -309,16 +327,38 @@
   // ---- 共通 ----
   function reflectStyleLanguage() {
     const japanese = state.settings.targetLang === "ja";
-    for (const id of ["style-osaka", "style-ibaraki"]) {
+    // 方言・ギャル文字は日本語専用なので、翻訳先が日本語のときだけ選択肢に出す。
+    // option の id (style-osaka 等) は popup.html の固定 id。一覧は SettingsSchema.JAPANESE_ONLY_STYLES を正本にする。
+    for (const style of SettingsSchema.JAPANESE_ONLY_STYLES) {
+      const id = `style-${style}`;
       $(id).hidden = !japanese;
       $(id).disabled = !japanese;
     }
     const style = state.settings.translationStyle;
-    $("translation-style").value = !japanese && ["osaka", "ibaraki"].includes(style) ? "natural" : style;
+    $("translation-style").value = !japanese && SettingsSchema.JAPANESE_ONLY_STYLES.includes(style) ? "natural" : style;
+  }
+
+  // 言い換えモードの表示。ON の間は翻訳元/翻訳先を「自動→自動」で固定表示し、スタイル欄を専用の選択へ入れ替える。
+  // 保存値 (sourceLang/targetLang/translationStyle) は書き換えないので、OFF に戻すと従来の設定がそのまま表示される。
+  function reflectRewriteMode() {
+    const on = state.settings.rewriteMode === true;
+    $("rewrite-mode").checked = on;
+    // 翻訳先には auto が無いため、言い換え中だけ表示用の「自動判定」を出す (init で追加する固定 option)。
+    const targetAuto = $("target-rewrite-auto");
+    if (targetAuto) { targetAuto.hidden = !on; targetAuto.disabled = !on; }
+    $("source").disabled = on;
+    $("target").disabled = on;
+    $("source").value = on ? "auto" : state.settings.sourceLang;
+    $("target").value = on ? "auto" : state.settings.targetLang;
+    $("rewrite-style-row").classList.toggle("hidden", !on);
+    $("translation-style-row").classList.toggle("hidden", on);
+    // 方言も常に選べる (日本語は方言へ、他言語はまろやかに言い換えるため、ページ言語で選択を制限しない)。
+    $("rewrite-style").value = state.settings.rewriteStyle;
   }
 
   function reflect() {
     reflectStyleLanguage();
+    reflectRewriteMode();
     if (!settingsDrafts.has("custom-prompt")) $("custom-prompt").value = state.settings.customPrompt;
     $("sync-settings").checked = state.settings.syncSettings === true;
     $("auto-translate").checked = Boolean(state.settings.autoTranslate);
@@ -339,8 +379,6 @@
       $("auto-translate-blacklist").value = blacklistBaseline.join("\n");
     }
     renderProviderList();
-    $("source").value = state.settings.sourceLang;
-    $("target").value = state.settings.targetLang;
     $("qt-source").value = state.settings.quickSourceLang;
     $("qt-target").value = state.settings.quickTargetLang;
     updateKeyWarning();
@@ -400,8 +438,11 @@
       persistentTranslationCache: "persistent-cache", showFab: "show-fab", showImageButton: "show-img-btn" })) {
       if (Object.hasOwn(patch, key)) $(id).checked = s[key] === true;
     }
+    // translationStyle はここで直接代入しない。翻訳先が日本語以外で保存値が方言・ギャル文字のとき、
+    // 直接代入すると非表示・無効の option が選ばれた表示になるため、下の reflectStyleLanguage() で
+    // 言語別の表示規則 (方言は natural で表示) を通して戻す。
     for (const [key, id] of Object.entries({ sourceLang: "source", targetLang: "target", selectionMode: "sel-mode",
-      translationStyle: "translation-style", quickSourceLang: "qt-source", quickTargetLang: "qt-target" })) {
+      quickSourceLang: "qt-source", quickTargetLang: "qt-target" })) {
       if (Object.hasOwn(patch, key)) $(id).value = s[key];
     }
     if (Object.hasOwn(patch, "fabOpacity")) {
@@ -416,7 +457,11 @@
       loadModels(false);
     }
     if (Object.hasOwn(patch, "translationStyle")) updateKeyWarning();
-    if (Object.hasOwn(patch, "targetLang")) reflectStyleLanguage();
+    if (Object.hasOwn(patch, "targetLang") || Object.hasOwn(patch, "translationStyle")) reflectStyleLanguage();
+    if (["sourceLang", "targetLang", "rewriteMode", "rewriteStyle"].some(key => Object.hasOwn(patch, key))) {
+      reflectRewriteMode();
+      updateKeyWarning();
+    }
     if (["quickSourceLang", "quickTargetLang"].some(key => Object.hasOwn(patch, key))) updateQtDir();
   }
 
@@ -493,15 +538,15 @@
     const prov = provId && Providers.get(provId);
     const pfx = prov ? `${prov.label}: ` : "";
     if (detail.error === "no_api_key") return pfx + msg("statusNoKey", "API key is not set");
+    if (detail.error === "rewrite_unsupported") return pfx + msg("statusRewriteUnsupported", "This service does not support rewrite mode");
     if (detail.error === "network") return pfx + msg("statusNetwork", "Network error");
     if (detail.error === "http") {
       if (detail.status === 401 || detail.status === 403) return pfx + msg("statusBadKey", "API key is invalid or unauthorized");
       if (detail.status === 429) {
         // 無料枠の 1 日上限 (RPD) / 残高切れは「待っても並列を下げても解けない」ので専用表示にする。
-        const lm = String(detail.message || "").toLowerCase();
-        const capped = lm.includes("perday") || lm.includes("per day") || lm.includes("per-day") ||
-          lm.includes("daily") || lm.includes("insufficient_quota");
-        if (capped) return pfx + msg("statusQuotaDaily", "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider.");
+        // 判定語は content の quotaScope と共有する (TranslationBatch.isDailyQuotaMessage)。popup は従来どおり
+        // per-minute を先に除外せず、この語を含めば専用表示にする (表示条件は変えない)。
+        if (TranslationBatch.isDailyQuotaMessage(detail.message)) return pfx + msg("statusQuotaDaily", "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider.");
       }
       let reason = "";
       if (detail.message) {
@@ -541,6 +586,19 @@
     const countEl = $("qt-count"), copyBtn = $("qt-copy"), clearBtn = $("qt-clear");
     const MAX = 5000;
     let timer = null, reqId = 0;
+    // コピー完了表示の世代。クリックのたび・訳文の描き直しのたびに進め、古い writeText の完了や
+    // 古い表示タイマーが新しい状態 (別の訳文・後続のコピー) を「✓ コピー」へ書き換えないようにする
+    // (選択バブル selection-translator.js の onCopy と同じ方式)。
+    let copySeq = 0;
+    const copyLabel = () => msg("qtCopy", "コピー");
+    // コピーボタンを通常表示へ戻し、進行中のコピー完了・表示タイマーを無効化する。
+    function resetCopy() {
+      copySeq++;
+      window.clearTimeout(copyBtn._t);
+      copyBtn._t = 0;
+      copyBtn.classList.remove("done");
+      copyBtn.textContent = copyLabel();
+    }
 
     inEl.placeholder = msg("qtPlaceholder", "ここに入力 / 貼り付け（このページは翻訳しません）");
     outEl.setAttribute("data-ph", msg("qtOutPlaceholder", "訳文がここに出ます"));
@@ -551,6 +609,7 @@
       countEl.classList.toggle("over", n > MAX);
     }
     function render(text, isErr) {
+      resetCopy(); // 訳文が変わったら旧訳文のコピー完了を表示しない
       outEl.classList.toggle("err", Boolean(isErr));
       outEl.replaceChildren();
       if (text) { const s = document.createElement("span"); s.className = "txt"; s.textContent = text; outEl.appendChild(s); }
@@ -640,15 +699,23 @@
     });
 
     clearBtn.addEventListener("click", () => { inEl.value = ""; reqId++; window.clearTimeout(timer); qt.classList.remove("busy"); setCount(); render(""); stopSpeak(); inEl.focus(); });
-    copyBtn.addEventListener("click", () => {
+    // writeText は Promise を返し、権限拒否・フォーカス喪失・clipboard 非対応で失敗し得る。完了を待ち、
+    // 成功したときだけ「✓ コピー」を出す (旧実装は待たずに成功表示し、reject も未処理のまま残っていた)。
+    copyBtn.addEventListener("click", async () => {
       const t = outEl.textContent || "";
       if (!t || outEl.classList.contains("err")) return;
-      try { navigator.clipboard.writeText(t); } catch (_e) { /* noop */ }
-      const orig = msg("qtCopy", "コピー");
+      resetCopy(); // 直前のコピー表示を消し、この操作の世代を確定する
+      const my = copySeq;
+      try { await navigator.clipboard.writeText(t); } catch (_e) { return; } // 同期例外・reject・clipboard 不在とも失敗扱い
+      if (my !== copySeq) return; // 待機中に訳文が変わった / 後続のコピーが始まった
       copyBtn.classList.add("done");
       copyBtn.textContent = msg("qtCopied", "✓ コピー");
-      window.clearTimeout(copyBtn._t);
-      copyBtn._t = window.setTimeout(() => { copyBtn.classList.remove("done"); copyBtn.textContent = orig; }, 1300);
+      copyBtn._t = window.setTimeout(() => {
+        if (my !== copySeq) return; // 前回のタイマーは新しいコピー表示を消さない
+        copyBtn.classList.remove("done");
+        copyBtn.textContent = copyLabel();
+        copyBtn._t = 0;
+      }, 1300);
     });
     setCount();
   }
@@ -658,6 +725,11 @@
     setLinks();
     fillLangSelect($("source"), true);
     fillLangSelect($("target"), false);
+    const targetAuto = option("auto", msg("langRewriteAuto", "自動判定"));
+    targetAuto.id = "target-rewrite-auto";
+    targetAuto.hidden = true;
+    targetAuto.disabled = true;
+    $("target").appendChild(targetAuto);
     fillLangSelect($("qt-source"), true);
     fillLangSelect($("qt-target"), false);
     const showSyncStatus = (value) => {
@@ -740,6 +812,14 @@
       updateKeyWarning();
       if (await saving) rerunQuickTranslate();
     });
+    // 言い換えモード: rewriteMode だけを保存する。翻訳元/翻訳先/翻訳スタイルの保存値には触れないので、
+    // OFF に戻すと従来の翻訳設定へそのまま戻る。
+    $("rewrite-mode").addEventListener("change", (e) => {
+      save({ rewriteMode: e.target.checked });
+      reflectRewriteMode();
+      updateKeyWarning();
+    });
+    $("rewrite-style").addEventListener("change", (e) => { save({ rewriteStyle: e.target.value }); });
     $("custom-prompt").addEventListener("input", () => settingsDrafts.add("custom-prompt"));
     $("custom-prompt").addEventListener("blur", async (e) => {
       const input = e.target;

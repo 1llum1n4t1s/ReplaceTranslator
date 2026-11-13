@@ -20,12 +20,6 @@ test("単一チャンクの完全 JSON から全要素を抽出し done にな�
   assert.equal(r.done, true);
 });
 
-test("文字列の途中で分割されても結合して確定する", () => {
-  const r = run(['{"translations":["あい', "うえ", 'お","次"]}']);
-  assert.deepEqual(r.out, ["あいうえお", "次"]);
-  assert.equal(r.done, true);
-});
-
 test("要素は確定した順に逐次返る (まだ閉じていない要素は返さない)", () => {
   const ex = StreamParse.createTranslationsExtractor();
   assert.deepEqual(ex.feed('{"translations":["first"'), ["first"]); // first だけ確定
@@ -72,11 +66,32 @@ test("done 後の余分なチャンクは無視する", () => {
   assert.deepEqual(ex.feed('garbage"x"'), []); // 終端後は何も拾わない
 });
 
-test("1 文字ずつ feed しても全要素を復元する (極端な分割耐性)", () => {
-  const full = '{"translations":["猫","犬","鳥"]}';
+// 要素が文字列でない崩れた応答では、キー名や後続要素を訳文として返すと添字がずれる。早出しの訳文は
+// applyOne で translatedNodes に登録され、完全パース失敗 (incomplete) 後の requeue でも直されないため、
+// 崩れを検出したらそれ以降は何も返さない (それまでに確定した要素の添字は正しい)。
+test("要素が文字列でない崩れた応答では、崩れ以降を返さず添字のずれた部分訳を出さない", () => {
+  const objects = run(['{"translations":[{"translation":"こんにちは"},{"translation":"世界"}]}']);
+  assert.deepEqual(objects.out, []);
+  assert.equal(objects.done, false);
+  const numberFirst = run(['{"translations":[1,"b"]}']);
+  assert.deepEqual(numberFirst.out, []);
+  // 崩れより前に確定した要素は正しい添字なので返す。
+  const mixed = run(['{"translations":["a",{"x":"b"},"c"]}']);
+  assert.deepEqual(mixed.out, ["a"]);
+  // 1 文字ずつ届いても同じ (崩れの検出はチャンク境界に依存しない)。
+  const ex = StreamParse.createTranslationsExtractor();
+  const out = [];
+  for (const ch of '{"translations":["a",null,"c"]}') out.push(...ex.feed(ch));
+  assert.deepEqual(out, ["a"]);
+});
+
+// 旧「文字列の途中で分割されても結合して確定する」はこのテストに統合した。複数文字の要素を
+// 1 文字ずつ feed するので、文字列の途中で分割されるあらゆる位置での結合をまとめて検証できる。
+test("1 文字ずつ feed しても全要素を復元する (文字列途中の分割を含む極端な分割耐性)", () => {
+  const full = '{"translations":["あいうえお","次","猫犬鳥"]}';
   const ex = StreamParse.createTranslationsExtractor();
   const out = [];
   for (const ch of full) out.push(...ex.feed(ch));
-  assert.deepEqual(out, ["猫", "犬", "鳥"]);
+  assert.deepEqual(out, ["あいうえお", "次", "猫犬鳥"]);
   assert.equal(ex.done(), true);
 });

@@ -18,14 +18,15 @@
 - `src/popup/` — ポップアップ UI（4タブ「翻訳 / クイック翻訳 / API設定 / 除外リスト」。設定は popup に統合済み、options ページは廃止）
 - `icons/` — `icon.svg`（原本）+ commit 済み `icon{16,48,128}.png`
 - `_locales/{en,ja}/messages.json` — i18n
-- `test/` — Node 標準テスト
+- `test/` — Bun の node:test 互換テスト（`bun test`。共有ヘルパーは `_source.js` / `_load-actions.js` / `_worker-harness.js`）
 - `webstore/` — ストア掲載素材（`*.html` テンプレ + `generate-screenshots.js`(puppeteer) → `images/{ja,en}/`、CWS/AMO listing テキスト）
 - `scripts/New-AmoMetadata.mjs` — AMO listing メタデータ（`amo-metadata.json`）生成スクリプト
 
 ## セットアップ
 ```
-bun install
+bun run deps
 ```
+lock の欠落・破損を拒否して固定復元する（`bun install` を直接使わない）。
 
 ## 開発（拡張機能の読み込み）
 - Chrome: `chrome://extensions` → デベロッパーモード ON → 「パッケージ化されていない拡張機能を読み込む」でリポジトリルートを選択
@@ -33,7 +34,7 @@ bun install
 
 ## テスト / Lint
 ```
-bun --bun run test        # Node 標準テスト（共有純粋関数・実ソースから抽出した関数の状態遷移・静的契約）
+bun --bun run test        # Bun の node:test 互換テスト（共有純粋関数・実ソースから抽出した関数の状態遷移・静的契約）
 bun --bun run lint    # ESLint（Flat Config）
 ```
 

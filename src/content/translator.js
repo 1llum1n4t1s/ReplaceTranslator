@@ -46,12 +46,20 @@
   const writtenValue = new WeakMap();   // Node → 我々が書き込んだ訳文 (ページ側の書き換えと区別するため)
   let originalReapplyAt = new WeakMap(); // Node → 原文書き戻しへ最後に訳文を再適用した時刻 (ページとの書き換え競合を止める)
   let recentScopeWrites = new WeakMap(); // 安定した親コンポーネント → 直近に訳文を書いた原文と時刻 (Text ノード再生成競合の検知)
+  let scopeConflictRetries = new WeakMap(); // 親コンポーネント → 原文 → 競合後に再適用を予約した回数
+  let pendingScopeRetries = [];          // 競合でページ側を優先したノードの再適用予約 {node, text, context, run, due}
+  let scopeRetryTimer = null;            // pendingScopeRetries を処理するタイマー
   const translatedNodes = new Set();    // 翻訳/処理済みノード (再翻訳防止 + 復元走査用)
   let budgetSkippedNodes = new WeakSet(); // 原文を保持しない上限超過ノードの重複処理を防ぐ
   // 原文テキスト → 訳文のセッション内メモ。SPA 再レンダで Text ノード実体が差し替わると WeakMap キーから
   // 外れて同一原文を再翻訳してしまう (= autoTranslate で「翻訳済みを何度も再翻訳」)。同じ原文を既に訳して
   // いれば API を呼ばずキャッシュ適用する。provider/targetLang が変わると訳が変わるので revert で clear する。
   const translationMemo = new Map();
+  // メモに登録済みの「原文」だけの集合。メモのキーは原文+文脈なので、引くには文脈 (前後 block の走査) が要る。
+  // 原文がこの集合に無ければどの文脈でもメモに当たらないことが確定するため、ingest は文脈計算を
+  // enqueue する分岐まで遅らせられる (画面外の監視中ブロックで文脈を計算して捨てる無駄を省く)。
+  // 書き込みは rememberTranslations の translationMemo.set 直後だけ、破棄は revertTranslations の clear と同時。
+  const memoTexts = new Set();
   // メモの上限 (巨大ページでの無制限増加を防ぐ。超過後は新規登録のみ停止＝先勝ちで hot text を保持)。
   // 訳文=原文 (固有名詞等) もキャッシュする分エントリが増えるため、無限スクロール (YouTube コメント等) で
   // 一度訳した原文が evict されて再送信されないよう、容量を厚めに取る (原文+訳文の文字列ペアで ~数百KB/千件)。
@@ -94,6 +102,11 @@
   const INCOMPLETE_REQUEUE_MAX = 2;     // incomplete/oversize を小バッチへ分割して再キューする上限 (無限ループ防止)
   const ORIGINAL_REAPPLY_COOLDOWN_MS = 1000; // ページが直後に原文へ戻したノードではページ側を優先し、MO の相互書き換えを止める
   const SCOPE_WRITE_MAX_TEXTS = 128;    // 1 コンポーネントで保持する競合検知用原文数 (巨大 Web Component での増加を上限化)
+  // 競合検知でページ側を優先したノードを、クールダウン後に訳文へ戻し直す回数の上限 (scope+原文単位)。
+  // GitHub の PR 画面のように React が本文 subtree を一度だけ作り直すページは再適用で訳文に揃え、
+  // 訳文を書くたびに原文ノードを作り直し続けるコンポーネントは上限到達後に従来どおりページ側で確定する。
+  const SCOPE_CONFLICT_MAX_RETRIES = 3;
+  const SCOPE_RETRY_PENDING_MAX = 2000; // 再適用待ちノード数の上限 (巨大ページでの保持量を抑える)
 
   // 初回翻訳 / SPA 遷移のあと、コンテンツが段階的に描画されるのを待って全体を取り込み直す遅延(ms)。
   // qiankun 等の micro-frontend や非同期チャートは初回 ingest 時に 0-height で、可視内で高さが付いても IO は
@@ -240,7 +253,11 @@
   }
 
   function scopeWriteIsRecent(node, text) {
-    const scope = rewriteScope(node);
+    return scopeTextIsRecent(rewriteScope(node), text);
+  }
+
+  // scope を確定済みの呼び出し元向け (再適用予約は DOM から外れたノードでも予約時の scope で判定する)。
+  function scopeTextIsRecent(scope, text) {
     const writes = scope && recentScopeWrites.get(scope);
     if (!writes) return false;
     const last = writes.get(text);
@@ -250,6 +267,91 @@
     writes.delete(text);
     writes.set(text, now);
     return true;
+  }
+
+  // 競合検知でページ側を優先したノードを、クールダウン後に 1 回だけ再適用する予約。
+  // rewriteScope は最寄りの custom element なので、GitHub の <react-app> のようにページ全体を包む要素が
+  // scope になると「訳文を書いた直後に React が本文 subtree を一度作り直した」だけでも競合と判定される。
+  // 予約せずに translatedNodes へ入れたままだと、作り直された原文ノードは二度と翻訳されず中途半端な訳になる。
+  // 予約の予算は scope+原文の「再描画ラウンド」単位で数える。相互書き換えするコンポーネントはノード自体を
+  // 作り直すためノード単位では数えられず、逆にノード単位で数えると、同じ原文のノードが一度の再描画で複数
+  // 作り直されたとき (GitHub の同一文言が並ぶ箇所) に予算を使い切って一部だけ取り残す。
+  function scopeRetryState(scope, text) {
+    let states = scopeConflictRetries.get(scope);
+    if (!states) { states = new Map(); scopeConflictRetries.set(scope, states); }
+    let st = states.get(text);
+    if (!st) {
+      if (states.size >= SCOPE_WRITE_MAX_TEXTS) states.delete(states.keys().next().value);
+      st = { count: 0, due: 0, appliedAt: 0 }; // due>0 の間は再適用ラウンドを予約中
+      states.set(text, st);
+    }
+    return st;
+  }
+
+  function scheduleScopeRetry(node, text, context) {
+    const scope = rewriteScope(node);
+    if (!scope || pendingScopeRetries.length >= SCOPE_RETRY_PENDING_MAX) return;
+    const st = scopeRetryState(scope, text);
+    const now = Date.now();
+    if (!st.due) {
+      // 前回の再適用からクールダウン以上たって起きた競合は、相互書き換えではなく別の再描画とみなして予算を戻す
+      // (長く開いた SPA で無関係な再描画が積み重なり、いずれ再適用されなくなるのを防ぐ)。
+      if (st.appliedAt && now - st.appliedAt >= ORIGINAL_REAPPLY_COOLDOWN_MS) st.count = 0;
+      if (st.count >= SCOPE_CONFLICT_MAX_RETRIES) return; // 争い続けるページ → 従来どおりページ側の原文で確定する
+      st.count += 1;
+      // scopeWriteIsRecent は直前に時刻を延長しているので、そこからクールダウンを過ぎた時点で再判定する。
+      st.due = now + ORIGINAL_REAPPLY_COOLDOWN_MS + 50;
+    }
+    pendingScopeRetries.push({ node, text, context, scope, state: st, run: runId });
+    armScopeRetryTimer();
+  }
+
+  function armScopeRetryTimer() {
+    if (scopeRetryTimer || pendingScopeRetries.length === 0) return;
+    let due = Infinity;
+    for (const it of pendingScopeRetries) if (it.state.due < due) due = it.state.due;
+    scopeRetryTimer = window.setTimeout(flushScopeRetries, Math.max(0, due - Date.now()));
+  }
+
+  function clearScopeRetries() {
+    if (scopeRetryTimer) window.clearTimeout(scopeRetryTimer);
+    scopeRetryTimer = null;
+    pendingScopeRetries = [];
+  }
+
+  function flushScopeRetries() {
+    scopeRetryTimer = null;
+    if (!contextAlive()) { pendingScopeRetries = []; return; }
+    const now = Date.now();
+    const ready = [], rest = [];
+    for (const it of pendingScopeRetries) (it.state.due && it.state.due <= now ? ready : rest).push(it);
+    pendingScopeRetries = rest;
+    // ラウンドごとに競合判定を 1 回だけ、適用より先に済ませる。適用しながら判定すると、この flush で書いた
+    // 自分の訳文を「直近の書き込み」と誤認し、同じ原文の 2 つ目以降のノードを争い中として取りこぼす。
+    const fighting = new Map(); // ラウンド状態 → まだページと争っているか
+    for (const it of ready) {
+      if (!fighting.has(it.state)) fighting.set(it.state, scopeTextIsRecent(it.scope, it.text));
+    }
+    for (const st of fighting.keys()) st.due = 0; // ラウンド終了 (争い中なら下の再予約が新ラウンドを開く)
+    if (translating) {
+      for (const it of ready) {
+        const node = it.node;
+        // 旧 run の予約・DOM から外れたノード・ページが別文言へ変えたノード・既に訳文を書いたノードは対象外。
+        if (it.run !== runId || !node.isConnected || node.nodeValue !== it.text || originalMap.has(node)) continue;
+        if (!translatedNodes.has(node)) continue; // 復元や characterData 経路で状態が変わったものは通常経路に任せる
+        if (fighting.get(it.state)) { scheduleScopeRetry(node, it.text, it.context); continue; } // まだ争い中
+        const memo = translationMemo.get(memoKey(it.text, it.context));
+        if (memo !== undefined) {
+          applyOne({ node, text: it.text, context: it.context }, memo);
+          it.state.appliedAt = now;
+          continue;
+        }
+        // メモが消えていれば (provider 変更等) 通常の取り込みからやり直す。
+        translatedNodes.delete(node);
+        ingest(node.parentNode || node);
+      }
+    }
+    armScopeRetryTimer();
   }
 
   // テキストノードを監視すべきブロック要素 (インライン親は透過して上へ辿る)
@@ -421,22 +523,36 @@
       // メモ適用なら API も reflow も無く、MO コールバック内の同期書き換えなのでペイント前に訳文へ戻りちらつかない。
       // 原文が実際に変化したとき (時刻が進んで "12 minutes ago" 等) はメモミス → 下の通常経路で訳す (翻訳を維持する)。
       const block = blockAncestor(node);
-      let context = "";
-      if (!isNmtProvider()) {
+      // 文脈 (前後 block / 隣接テキストの走査) は重いので必要になった分岐でだけ計算する。
+      // memoTexts に原文が無ければメモには当たらないことが確定する → ここでは計算せず、enqueue する分岐で
+      // contextOf() を呼ぶ (画面外の監視中ブロックは IO 発火時に onIntersect 側で計算されるので、ここでは捨てていた)。
+      // contextOf は ingest 内の contextCache (block ごとの snapshot) を使う。enqueue の内蔵フォールバックに
+      // 任せるとノードごとに snapshot を取り直して重くなるため、enqueue へは必ず文字列を渡す。
+      const contextOf = () => {
+        if (isNmtProvider()) return ""; // NMT は文脈を送らない (exact-text 経路)
         let snapshot = contextCache.get(block);
         if (!snapshot) { snapshot = blockContextSnapshot(block); contextCache.set(block, snapshot); }
-        context = translationContext(node, block, snapshot);
+        return translationContext(node, block, snapshot);
+      };
+      let context = null; // null = 未計算
+      let memo;
+      if (memoTexts.has(node.nodeValue)) {
+        // メモに当たり得る原文だけ、従来どおり文脈を計算してメモを引く。
+        context = contextOf();
+        memo = translationMemo.get(memoKey(node.nodeValue, context));
       }
-      const memo = translationMemo.get(memoKey(node.nodeValue, context));
       if (memo !== undefined) {
         // ページが訳文への反応として同じ custom element 内の Text ノードを原文で作り直した場合は、ページ側を優先する。
         // translatedNodes に残すため同じノードを再キューせず、別テキストやクールダウン後の更新は通常どおり翻訳できる。
-        if (scopeWriteIsRecent(node, node.nodeValue)) translatedNodes.add(node);
-        else applyOne({ node, text: node.nodeValue, context }, memo);
+        if (scopeWriteIsRecent(node, node.nodeValue)) {
+          translatedNodes.add(node);
+          scheduleScopeRetry(node, node.nodeValue, context); // 一度きりの再描画ならクールダウン後に訳文へ戻す
+        } else applyOne({ node, text: node.nodeValue, context }, memo);
         dc.memo++;
         continue;
       }
-      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y, context); immediate = true; dc.flushedHit++; continue; }
+      // ここから先で文脈が要るのは enqueue する 2 分岐だけ (メモ照会で計算済みならそれを再利用する)。
+      if (flushedBlocks.has(block)) { enqueue(node, metaOf(block).y, context !== null ? context : contextOf()); immediate = true; dc.flushedHit++; continue; }
       if (observedBlocks.has(block)) {
         // 監視中ブロックは原則 IO 発火待ちで rect を読まない(性能)。例外1: 初回 0×0 で observe した block は
         // 高さが付いて near 化したか毎回再評価する(0×0→サイズ付与の in-viewport 遷移は IO が発火しないことが
@@ -456,7 +572,7 @@
         // 既に可視(+先読み)圏内 → IO の初期通知に頼らず即翻訳に回す(スクロールしないと訳されない問題の解消)
         flushedBlocks.add(block);
         observedBlocks.add(block);
-        enqueue(node, meta.y, context);
+        enqueue(node, meta.y, context !== null ? context : contextOf());
         immediate = true;
         dc.near++;
       } else {
@@ -547,18 +663,16 @@
   function quotaScope(res) {
     if (!res || res.error !== "http" || res.status !== 429) return null;
     const m = String(res.message || "").toLowerCase();
+    // per-minute を先に判定する (「per minute ... daily」の両方を含む本文は RPM 扱い = リトライ可能に倒す)。
     if (m.includes("perminute") || m.includes("per minute") || m.includes("per-minute")) return "minute";
-    if (m.includes("perday") || m.includes("per day") || m.includes("per-day") || m.includes("daily")) return "day";
-    if (m.includes("insufficient_quota")) return "day"; // OpenAI 互換: 残高切れ = リトライ無駄
+    // 1 日上限 / 残高切れの判定語は popup の表示と共有する (TranslationBatch.isDailyQuotaMessage が単一ソース)。
+    if (TranslationBatch.isDailyQuotaMessage(m)) return "day";
     return null;
   }
 
-  // 入力サイズ起因の 400 (context-length / request-too-large) はバッチ固有のエラー → BatchTuner がサイズを
-  // 縮めれば通る。設定/リクエスト形状起因の 400 (モデル非対応パラメータ等) は全バッチ同型に必ず失敗するので
-  // fatal のまま扱う。本文を見て両者を切り分け、サイズ 400 は per-batch の一時エラー (skip→partial) に倒す。
-  function isOversizeRequest(res) {
-    return TranslationBatch.isOversize(res);
-  }
+  // 入力サイズ起因の 400 (context-length / request-too-large) と設定起因の 400 の切り分けは
+  // TranslationBatch.isOversize が担い、flush worker は classifyBatchResult 経由で使う
+  // (旧 isOversizeRequest ラッパーは分類器へ集約したため撤去した)。
 
   // 一時エラー (429 / 通信 / 5xx) は指数バックオフでリトライ。致命的/恒久エラーはそのまま返す。
   async function sendBatchWithRetry(batch, myRun) {
@@ -660,6 +774,7 @@
       if (t === src && !full) continue; // 部分失敗の原文返しはキャッシュしない (後で訳し直せるよう残す)
       if (translationMemo.size >= MEMO_MAX && !translationMemo.has(key)) continue;
       translationMemo.set(key, t);
+      memoTexts.add(src); // MEMO_MAX で弾いた行は登録しない (memoTexts は「メモに当たり得る原文」だけを持つ)
     }
   }
 
@@ -732,39 +847,29 @@
         for (const b of batch) releaseBatchItem(b);
         // バッチサイズ自動学習は background(tuningMem) を単一ソースとし、ok/エラー問わず nextBatchSize を採用する。
         if (res && res.nextBatchSize) currentBatchSize = res.nextBatchSize;
-        if (res && res.ok && Array.isArray(res.translations)) {
+        // 応答の分類 (判定の順序と条件) は TranslationBatch.classifyBatchResult が単一ソース。ここは副作用だけを持つ。
+        const outcome = TranslationBatch.classifyBatchResult(res, { isNmt: isNmtProvider(), quotaScope: quotaScope(res) });
+        if (outcome.kind === "apply") {
           applyTranslations(batch, res.translations);
           rememberTranslations(batch, res.translations, true); // 正常応答 → 訳文=原文 (変化なし) もキャッシュし再送信を断つ
-        } else if (res && res.error === "no_api_key") {
-          fatal = res; // キーが無ければ何も訳せない → 全体中断
-          return;
-        } else if (res && res.error === "http" && ((res.status === 400 && !isOversizeRequest(res)) || res.status === 401 || res.status === 403 || res.status === 404) && !isNmtProvider()) {
-          // LLM の恒久エラーは全体中断して popup/FAB に理由を通知する (NMT は per-text 制限なので除外):
-          //  401/403 = キー無効/失効、400 = リクエスト不正 (モデル非対応パラメータ等)、404 = モデルが見つからない。
-          // いずれもリクエスト形状/設定が原因で全バッチ同型 → 1 バッチ失敗なら残りも必ず失敗する。
-          // skip して done にすると「未翻訳なのにエラーも出ない (理由不明で詰む)」ため、無言 skip せず原因を見せる。
-          // ただし入力サイズ起因の 400/413 (isOversizeRequest) はバッチ固有 → 小バッチ再キューへ流し、
-          // 残りのバッチは訳し続ける (BatchTuner が縮めれば後続は通る。全体中断しない)。
+        } else if (outcome.kind === "fatal") {
+          // 全体中断して popup/FAB に理由を通知する。分類器が fatal にするのは次のとき:
+          //  - no_api_key / rewrite_unsupported: キーが無い / 言い換え非対応 (NMT) なら何も訳せない
+          //  - LLM の恒久エラー 401/403 (キー無効/失効)・400 (リクエスト不正)・404 (モデル無し): 全バッチ同型に失敗する。
+          //    skip して done にすると「未翻訳なのにエラーも出ない (理由不明で詰む)」ため、無言 skip せず原因を見せる。
+          //    入力サイズ起因の 400/413 (TranslationBatch.isOversize) はバッチ固有なので fatal にせず requeue へ流す。
+          //  - 無料枠の 1 日上限 (RPD) / 残高切れの 429: リトライも並列削減も無駄。errorText が statusQuotaDaily へ展開する
+          //  - allFailed: バッチ全件失敗 (MyMemory クォータ枯渇等)。無言で done にせずエラー通知する
           fatal = res;
           return;
-        } else if (res && res.error === "http" && res.status === 429 && quotaScope(res) === "day" && !isNmtProvider()) {
-          // 無料枠の 1 日上限 (RPD) / 残高切れによる 429。その日は何度投げても・並列を下げても全て 429 になり、
-          // リトライ(指数バックオフ)は時間の無駄、droppedTransient で「一部未翻訳」に流すと原因が分からず詰む。
-          // 全体中断して popup/FAB に「利用上限に達した」と明示する (errorText が statusQuotaDaily へ展開)。
-          fatal = res;
-          return;
-        } else if (res && res.allFailed) {
-          // バッチ全件失敗 (MyMemory クォータ枯渇等で 1 件も訳せず)。無言で done にせずエラー通知し原因を見せる。
-          fatal = res;
-          return;
-        } else if (res && Array.isArray(res.translations)) {
+        } else if (outcome.kind === "partial") {
           // 一時エラーでも部分的に成功した訳文は適用する (MyMemory は 1 件の 429/通信失敗で
           // バッチ全体が ok:false になるが成功分は translations に入る)。失敗分は原文のままなので
           // applyTranslations が書き換えをスキップし、全ノードは処理済み化されて再翻訳ループも防ぐ。
           applyTranslations(batch, res.translations);
           markFailedTranslations(batch, res.failedIndices);
           rememberTranslations(batch, res.translations, false); // 部分成功 → 原文返しは失敗かもしれずキャッシュしない
-        } else if (res && (res.error === "incomplete" || isOversizeRequest(res))) {
+        } else if (outcome.kind === "requeue") {
           // LLM 出力が途中で切れた/入力上限を超えた。確定済みの partial (nodeValue が訳文へ
           // 書き換わったノード) はそのまま残し、まだ原文のままのノードだけ能動的に queue へ戻す。
           // queue に積めば flush 末尾の queue.length>0 判定で再 flush され、BatchTuner が縮めたサイズで
@@ -793,8 +898,8 @@
           // (無言 skip で「完了なのに訳されてない」を防ぐ)。
           // stale_session (SW 再起動でセッション復元に失敗した後続バッチ) も未訳のまま残るので数える
           // (通常は myRun ガード/ensurePageSessions で先に救済され、ここに来るのは縁ケースのみ)。
-          const isTransientDrop = res && (res.error === "network" || res.error === "runtime" || res.error === "stale_session" ||
-            (res.error === "http" && (res.status === 429 || res.status >= 500)) || isOversizeRequest(res));
+          // transient の判定は classifyBatchResult が返す (null 応答・aborted・context 等は数えない)。
+          const isTransientDrop = outcome.transient;
           for (const group of batch) {
             for (const b of batchMembers(group)) {
               translatedNodes.add(b.node);
@@ -805,7 +910,11 @@
       }
     }
     await Promise.all(Array.from({ length: concurrencyFor() }, worker));
-    flushing = false;
+    // 自分の run のときだけ flushing を下ろす。await 中に再翻訳 (startTranslate) が始まると、新 run は
+    // flushing=false にリセットして自分の flush を走らせる。古い flush がここで無条件に下ろすと、走行中の
+    // 新 flush を「走っていない」と見なし、新 run の 1.5 秒保険タイマー (maybeAnnounceDone) が訳し終える前に
+    // done を通知してしまう (T-D1)。他 run の flushing はその run の flush / startTranslate が管理する。
+    if (myRun === runId) flushing = false;
     if (fatal && myRun === runId) { notifyProgress("error", { detail: fatal }); return; }
     // 走行中に新規追加された分があれば次サイクルで処理
     if (myRun === runId && translating && queue.length > 0) { scheduleFlush(); return; }
@@ -1162,7 +1271,10 @@
     budgetSkippedNodes = new WeakSet();
     originalReapplyAt = new WeakMap();
     recentScopeWrites = new WeakMap();
+    scopeConflictRetries = new WeakMap();
+    clearScopeRetries();
     translationMemo.clear(); // provider/targetLang 変更での再翻訳時に古い訳をキャッシュ適用しないよう破棄
+    memoTexts.clear(); // メモと必ず同時に破棄する (残すと ingest がメモに当たらない原文で文脈を無駄に計算する)
   }
 
   async function startTranslate(newSettings, newSessionId, manual) {
@@ -1192,7 +1304,18 @@
     // 自動翻訳では、ページ言語=翻訳先のページを翻訳しない
     // (日本語ページの英語メニュー等の断片を巻き込まない + API 呼び出しゼロ)。
     // popup/FAB/右クリックからの手動翻訳は、少数の異言語テキストを明示的に訳したい意図なのでこの判定を通さない。
-    if (settings.sourceLang === "auto") {
+    if (settings.rewriteMode === true) {
+      // 言い換えモード: 同じ言語のまま書き換えるので同一言語スキップを通さない (手動・自動とも)。
+      // 翻訳元/翻訳先の保存値は使わず、ページ主要言語を両方に入れて送る (popup も「自動→自動」固定表示)。
+      translating = false;
+      runId += 1;
+      const myDetect = runId;
+      const detected = await detectPageLang();
+      if (runId !== myDetect) return;
+      const rewriteLang = Lang.resolveRewriteLang(detected);
+      dbg("rewrite detectPageLang lang=", detected.lang, "style=", settings.rewriteStyle);
+      settings = Object.assign({}, settings, { sourceLang: rewriteLang, targetLang: rewriteLang });
+    } else if (settings.sourceLang === "auto") {
       translating = false; // 検出の await 中は旧 observers/ループを止めておく
       runId += 1;
       const myDetect = runId;

@@ -59,9 +59,9 @@ const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA
 const loop = Buffer.from([0x21, 0xff, 11, ...Buffer.from("NETSCAPE2.0"), 3, 1, 0, 0, 0]);
 const imageUrl = "https://images.example.com/text.gif";
 const contentSender = { id: "translation-test", url: "https://example.com/", tab: { id: 1 } };
-const imageHarness = ({ provider = "openai", bytes = gif, mime = "image/gif", result = envelope(provider, '{"blocks":[]}') } = {}) => {
+const imageHarness = ({ provider = "openai", bytes = gif, mime = "image/gif", result = envelope(provider, '{"blocks":[]}'), settings = {} } = {}) => {
   const apiRequests = [];
-  const h = workerHarness({ initial: { provider, apiKeys: { [provider]: "test-key" } },
+  const h = workerHarness({ initial: { ...settings, provider, apiKeys: { [provider]: "test-key" } },
     fetchResponse: (url, options) => {
       if (url === imageUrl) return new Response(bytes, { headers: { "content-type": mime } });
       if (options.method === "POST") {
@@ -91,6 +91,20 @@ test("実SWの画像経路: 不正応答も打ち切りも再送せず、利用�
     assert.equal(partial.image.base64, gif.toString("base64"), provider);
     assert.equal(h.apiRequests.length, 1, provider);
   }
+});
+
+// 画像翻訳は SW が rewriteMode:false を強制するのではなく、buildImageRequest へ言い換えの指定を渡さないことで
+// 通常翻訳になる (DESIGN.md「状態と保存」)。保存値が言い換え ON でも翻訳スタイルだけが画像要求に入ることを確かめる。
+test("実SWの画像経路: 言い換えONの保存値でも言い換え文を送らず、翻訳スタイルを適用する", async () => {
+  const h = imageHarness({ settings: { rewriteMode: true, rewriteStyle: "toxic", translationStyle: "cute" } });
+  assert.equal((await h.translate()).ok, true);
+  assert.equal(h.apiRequests.length, 1);
+  const body = JSON.stringify(h.apiRequests[0]);
+  assert.match(body, /adorable/, "cute の翻訳スタイル指示が入る");
+  // 下の2つの否定は、画像プロンプトの組み立てが将来 rewriteMode を参照するようになった場合の退行検出用。
+  // 現状の buildImagePrompt は rewriteMode を見ないため、SW が誤って指定を渡しても落ちない点に注意する。
+  assert.doesNotMatch(body, /Never translate/, "言い換えプロンプトは入らない");
+  assert.doesNotMatch(body, /snarky/, "toxic の言い換え指示も入らない");
 });
 
 const pngChunk = (type, data) => {
@@ -133,8 +147,13 @@ test("実SWのアニメ判定: 2フレームGIF・APNG・アニメWebPをAPI呼�
     [webp(vp8x, webpChunk("EXIF", Buffer.alloc(70001)), webpChunk("ANIM", Buffer.alloc(6))), "image/webp"],
   ]) {
     const h = imageHarness({ bytes, mime });
+    // アニメ画像は vision を呼ばないので base64 化 (最大 8MB の文字列生成) もしない。SW の btoa 呼び出しを数える。
+    let encoded = 0;
+    const btoa = h.context.btoa;
+    h.context.btoa = value => { encoded++; return btoa(value); };
     assert.deepEqual(await h.translate(), { ok: false, error: "animated" }, mime);
     assert.equal(h.apiRequests.length, 0, mime);
+    assert.equal(encoded, 0, `${mime}: アニメ判定より前に base64 化しない`);
   }
 });
 

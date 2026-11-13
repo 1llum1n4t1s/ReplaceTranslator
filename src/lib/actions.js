@@ -86,7 +86,9 @@
     MODELS_CACHE: "modelsCache",   // 動的取得したモデル一覧 {provider: {models, fetchedAt}}
     PRICING_CACHE: "pricingCache", // models.dev から取得した動的価格 {map: {modelId: {input, output}}, fetchedAt}
     BATCH_TUNING: "batchTuning",   // バッチサイズ自動学習の状態 {provider: {size, throughput, dir}}
-    CONTENT_FLAGS: "contentFlags", // content script 用の非機密フラグ {autoTranslate, showFab, imageCapable} (apiKeys を含めない)
+    // content script 用の非機密フラグ {autoTranslate, showFab, showImageButton, imageCapable, selectionMode, fabOpacity}
+    // (apiKeys を含めない。項目の正本は service_worker.js の contentFlagsOf)
+    CONTENT_FLAGS: "contentFlags",
     TRANSLATION_CACHE: "translationCacheV1", // storage.session 限定の原文完全一致キャッシュ (ブラウザ終了で消去)
     PERSISTENT_TRANSLATION_CACHE: "persistentTranslationCacheV1", // 明示 opt-in 時だけ storage.local に保存する翻訳キャッシュ
   });

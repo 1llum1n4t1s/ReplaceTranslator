@@ -58,3 +58,30 @@ test("モデル更新で選択中モデルを移行した場合も実際のモ�
   assert.equal(list.currentModel, "fugu-max");
   assert.equal(h.disk.settings.models.fugu, "fugu-max");
 });
+
+test("通常経路とstream経路は同じ要求オプションを使い、差は stream 指定だけになる", async () => {
+  const bodies = [];
+  const h = workerHarness({ initial: { provider: "openai", apiKeys: { openai: "test-key" },
+    models: { openai: "gpt-5-mini" }, reasoningEfforts: { openai: { "gpt-5-mini": "high" } },
+    translationStyle: "custom", customPrompt: "Use a formal tone", sourceLang: "en", targetLang: "ja" },
+  fetchResponse: async (url, options) => {
+    if (!new URL(url).pathname.endsWith("/chat/completions")) return null;
+    const body = JSON.parse(options.body);
+    bodies.push(body);
+    // stream 要求は「stream 非対応」の 400 で拒否し、SW が同じ batch を通常経路で送り直すようにする。
+    if (body.stream) return new Response(JSON.stringify({ error: { message: "stream is not supported" } }), { status: 400 });
+    return Response.json({ choices: [{ message: { content: '{"translations":["こんにちは"]}' } }] });
+  } });
+  const content = { id: "translation-test", url: "https://example.com/", tab: { id: 1 }, frameId: 0 };
+  const res = await h.send({ action: "TRANSLATE_BATCH", quick: true, batchId: 1, texts: ["Hello"], contexts: ["greeting"] }, content);
+  assert.equal(res.ok, true);
+  assert.equal(bodies.length, 2);
+  const [streamed, plain] = bodies;
+  assert.equal(streamed.stream, true);
+  assert.deepEqual(streamed.stream_options, { include_usage: true });
+  assert.ok(!("stream" in plain) && !("stream_options" in plain));
+  const { stream: _s, stream_options: _o, ...rest } = streamed;
+  assert.deepEqual(rest, plain);
+  assert.equal(plain.reasoning_effort, "high");
+  assert.match(plain.messages[0].content, /Use a formal tone/);
+});

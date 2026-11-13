@@ -334,7 +334,11 @@
   function flatBoxOf(ctx, blk, W, H) {
     if (!blk || !blk.box || typeof blk.translation !== "string" || !blk.translation) return null;
     const { x, y, w, h } = blockPixelRect(blk, W, H);
-    const st = ringStats(ctx, x, y, w, h, W, H);
+    // 背景の画素読み取り (getImageData) は block ごとに 1 回にする。renderInpaint では computeGroupFonts →
+    // pixelBoxOf が同じ blockPixelRect で計測済みの結果を blk.__rtBackground に入れているので再利用する。
+    // その計測は塗りつぶし (fillInterlineStrips / erase / draw) より前に行われるため、塗った後の画素を読む心配はない。
+    // null は「計測済みで結果なし」なのでそのまま再利用し、未設定 (undefined) のときだけ自分で計測する。
+    const st = blk.__rtBackground !== undefined ? blk.__rtBackground : ringStats(ctx, x, y, w, h, W, H);
     if (!st || st.std >= 24 || (st.alpha != null && st.alpha < 0.5)) return null; // flat 不透明背景のみ (textured/透過は除外し行間 fill を乗せない)
     return { x0: x, y0: y, x1: x + w, y1: y + h, w, h, color: st.color };
   }
@@ -743,6 +747,8 @@
       });
       const bounds = imageContentBounds(W, H);
       ctx.save(); ctx.beginPath(); ctx.rect(bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0); ctx.clip();
+      // fillInterlineStrips (flatBoxOf) は上の computeGroupFonts が塗りつぶし前に測った blk.__rtBackground を再利用する。
+      // 順序 (計測 → 塗りつぶし) を入れ替えると、塗った後の画素を背景として読むことになるので注意。
       try { fillInterlineStrips(ctx, fitBlocks, W, H); } catch (_e) { /* 失敗時は per-block fill のみ */ }
       for (const blk of fitBlocks) {
         if (!blk || !blk.box || !blk.translation) continue;

@@ -78,6 +78,14 @@
       && !(Number(otherPct) >= Number(threshold));
   }
 
+  // 言い換えモードで送る言語 (翻訳元=翻訳先) を決める。言い換えは同じ言語のまま書き換えるため、
+  // 同一言語スキップ (shouldSkipSameLanguage) は通さず、どのスタイルでもページ言語を問わず実行する
+  // (方言スタイルも日本語以外の要素は「まろやか」で穏やかにするので、言語でスキップしない)。
+  // detected: detectPageLang() の {lang, langs}。返り値: ページ主要言語 (不明なら "auto")。
+  function resolveRewriteLang(detected) {
+    return detected && typeof detected.lang === "string" && detected.lang ? detected.lang : "auto";
+  }
+
   const Lang = Object.freeze({
     LANGUAGES: Object.freeze(LANGUAGES.map((l) => Object.freeze(l))),
     get,
@@ -85,6 +93,7 @@
     targets,
     normalizeCode,
     shouldSkipSameLanguage,
+    resolveRewriteLang,
   });
 
   globalThis.Lang = Lang;

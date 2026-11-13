@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { workerLibScripts } = require("./_source.js");
 
 // 実際のSW・共有ライブラリを読み、ブラウザー保存と外部APIだけを置換する。
 module.exports = function workerHarness({ initial = {}, disk = { settings: initial }, session = {}, catalog = {}, models = {}, fetchResponse, localGet } = {}) {
@@ -51,8 +52,9 @@ module.exports = function workerHarness({ initial = {}, disk = { settings: initi
         candidates: [{ content: { parts: [{ text }] } }] });
     },
   });
-  for (const file of ["actions", "translation-core", "lang", "model-pricing", "providers", "stream", "settings-sync"]) {
-    vm.runInContext(fs.readFileSync(path.join(root, "src/lib", `${file}.js`), "utf8"), context);
+  // lib の読み込み順は SW の importScripts(...) から導出する (Chrome の実ロード順とテストで二重管理しない)。
+  for (const rel of workerLibScripts()) {
+    vm.runInContext(fs.readFileSync(path.join(root, rel), "utf8"), context);
   }
   vm.runInContext(fs.readFileSync(path.join(root, "src/service_worker.js"), "utf8"), context);
   const extension = { id: chrome.runtime.id, url: chrome.runtime.getURL("src/popup/popup.html") };

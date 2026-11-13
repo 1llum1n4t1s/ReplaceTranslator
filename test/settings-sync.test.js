@@ -51,8 +51,8 @@ const harness = ({ initial = {}, remote = {}, local, device = "device-a", time =
     failSync: v => { failSync = v; }, failLocal: v => { failLocal = v; }, time: v => { time = v; }, beforeGet: fn => { beforeGet = fn; } };
 };
 
-test("OFFは同期通信せず、明示trueだけ有効", async () => {
-  for (const v of [undefined, false, "true", 1]) assert.equal(SettingsSchema.normalize({ syncSettings: v }).syncSettings, false);
+// syncSettings の「明示 true だけ有効」は actions.test.js の opt-in フラグ表で検証する。ここは同期通信の有無だけを見る。
+test("OFFは同期通信しない", async () => {
   const h = harness(); await h.receiveSyncedSettings(); await h.applySettingsPatch({ targetLang: "en" });
   assert.equal(h.reads(), 0); assert.equal(h.writes.length, 0);
 });
@@ -76,7 +76,28 @@ test("翻訳スタイルと2000文字の追加指示は同期・再起動・空�
   assert.equal(a.settings().customPrompt, "");
 });
 
-test("V1を初参加時だけ取り込み、V2保存後に旧キーを撤去する", async () => {
+test("言い換えモードと言い換えスタイルは同期し、OFFに戻すと翻訳設定がそのまま残る", async () => {
+  const remote = {}, a = harness({ remote });
+  await a.applySettingsPatch({ syncSettings: true });
+  await a.applySettingsPatch({ sourceLang: "en", targetLang: "ja", translationStyle: "cute" });
+  a.time(150);
+  await a.applySettingsPatch({ rewriteMode: true, rewriteStyle: "ibaraki" });
+  const b = harness({ remote, device: "device-b" });
+  await b.applySettingsPatch({ syncSettings: true });
+  assert.equal(b.settings().rewriteMode, true);
+  assert.equal(b.settings().rewriteStyle, "ibaraki");
+  assert.equal(b.settings().sourceLang, "en");
+  assert.equal(b.settings().targetLang, "ja");
+  assert.equal(b.settings().translationStyle, "cute");
+  b.time(200);
+  await b.applySettingsPatch({ rewriteMode: false });
+  await a.receiveSyncedSettings();
+  assert.equal(a.settings().rewriteMode, false);
+  assert.equal(a.settings().rewriteStyle, "ibaraki");
+  assert.equal(a.settings().translationStyle, "cute");
+});
+
+test("V1を初参加時だけ取り込み、V3保存後に旧キーを撤去する", async () => {
   const h = harness({ initial: { apiKeys: { openai: "local-test-key" }, persistentTranslationCache: true },
     remote: { "settingsSyncV1.targetLang": "fr", "settingsSyncV1.apiKeys": { openai: "remote-test-key" } } });
   await h.applySettingsPatch({ syncSettings: true });
@@ -202,7 +223,7 @@ test("古いpopupからの差分は他のモデル・推論量・除外ルール
   assert.deepEqual(next.autoTranslateBlacklist, ["remote.example", "local.example"]);
 });
 
-test("V2送信と旧キー削除の失敗は再起動後に完了できる", async () => {
+test("V3送信と旧キー削除の失敗は再起動後に完了できる", async () => {
   for (const fail of ["failUpload", "failRemove"]) {
     const h = harness({ remote: { "settingsSyncV1.targetLang": "fr" } }); h[fail](true);
     await h.applySettingsPatch({ syncSettings: true });
@@ -235,6 +256,9 @@ test("アラームと同期イベントから再収束処理へ接続する", as
   listener({ unrelated: { newValue: 1 } }, "sync");
   listener({ [S.KEYS[0]]: { newValue: {} } }, "local"); assert.equal(received, 0);
   listener({ [S.KEYS[0]]: { newValue: {} } }, "sync"); assert.equal(received, 1);
+  // 旧版端末が書く V2 の変更でも再収束する（新版は V2 を読むだけ）。
+  listener({ [S.V2_KEYS[0]]: { newValue: {} } }, "sync"); assert.equal(received, 2);
+  assert.ok(S.KEYS[0].startsWith("settingsSyncV3.") && S.V2_KEYS[0].startsWith("settingsSyncV2."));
 });
 
 test("V2だけの初参加では同期側のルールと推論量を復活させず優先する", async () => {

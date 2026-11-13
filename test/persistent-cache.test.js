@@ -6,6 +6,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const workerHarness = require("./_worker-harness");
+// content script の関数は共有ヘルパーで宣言単位に切り出す (失敗時は関数名付きで落ちる)。
+const { functionSource } = require("./_source.js");
 
 const root = path.join(__dirname, "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
@@ -101,20 +103,14 @@ test("content grouping and batch sending carry context to the provider request",
       return Response.json({ content: [{ type: "text", text: JSON.stringify({ translations: ["川岸", "銀行"] }) }] });
     } });
   const source = read("src/content/translator.js");
-  const extract = (name, next) => {
-    const start = source.indexOf(`  function ${name}(`);
-    const end = source.indexOf(`\n  function ${next}(`, start + 1);
-    assert.ok(start >= 0 && end > start, `${name} を取得できること`);
-    return source.slice(start, end);
-  };
   const content = vm.runInNewContext(`(() => {
     let batchSeq = 0;
     const pendingBatches = new Map(), sessionId = 1, settings = {};
     const A = { TRANSLATE_BATCH: "TRANSLATE_BATCH" };
     const isNmtProvider = () => false;
     const shutdown = () => {};
-    ${extract("sendBatch", "sleep")}
-    ${extract("groupBatchItems", "releaseBatchItem")}
+    ${functionSource(source, "sendBatch")}
+    ${functionSource(source, "groupBatchItems")}
     return { sendBatch, groupBatchItems };
   })()`, { TranslationBatch: h.context.TranslationBatch, chrome: { runtime: {
     sendMessage: (message, callback) => h.send(message, pageSender("https://example.com/page")).then(callback),
@@ -133,13 +129,17 @@ test("content grouping and batch sending carry context to the provider request",
   ]);
 });
 
+// 拡張の更新後も開いたままのタブには、旧版の読み込み済み目印 (__rtActionsLoaded) と旧 TranslationBatch が残る。
+// そこへ lib を注入し直したとき、読み込みガードで return する前に公開ヘルパーが現行版へ置き換わることを確かめる
+// (claimScript 単体のテストでは、actions.js / translation-core.js が実際にそのガード順で代入することまでは検査できない)。
 test("an already-open tab upgrades an older TranslationBatch helper before the load guard returns", () => {
   const sandbox = {
     __rtActionsLoaded: true,
-    TranslationBatch: Object.freeze({ groupExactTexts() { return []; } }),
+    TranslationBatch: Object.freeze({ legacyHelper() { return []; } }), // 旧版にだけある任意のメソッドの模擬
   };
   vm.runInNewContext(read("src/lib/actions.js"), sandbox);
   vm.runInNewContext(read("src/lib/translation-core.js"), sandbox);
   assert.equal(typeof sandbox.TranslationBatch.groupContextualTexts, "function");
   assert.equal(typeof sandbox.TranslationBatch.contextKey, "function");
+  assert.equal(sandbox.TranslationBatch.legacyHelper, undefined, "旧版のヘルパーを持ち越さない");
 });

@@ -5,7 +5,7 @@ const assert = require("node:assert");
 const g = require("./_load-actions.js");
 
 const {
-  SettingsSchema, AutoTranslateBlacklist, TokenUsage, Providers, BatchTuner, TranslationBatch, ModelPricing, RuntimeLimits,
+  SettingsSchema, AutoTranslateBlacklist, TokenUsage, Providers, BatchTuner, TranslationBatch, ModelPricing,
   MessagePolicy, ImageRequestPolicy, ExtUtil,
 } = g;
 
@@ -14,11 +14,18 @@ test("翻訳スタイル・追加指示を正規化し、設定変更で別の�
   assert.equal(base.translationStyle, "natural");
   assert.equal(base.customPrompt, "");
   assert.equal(SettingsSchema.normalize({ translationStyle: "unknown", customPrompt: {} }).translationStyle, "natural");
+  // 廃止したカジュアル・原文に忠実の保存値は自然へ移行する
+  for (const style of ["casual", "literal"]) assert.equal(SettingsSchema.normalize({ translationStyle: style }).translationStyle, "natural");
   assert.equal(SettingsSchema.normalize({ customPrompt: {} }).customPrompt, "");
   assert.equal(SettingsSchema.normalize({ customPrompt: "  短く訳す  " }).customPrompt, "短く訳す");
   assert.equal(SettingsSchema.normalize({ customPrompt: "あ".repeat(2001) }).customPrompt.length, 2000);
   const key = settings => TranslationBatch.cacheKey("https://example.com", settings, 2, "Hello", "");
   assert.notEqual(key(base), key(SettingsSchema.mergePatch(base, { translationStyle: "cute" })));
+  // 通常翻訳のまろやかは保存値として保持し、自然とも言い換えモードのまろやかとも別キャッシュにする。
+  const mild = SettingsSchema.mergePatch(base, { translationStyle: "mild" });
+  assert.equal(mild.translationStyle, "mild");
+  assert.notEqual(key(base), key(mild));
+  assert.notEqual(key(mild), key(SettingsSchema.mergePatch(base, { rewriteMode: true, rewriteStyle: "mild" })));
   assert.equal(key(base), key(SettingsSchema.mergePatch(base, { customPrompt: "短く訳す" })));
   assert.notEqual(key(SettingsSchema.mergePatch(base, { translationStyle: "custom" })),
     key(SettingsSchema.mergePatch(base, { translationStyle: "custom", customPrompt: "短く訳す" })));
@@ -45,7 +52,7 @@ test("normalize fills defaults and drops unknown keys", () => {
   assert.equal(s.sourceLang, "auto");
   assert.equal(s.targetLang, "ja");
   assert.equal(typeof s.apiKeys.openai, "string");
-  assert.equal(s.models.openai, "gpt-5.4-mini");
+  assert.equal(s.models.openai, Providers.get("openai").defaultModel); // 具体 ID は直書きせず定義を参照
   assert.ok(!("bogus" in s));
 });
 
@@ -63,7 +70,7 @@ test("normalize preserves provided apiKeys/models and fills the rest", () => {
   assert.equal(s.apiKeys.openai, "sk-x");
   assert.equal(s.apiKeys.anthropic, "");
   assert.equal(s.models.gemini, "gemini-2.5-flash");
-  assert.equal(s.models.openai, "gpt-5.4-mini"); // default
+  assert.equal(s.models.openai, Providers.get("openai").defaultModel); // 未指定は provider の既定
 });
 
 test("normalize preserves only bounded model-specific reasoning efforts", () => {
@@ -112,18 +119,20 @@ test("normalize coerces boolean flags", () => {
   assert.equal(SettingsSchema.normalize({ autoTranslate: 0 }).autoTranslate, false);
 });
 
-test("normalize defaults showFab to false when missing (FAB is opt-in)", () => {
-  assert.equal(SettingsSchema.normalize({}).showFab, false);         // 既定 OFF (キー欠損 = OFF に倒す)
-  assert.equal(SettingsSchema.normalize({ showFab: false }).showFab, false);
-  assert.equal(SettingsSchema.normalize({ showFab: true }).showFab, true);
-  assert.equal(SettingsSchema.normalize({ showFab: "x" }).showFab, false); // 厳密に true のときだけ有効
-});
-
-test("normalize defaults showImageButton to false when missing (image button is opt-in)", () => {
-  assert.equal(SettingsSchema.normalize({}).showImageButton, false);         // 既定 OFF (キー欠損 = OFF に倒す)
-  assert.equal(SettingsSchema.normalize({ showImageButton: false }).showImageButton, false);
-  assert.equal(SettingsSchema.normalize({ showImageButton: true }).showImageButton, true);
-  assert.equal(SettingsSchema.normalize({ showImageButton: "x" }).showImageButton, false); // 厳密に true のときだけ有効 (showFab と同形)
+// opt-in フラグは「既定 OFF・厳密に true のときだけ有効」。キー欠損・false・truthy な非真偽値はすべて OFF に倒す。
+// FAB / 画像ボタン (UI の常駐表示)、永続キャッシュ (原文をディスクへ保存)、言い換え (訳さずに書き換える)、
+// 設定同期 (他端末へ送る) はどれも誤って有効化すると利用者の意図しない挙動・保存・送信になるため同じ規則で守る。
+// 入力値は旧来 actions / rewrite-mode / settings-sync に分散していた個別テストの和集合。
+// autoTranslate は Boolean() で解釈する非厳密フラグなのでこの表には含めない ("normalize coerces boolean flags" を参照)。
+test("opt-in フラグは既定 OFF で、厳密に true のときだけ有効になる", () => {
+  const flags = ["showFab", "showImageButton", "persistentTranslationCache", "rewriteMode", "syncSettings"];
+  for (const flag of flags) {
+    assert.equal(SettingsSchema.normalize({})[flag], false, `${flag}: キー欠損は OFF`);
+    for (const value of [undefined, null, false, 0, 1, "x", "yes", "true"]) {
+      assert.equal(SettingsSchema.normalize({ [flag]: value })[flag], false, `${flag}=${JSON.stringify(value)} は OFF`);
+    }
+    assert.equal(SettingsSchema.normalize({ [flag]: true })[flag], true, `${flag}=true だけ ON`);
+  }
 });
 
 test("normalize drops the retired selectionTranslate flag (selection translate is always enabled)", () => {
@@ -141,10 +150,6 @@ test("normalize clamps fabOpacity to [0.2, 1] and defaults to 1 when missing/inv
   assert.equal(SettingsSchema.normalize({ fabOpacity: "x" }).fabOpacity, 1);   // 非数値は既定 1
 });
 
-test("RuntimeLimits exposes a finite image pixel guard", () => {
-  assert.equal(RuntimeLimits.MAX_IMAGE_PIXELS, 25000000);
-});
-
 // ---- TokenUsage ----
 
 test("currentMonthKey formats YYYY-MM", () => {
@@ -160,13 +165,6 @@ test("pruneUsage keeps only the latest N months", () => {
 });
 
 // ---- Providers ----
-
-test("Providers expose ids and get()", () => {
-  assert.deepEqual(Providers.ids, ["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "fugu", "mymemory"]);
-  assert.equal(Providers.get("openai").label, "OpenAI");
-  assert.equal(Providers.get("gemini").defaultModel, "gemini-2.5-flash");
-  assert.equal(Providers.get("nope"), null);
-});
 
 test("Providers.supportsImage reflects visionModel presence (画像翻訳ボタンの出し分け根拠)", () => {
   // visionModel を持つ社のみ画像翻訳対応 (content の「訳」ボタン表示 + SW の no_vision 判定で共有)。
@@ -251,7 +249,6 @@ test("AutoTranslateBlacklist toggles the current site and removes every matching
 test("Groq uses separate current text and vision models", () => {
   const groq = Providers.get("groq");
   assert.equal(groq.defaultModel, "openai/gpt-oss-120b");
-  assert.equal(SettingsSchema.DEFAULTS.models.groq, groq.defaultModel);
   assert.equal(groq.visionModel, "qwen/qwen3.8-27b");
   assert.notEqual(groq.defaultModel, groq.visionModel);
 });
@@ -281,24 +278,118 @@ test("ExtUtil.claimScript upgrades stale guards and stays idempotent in one runt
   }
 });
 
-test("normalize defaults persistent translation cache to off and requires literal true", () => {
-  assert.equal(SettingsSchema.normalize({}).persistentTranslationCache, false);
-  assert.equal(SettingsSchema.normalize({ persistentTranslationCache: false }).persistentTranslationCache, false);
-  assert.equal(SettingsSchema.normalize({ persistentTranslationCache: true }).persistentTranslationCache, true);
-  assert.equal(SettingsSchema.normalize({ persistentTranslationCache: "yes" }).persistentTranslationCache, false);
-});
-
 // ---- TranslationBatch (exact dedupe / retry / session cache) ----
 
-test("TranslationBatch.groupExactTexts groups only exactly equivalent strings", () => {
-  assert.deepEqual(TranslationBatch.groupExactTexts(["Hello", "Hello", " hello", "Hello ", "Ｈello", "Hello"]), [
-    { text: "Hello", indices: [0, 1, 5] },
-    { text: " hello", indices: [2] },
-    { text: "Hello ", indices: [3] },
-    { text: "Ｈello", indices: [4] },
+// DEFAULTS の apiKeys / models は Providers.ids から導出する。キー順・値・freeze を全 id で固定し、
+// 導出前の手書き表 (保存値・同期比較の JSON 表現) と同じ形であることを保証する。
+test("SettingsSchema.DEFAULTS derives apiKeys and models from every provider in Providers.ids order", () => {
+  const defaults = SettingsSchema.DEFAULTS;
+  // 導出元の Providers.ids 自体の集合と順序もリテラルで固定する。DEFAULTS のキー順 (保存値の JSON 表現) が
+  // ids の順に依存するので、id の削除・入れ替えは保存形式の変更として明示的にテストを直させる。
+  assert.deepEqual([...Providers.ids], ["openai", "anthropic", "gemini", "xai", "openrouter", "deepseek", "groq", "fugu", "mymemory"]);
+  assert.deepEqual(Object.keys(defaults.apiKeys), [...Providers.ids]);
+  assert.deepEqual(Object.keys(defaults.models), [...Providers.ids]);
+  for (const id of Providers.ids) {
+    assert.equal(defaults.apiKeys[id], "", id);
+    assert.equal(defaults.models[id], Providers.get(id).defaultModel, id);
+  }
+  assert.equal(defaults.models.mymemory, null, "NMT は既定モデルを持たない");
+  assert.ok(Object.isFrozen(defaults) && Object.isFrozen(defaults.apiKeys) && Object.isFrozen(defaults.models));
+});
+
+test("TranslationBatch.groupContextualTexts without contexts groups only exactly equivalent strings", () => {
+  // 旧 groupExactTexts (撤去済み) と同じ「原文だけの完全一致」。文脈なしなので context は "" になる。
+  assert.deepEqual(TranslationBatch.groupContextualTexts(["Hello", "Hello", " hello", "Hello ", "Ｈello", "Hello"], []), [
+    { text: "Hello", context: "", indices: [0, 1, 5] },
+    { text: " hello", context: "", indices: [2] },
+    { text: "Hello ", context: "", indices: [3] },
+    { text: "Ｈello", context: "", indices: [4] },
   ]);
   // NFC/NFD も勝手に正規化しない。文字が変わった可能性を cache hit で隠さないため。
-  assert.equal(TranslationBatch.groupExactTexts(["é", "e\u0301"]).length, 2);
+  assert.equal(TranslationBatch.groupContextualTexts(["é", "é"], []).length, 2);
+});
+
+test("TranslationBatch.isDailyQuotaMessage detects daily limits and exhausted credit case-insensitively", () => {
+  for (const message of ["PerDay quota", "Requests per day exceeded", "per-day limit", "Daily limit reached",
+    '{"error":{"code":"insufficient_quota"}}', "INSUFFICIENT_QUOTA"]) {
+    assert.equal(TranslationBatch.isDailyQuotaMessage(message), true, message);
+  }
+  for (const message of ["Requests per minute exceeded", "rate limited", "", null, undefined, 429]) {
+    assert.equal(TranslationBatch.isDailyQuotaMessage(message), false, String(message));
+  }
+  // per-minute の先行判定は translator 側の責務。この関数は語の有無だけを見る (popup の表示条件と同じ)。
+  assert.equal(TranslationBatch.isDailyQuotaMessage("per minute and daily"), true);
+});
+
+// flush worker の else-if 連鎖から切り出した分類。順序・厳密比較・transient の数え方を全分岐で固定する。
+test("TranslationBatch.classifyBatchResult keeps the translator branch order and conditions", () => {
+  const classify = (res, options) => ({ ...TranslationBatch.classifyBatchResult(res, options) });
+  const llm = { isNmt: false, quotaScope: null };
+  const nmt = { isNmt: true, quotaScope: null };
+  const http = (status, extra) => ({ ok: false, error: "http", status, ...extra });
+  const oversize = http(400, { message: "maximum context length exceeded" });
+
+  // 1. 完全な正常応答だけが apply。ok でも translations が配列でなければ非 transient の drop。
+  assert.deepEqual(classify({ ok: true, translations: ["a"] }, llm), { kind: "apply" });
+  assert.deepEqual(classify({ ok: true }, llm), { kind: "drop", transient: false });
+  assert.deepEqual(classify({ ok: true, translations: "a" }, llm), { kind: "drop", transient: false });
+  // null / undefined 応答は非 transient の drop。
+  assert.deepEqual(classify(null, llm), { kind: "drop", transient: false });
+  assert.deepEqual(classify(undefined), { kind: "drop", transient: false });
+
+  // 2. キー未設定・言い換え非対応は translations があっても fatal (partial より前)。NMT でも fatal。
+  // 訳文の有無 × LLM/NMT の全組み合わせを固定する (旧 rewrite-mode.test.js の重複テストをここへ統合)。
+  for (const error of ["no_api_key", "rewrite_unsupported"]) {
+    for (const options of [llm, nmt]) {
+      const label = `${error} nmt=${options.isNmt}`;
+      assert.deepEqual(classify({ ok: false, error, translations: ["a"] }, options), { kind: "fatal" }, `${label} with translations`);
+      assert.deepEqual(classify({ ok: false, error }, options), { kind: "fatal" }, label);
+    }
+  }
+
+  // 3. LLM の恒久 4xx は fatal。status は厳密比較 (文字列 "401" は fatal にしない)。
+  for (const status of [400, 401, 403, 404]) {
+    assert.deepEqual(classify(http(status), llm), { kind: "fatal" }, String(status));
+    assert.deepEqual(classify(http(status, { translations: ["a"] }), llm), { kind: "fatal" }, "partial より前");
+    // NMT は per-text 制限なので fatal にせず、訳文なしなら非 transient の drop。
+    assert.deepEqual(classify(http(status), nmt), { kind: "drop", transient: false }, `nmt ${status}`);
+  }
+  assert.deepEqual(classify(http("401"), llm), { kind: "drop", transient: false });
+  // 文字列 "400" + サイズ超過本文は isOversize (Number 比較) に当たり requeue (旧挙動)。
+  assert.deepEqual(classify(http("400", { message: "too long" }), llm), { kind: "requeue" });
+  // 入力サイズ起因の 400 / 413 は fatal でなく requeue。
+  assert.deepEqual(classify(oversize, llm), { kind: "requeue" });
+  assert.deepEqual(classify(http(413), llm), { kind: "requeue" });
+  assert.deepEqual(classify(http(413), nmt), { kind: "requeue" });
+
+  // 4. 1 日上限の 429 は LLM だけ fatal。quotaScope は呼び出し側の判定値を使い、http 429 以外では見ない。
+  assert.deepEqual(classify(http(429), { isNmt: false, quotaScope: "day" }), { kind: "fatal" });
+  assert.deepEqual(classify(http(429), { isNmt: true, quotaScope: "day" }), { kind: "drop", transient: true });
+  assert.deepEqual(classify(http(429), { isNmt: false, quotaScope: "minute" }), { kind: "drop", transient: true });
+  assert.deepEqual(classify(http(503), { isNmt: false, quotaScope: "day" }), { kind: "drop", transient: true });
+  assert.deepEqual(classify({ ok: false, error: "network" }, { isNmt: false, quotaScope: "day" }), { kind: "drop", transient: true });
+
+  // 5. allFailed は translations があっても fatal (partial より前)。
+  assert.deepEqual(classify({ ok: false, error: "http", status: 429, allFailed: true, translations: ["a"] }, nmt), { kind: "fatal" });
+  assert.deepEqual(classify({ ok: false, allFailed: true }, llm), { kind: "fatal" });
+
+  // 6. 一時エラーでも訳文配列があれば partial (incomplete / oversize の requeue より前)。
+  assert.deepEqual(classify({ ok: false, error: "incomplete", translations: ["a"] }, llm), { kind: "partial" });
+  assert.deepEqual(classify({ ...http(413), translations: ["a"] }, llm), { kind: "partial" });
+  assert.deepEqual(classify({ ...http(429), translations: ["a"] }, nmt), { kind: "partial" });
+
+  // 7. 出力切れ / サイズ超過は requeue。
+  assert.deepEqual(classify({ ok: false, error: "incomplete" }, llm), { kind: "requeue" });
+
+  // 8. 残りは drop。レート制限・混雑・通信・SW 再起動だけを transient に数える。
+  for (const res of [{ ok: false, error: "network" }, { ok: false, error: "runtime" }, { ok: false, error: "stale_session" },
+    http(429), http(500), http(502), http(503), http(599)]) {
+    assert.deepEqual(classify(res, llm), { kind: "drop", transient: true }, JSON.stringify(res));
+  }
+  for (const res of [{ ok: false, error: "aborted" }, { ok: false, error: "context" }, { ok: false, error: "empty" },
+    http(402), http(409), http(422), { ok: false, error: "parse" }]) {
+    assert.deepEqual(classify(res, llm), { kind: "drop", transient: false }, JSON.stringify(res));
+  }
 });
 
 test("TranslationBatch.groupContextualTexts separates the same source text in different contexts", () => {

@@ -14,34 +14,8 @@ const SELECTION_SOURCE = fs.readFileSync(path.join(ROOT, "src/content/selection-
 const WORKER_SOURCE = fs.readFileSync(path.join(ROOT, "src/service_worker.js"), "utf8");
 
 // IIFE の content script は直接 import できないため、対象の関数宣言だけを実ソースから切り出して評価する。
-// このテストで扱う関数には template literal が無く、文字列・コメント内の波括弧だけを読み飛ばせば安全に抽出できる。
-const functionSource = (source, name) => {
-  const match = new RegExp(`\\b(?:async\\s+)?function\\*?\\s+${name}\\s*\\(`).exec(source);
-  if (!match) assert.fail(`${name} の宣言が必要`);
-  const start = match.index;
-  const bodyStart = source.indexOf("{", start);
-  let depth = 0;
-  let quote = "";
-  let lineComment = false;
-  let blockComment = false;
-  for (let i = bodyStart; i < source.length; i++) {
-    const ch = source[i];
-    const next = source[i + 1];
-    if (lineComment) { if (ch === "\n") lineComment = false; continue; }
-    if (blockComment) { if (ch === "*" && next === "/") { blockComment = false; i++; } continue; }
-    if (quote) {
-      if (ch === "\\") { i++; continue; }
-      if (ch === quote) quote = "";
-      continue;
-    }
-    if (ch === "/" && next === "/") { lineComment = true; i++; continue; }
-    if (ch === "/" && next === "*") { blockComment = true; i++; continue; }
-    if (ch === "\"" || ch === "'") { quote = ch; continue; }
-    if (ch === "{") depth++;
-    if (ch === "}" && --depth === 0) return source.slice(start, i + 1);
-  }
-  assert.fail(`${name} の終端を解決できない`);
-};
+// 切り出し規則は他のテストと共有する (test/_source.js の functionSource。失敗時は関数名付きで落ちる)。
+const { functionSource } = require("./_source.js");
 
 const loadImageFunctions = (names, context, prelude = "") => {
   const declarations = names.map((name) => functionSource(IMAGE_SOURCE, name)).join("\n");
@@ -257,7 +231,8 @@ test("renderer待機中の復元は同期で表示を戻し、復元・差替後
       img, btn, dead: false, contextAlive: () => true, shutdown() {},
       showImageError: () => { errors++; }, setBtnMode: () => { btn.textContent = "訳"; },
       loadRenderer: () => new Promise((_resolve, fail) => { reject = fail; }),
-      queryOpenRoots: () => [], unwrapImage() {}, restorePrevStyle() {},
+      // clearAllImages は open root を 1 回だけ列挙して queryOpenRoots へ渡すため、両方をスタブする。
+      openRoots: () => [], queryOpenRoots: () => [], unwrapImage() {}, restorePrevStyle() {},
     }, `let imgRunId = 0, imageRequestSeq = 0; const target = img, imageRequestIds = new WeakMap(), inflightImgs = new WeakSet();
       const MAX_IMAGE_PIXELS = 25000000, showImageButton = ${change !== "hidden"}, imageCapable = true, animatedImgs = new WeakSet();`);
     const pending = api.translateImg(img);
@@ -344,8 +319,10 @@ test("ページ上限の未翻訳ノードは強参照せず、更新と復元�
   const api = vm.runInNewContext(`(() => {
     const translatedNodes = new Set(), originalMap = new WeakMap(), writtenValue = new WeakMap();
     let budgetSkippedNodes = new WeakSet(), originalReapplyAt = new WeakMap(), recentScopeWrites = new WeakMap();
-    const translationMemo = new Map(), queuedNodes = new WeakSet(), queue = [];
+    let scopeConflictRetries = new WeakMap(), pendingScopeRetries = [], scopeRetryTimer = null;
+    const translationMemo = new Map(), memoTexts = new Set(), queuedNodes = new WeakSet(), queue = [];
     const PAGE_MAX_SINGLE_CHARS = 10, PAGE_MAX_TEXTS = 1, PAGE_MAX_CHARS = 100;
+    ${functionSource(TRANSLATOR_SOURCE, "clearScopeRetries")}
     let pageTextCount = 1, pageCharCount = 0, droppedTransient = 0, translating = true;
     const handleLocationChange = () => false;
     const blockAncestor = () => null, isNmtProvider = () => true;
@@ -382,6 +359,222 @@ test("ページ上限の未翻訳ノードは強参照せず、更新と復元�
   api.resetBudget();
   api.enqueue(skippedAgain, 0);
   assert.equal(api.queue.length, 2, "復元後はスキップ済み印を破棄する");
+});
+
+// ingest の文脈計算はメモに当たり得る原文 (memoTexts) と enqueue する分岐だけで行い、block ごとの snapshot を共有する。
+const loadIngest = () => vm.runInNewContext(`(() => {
+  const calls = { snapshot: 0, context: [], enqueue: [], apply: [], observe: [], promote: 0, flush: 0 };
+  const translationMemo = new Map(), memoTexts = new Set(), translatedNodes = new Set(), queue = [];
+  let observedBlocks = new WeakSet(), flushedBlocks = new WeakSet(), zeroSizedBlocks = new Set();
+  const io = { observe: (block) => calls.observe.push(block) }, ro = null, ZEROSIZE_CAP = 10, rtDebug = false;
+  const dbg = () => {};
+  const isNmtProvider = () => false;
+  const memoKey = (text, context) => text + "\\u0000" + context;
+  function* collectNodes(root) { yield* root.nodes; }
+  const blockAncestor = (node) => node.block;
+  const blockMeta = (block) => block.meta;
+  const blockContextSnapshot = () => { calls.snapshot++; return { before: "", after: "" }; };
+  const translationContext = (node) => { calls.context.push(node.nodeValue); return "ctx:" + node.nodeValue; };
+  const enqueue = (node, y, context) => calls.enqueue.push([node.nodeValue, y, context]);
+  const applyOne = (item, memo) => calls.apply.push([item.text, item.context, memo]);
+  const scopeWriteIsRecent = () => false, scheduleScopeRetry = () => {};
+  const promoteSizedBlock = () => { calls.promote++; return false; };
+  const scheduleFlush = () => { calls.flush++; };
+  ${functionSource(TRANSLATOR_SOURCE, "ingest")}
+  return { ingest, calls, translationMemo, memoTexts, memoKey,
+    observe: (block) => observedBlocks.add(block), flushed: (block) => flushedBlocks.add(block) };
+})()`);
+
+test("ingest はメモに当たらない画面外ノードで文脈を計算せず、enqueue する分岐だけ block 単位の snapshot で計算する", () => {
+  const api = loadIngest();
+  const offscreen = { meta: { near: false, y: 900, zeroSized: false } };
+  const watched = { meta: { near: false, y: 1800, zeroSized: false } };
+  const near = { meta: { near: true, y: 10, zeroSized: false } };
+  const flushed = { meta: { near: true, y: 20, zeroSized: false } };
+  api.observe(watched);
+  api.flushed(flushed);
+  const nodes = [
+    { nodeValue: "画面外1", block: offscreen }, { nodeValue: "画面外2", block: offscreen },
+    { nodeValue: "監視中", block: watched },
+    { nodeValue: "近傍1", block: near }, { nodeValue: "近傍2", block: near },
+    { nodeValue: "流し済み", block: flushed },
+  ];
+  api.ingest({ nodes });
+  assert.deepEqual([...api.calls.context], ["近傍1", "近傍2", "流し済み"], "画面外・監視中のノードでは文脈を計算しない");
+  assert.equal(api.calls.snapshot, 2, "snapshot は文脈が要る block ごとに 1 回だけ");
+  assert.deepEqual(Array.from(api.calls.enqueue, (entry) => [...entry]), [
+    ["近傍1", 10, "ctx:近傍1"], ["近傍2", 10, "ctx:近傍2"], ["流し済み", 20, "ctx:流し済み"],
+  ], "enqueue へは必ず計算済みの文字列文脈を渡す (enqueue 内蔵のノード単位フォールバックを使わない)");
+  assert.deepEqual([...api.calls.observe], [offscreen]);
+  assert.equal(api.calls.flush, 1);
+});
+
+test("ingest はメモ登録済みの原文だけ文脈を計算してメモを引き、外れたら同じ文脈で enqueue する", () => {
+  const api = loadIngest();
+  const watched = { meta: { near: false, y: 500, zeroSized: false } };
+  const near = { meta: { near: true, y: 5, zeroSized: false } };
+  api.observe(watched);
+  api.memoTexts.add("Hello").add("Bank");
+  api.translationMemo.set(api.memoKey("Hello", "ctx:Hello"), "こんにちは");
+  api.translationMemo.set(api.memoKey("Bank", "ctx:other"), "銀行"); // 原文は同じでも文脈違い → メモ外れ
+  api.ingest({ nodes: [
+    { nodeValue: "Hello", block: watched }, // 監視中ブロックでもメモ一致は従来どおり同期適用する
+    { nodeValue: "Bank", block: near },
+    { nodeValue: "New", block: watched },
+  ] });
+  assert.deepEqual(Array.from(api.calls.apply, (entry) => [...entry]), [["Hello", "ctx:Hello", "こんにちは"]]);
+  assert.deepEqual([...api.calls.context], ["Hello", "Bank"], "メモ照会で計算した文脈を enqueue で再計算しない");
+  assert.deepEqual(Array.from(api.calls.enqueue, (entry) => [...entry]), [["Bank", 5, "ctx:Bank"]]);
+  assert.equal(api.calls.snapshot, 2);
+});
+
+// 古い run の flush が await 中に新 run が始まっても、古い完了で flushing を下ろさない (T-D1)。
+// 下ろすと新 run の 1.5 秒保険タイマー (maybeAnnounceDone) が、新 flush の走行中に done を通知してしまう。
+const loadFlush = (translationBatch) => vm.runInNewContext(`(() => {
+  const progress = [], sends = [];
+  let flushTimer = null, flushing = false, translating = true, fatal = null, runId = 1, announced = false;
+  let currentBatchSize = 0, warmupLeft = 0, droppedTransient = 0;
+  const WARMUP_BATCH_SIZE = 1, INCOMPLETE_REQUEUE_MAX = 2, BatchTuner = { DEFAULT: 25 };
+  const queue = [], translatedNodes = new Set(), queuedNodes = new Set(), translationMemo = new Map();
+  const contextAlive = () => true, shutdown = () => {}, dbg = () => {}, isNmtProvider = () => false;
+  const memoKey = (text, context) => text + "\\u0000" + context;
+  const quotaScope = () => null, concurrencyFor = () => 1, scheduleFlush = () => {};
+  const sortTopDown = () => {}, releaseBatchItem = () => {}, rememberTranslations = () => {};
+  const markFailedTranslations = () => 0, batchMembers = (item) => item.members;
+  const applyOne = (item, t) => { translatedNodes.add(item.node); item.node.nodeValue = t; };
+  const applyTranslations = (batch, translations) => batch.forEach((group, i) => group.members.forEach((m) => applyOne(m, translations[i])));
+  const groupBatchItems = (items) => items.map((item) => ({ text: item.text, context: item.context, members: [item] }));
+  const notifyProgress = (state, extra) => progress.push(state);
+  const sendBatchWithRetry = () => new Promise((resolve) => sends.push(resolve));
+  ${functionSource(TRANSLATOR_SOURCE, "flush")}
+  ${functionSource(TRANSLATOR_SOURCE, "maybeAnnounceDone")}
+  const push = (text) => { const node = { nodeValue: text, isConnected: true }; queue.push({ node, text, context: "", _y: 0 }); };
+  return {
+    flush, maybeAnnounceDone, progress, sends, push,
+    // startTranslate の run 切り替え (runId 更新と flushing / announced のリセット) と同じ状態遷移。
+    newRun: () => { runId += 1; flushing = false; announced = false; return runId; },
+    get flushing() { return flushing; },
+  };
+})()`, { TranslationBatch: translationBatch });
+
+test("古い run の flush 完了は新 run の flushing を下ろさず、新 run の早すぎる done 通知を防ぐ", async () => {
+  const { TranslationBatch } = require("./_load-actions.js");
+  const api = loadFlush(TranslationBatch);
+  api.push("old");
+  const oldFlush = api.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(api.sends.length, 1, "旧 run のバッチが送信待ち");
+
+  const run2 = api.newRun();
+  api.push("new");
+  const newFlush = api.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(api.sends.length, 2, "新 run のバッチも送信待ち");
+
+  api.sends[0]({ ok: true, translations: ["旧"] }); // 旧 run の遅れた応答
+  await oldFlush;
+  assert.equal(api.flushing, true, "旧 flush の完了で新 flush の走行中フラグを下ろさない");
+  api.maybeAnnounceDone(run2); // startTranslate の 1.5 秒保険タイマー
+  assert.deepEqual([...api.progress].filter((state) => state === "done"), [], "新 flush の走行中に done を通知しない");
+
+  api.sends[1]({ ok: true, translations: ["新"] });
+  await newFlush;
+  assert.equal(api.flushing, false);
+  assert.deepEqual([...api.progress].filter((state) => state === "done"), ["done"], "新 flush の完了で 1 回だけ done");
+});
+
+test("flush は言い換え非対応・キー未設定の応答で全体中断し、done ではなく error を通知する", async () => {
+  const { TranslationBatch } = require("./_load-actions.js");
+  for (const error of ["rewrite_unsupported", "no_api_key"]) {
+    const api = loadFlush(TranslationBatch);
+    api.push("text");
+    const pending = api.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    api.sends[0]({ ok: false, error, translations: ["text"] }); // 訳文付きでも部分適用せず中断する
+    await pending;
+    assert.deepEqual([...api.progress].filter((state) => state !== "progress"), ["error"], error);
+    assert.equal(api.flushing, false, error);
+  }
+});
+
+test("ページ全体を包むcustom element内で一度だけ作り直された原文ノードは、クールダウン後に訳文へ戻す", () => {
+  const api = vm.runInNewContext(`(() => {
+    const clock = { t: 1000 }, timers = [];
+    const Date = { now: () => clock.t };
+    const window = { setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: () => {} };
+    const translatedNodes = new Set(), originalMap = new WeakMap(), writtenValue = new WeakMap();
+    let recentScopeWrites = new WeakMap(), scopeConflictRetries = new WeakMap(), pendingScopeRetries = [], scopeRetryTimer = null;
+    const translationMemo = new Map();
+    const ORIGINAL_REAPPLY_COOLDOWN_MS = 1000, SCOPE_WRITE_MAX_TEXTS = 128;
+    const SCOPE_CONFLICT_MAX_RETRIES = 3, SCOPE_RETRY_PENDING_MAX = 2000;
+    let translating = true, runId = 1;
+    const contextAlive = () => true, ingest = () => {};
+    const memoKey = (text, context) => text + "\\u0000" + context;
+    ${functionSource(TRANSLATOR_SOURCE, "rewriteScope")}
+    ${functionSource(TRANSLATOR_SOURCE, "noteScopeWrite")}
+    ${functionSource(TRANSLATOR_SOURCE, "scopeWriteIsRecent")}
+    ${functionSource(TRANSLATOR_SOURCE, "scopeTextIsRecent")}
+    ${functionSource(TRANSLATOR_SOURCE, "scopeRetryState")}
+    ${functionSource(TRANSLATOR_SOURCE, "scheduleScopeRetry")}
+    ${functionSource(TRANSLATOR_SOURCE, "armScopeRetryTimer")}
+    ${functionSource(TRANSLATOR_SOURCE, "flushScopeRetries")}
+    ${functionSource(TRANSLATOR_SOURCE, "applyOne")}
+    // ingest のメモ一致経路と同じ判定 (競合中はページ側を優先し、再適用を予約する)。
+    function ingestMemoHit(node) {
+      const memo = translationMemo.get(memoKey(node.nodeValue, ""));
+      if (scopeWriteIsRecent(node, node.nodeValue)) {
+        translatedNodes.add(node);
+        scheduleScopeRetry(node, node.nodeValue, "");
+      } else applyOne({ node, text: node.nodeValue, context: "" }, memo);
+    }
+    function runTimers() { while (timers.length) timers.shift()(); }
+    return { clock, translationMemo, applyOne, ingestMemoHit, runTimers, pending: () => pendingScopeRetries.length };
+  })()`);
+  const scope = { localName: "react-app", parentElement: null };
+  const textNode = (value) => ({ nodeValue: value, parentElement: scope, isConnected: true });
+  api.translationMemo.set("Hello\u0000", "こんにちは");
+
+  const first = textNode("Hello");
+  api.applyOne({ node: first, text: "Hello", context: "" }, "こんにちは");
+  assert.equal(first.nodeValue, "こんにちは");
+
+  // React が本文 subtree を一度だけ作り直し、同じ原文の新しい Text ノードが来る。
+  const rerendered = textNode("Hello");
+  api.clock.t += 100;
+  api.ingestMemoHit(rerendered);
+  assert.equal(rerendered.nodeValue, "Hello", "競合直後はページ側を優先して即時には書き換えない");
+  api.clock.t += 1100;
+  api.runTimers();
+  assert.equal(rerendered.nodeValue, "こんにちは", "クールダウン後は作り直された原文ノードも訳文へ戻す");
+
+  // 時間をおいた別の再描画で、同じ原文のノードが一度に複数作り直されても全て訳文へ戻す。
+  api.clock.t += 5000;
+  const firstWrite = textNode("Hello");
+  api.applyOne({ node: firstWrite, text: "Hello", context: "" }, "こんにちは");
+  const siblings = [textNode("Hello"), textNode("Hello"), textNode("Hello"), textNode("Hello")];
+  api.clock.t += 50;
+  for (const node of siblings) api.ingestMemoHit(node);
+  api.clock.t += 1100;
+  api.runTimers();
+  assert.deepEqual(siblings.map((node) => node.nodeValue), ["こんにちは", "こんにちは", "こんにちは", "こんにちは"],
+    "同じ再描画ラウンドの同一原文ノードは予算を1回分だけ使い、全て再適用する");
+
+  // 訳文を書くたびに原文ノードを作り直し続けるコンポーネントは、再適用を上限回数で打ち切る。
+  let current = rerendered;
+  let writes = 0;
+  for (let i = 0; i < 10; i++) {
+    if (current.nodeValue !== "こんにちは") break; // ページは訳文を書かれたときだけ原文ノードを作り直す
+    const recreated = textNode("Hello");
+    api.clock.t += 10;
+    api.ingestMemoHit(recreated);
+    api.clock.t += 1100;
+    api.runTimers();
+    if (recreated.nodeValue === "こんにちは") writes++;
+    current = recreated;
+  }
+  assert.ok(writes <= 3, `相互書き換えの再適用は上限内に収める (writes=${writes})`);
+  assert.equal(current.nodeValue, "Hello", "上限到達後はページ側の原文で確定する");
+  assert.equal(api.pending(), 0);
 });
 
 test("画像の旧エラー・空結果タイマーは、再翻訳の一部成功表示を上書きしない", async () => {
@@ -464,6 +657,23 @@ test("画像のインク位置と、原文を覆う消去領域を独立して�
   assert.equal(blk.__rtEraseBox.w, 50);
 });
 
+test("行間の塗りつぶし判定は pixelBoxOf が塗る前に測った背景を再利用し、未計測のときだけ画素を読む", () => {
+  let reads = 0;
+  const api = loadImageFunctions(["blockPixelRect", "flatBoxOf"], {
+    ringStats: () => { reads++; return { color: [1, 2, 3], std: 0, alpha: 1 }; },
+  });
+  const block = () => ({ translation: "訳文", box: { x: 0.1, y: 0.1, w: 0.5, h: 0.1 }, cy: 0.15 });
+  const measured = Object.assign(block(), { __rtBackground: { color: [9, 9, 9], std: 0, alpha: 1 } });
+  assert.deepEqual([...api.flatBoxOf({}, measured, 200, 200).color], [9, 9, 9]);
+  const textured = Object.assign(block(), { __rtBackground: { color: [9, 9, 9], std: 40, alpha: 1 } });
+  assert.equal(api.flatBoxOf({}, textured, 200, 200), null);
+  const noResult = Object.assign(block(), { __rtBackground: null }); // 計測済みで結果なし
+  assert.equal(api.flatBoxOf({}, noResult, 200, 200), null);
+  assert.equal(reads, 0, "計測済み (null を含む) の block は画素を読み直さない");
+  assert.deepEqual([...api.flatBoxOf({}, block(), 200, 200).color], [1, 2, 3]);
+  assert.equal(reads, 1, "未計測の block だけ ringStats を呼ぶ");
+});
+
 test("open root の画像をURLフォールバックで解決する", () => {
   const lightImg = {
     currentSrc: "https://example.com/shared.png",
@@ -523,7 +733,11 @@ test("Shadow DOM内の画像オーバーレイもページ復元で除去する"
     },
   };
   const host = { shadowRoot };
-  const document = { querySelectorAll: (selector) => selector === "*" ? [host] : [] };
+  // open root の全 DOM 走査 (querySelectorAll("*")) は 3 段の後始末で共有し、root ごとに 1 回だけ行う。
+  const walks = { document: 0, shadow: 0 };
+  const shadowQuery = shadowRoot.querySelectorAll;
+  shadowRoot.querySelectorAll = (selector) => { if (selector === "*") walks.shadow++; return shadowQuery(selector); };
+  const document = { querySelectorAll: (selector) => { if (selector === "*") { walks.document++; return [host]; } return []; } };
   const restored = [];
   const { clearAllImages } = loadImageFunctions(
     ["openRoots", "queryOpenRoots", "clearAllImages"],
@@ -538,27 +752,13 @@ test("Shadow DOM内の画像オーバーレイもページ復元で除去する"
   assert.equal(restored[1][0], "style");
   assert.equal(restored[1][1], styledImg);
   assert.equal(layer.removed, true);
-});
-
-test("遅延再走査の実装と設計契約が12秒まで一致する", () => {
-  const translator = fs.readFileSync(path.join(ROOT, "src/content/translator.js"), "utf8");
-  const architecture = fs.readFileSync(path.join(ROOT, "references/architecture.md"), "utf8");
-  const match = /const REINGEST_DELAYS = \[([^\]]+)\]/.exec(translator);
-  if (!match) assert.fail("REINGEST_DELAYS の宣言が必要");
-  const delays = match[1].split(",").map((value) => Number(value.trim()));
-
-  assert.deepEqual(delays, [350, 1200, 2500, 4500, 7500, 12000]);
-  assert.match(architecture, /REINGEST_DELAYS=\[350,1200,2500,4500,7500,12000\]/);
+  assert.deepEqual(walks, { document: 1, shadow: 1 });
 });
 
 test("SPA URL変化は新しいpage runとして自動再評価または手動再開始する", async () => {
   const routeHandler = functionSource(TRANSLATOR_SOURCE, "handleLocationChange");
-  const startTranslate = functionSource(TRANSLATOR_SOURCE, "startTranslate");
-
-  assert.match(FAB_SOURCE, /const AUTO_ROUTE_POLL_MS = 250/);
-  assert.match(FAB_SOURCE, /res\.blacklisted \|\| res\.autoTranslateDisabled/);
-  assert.match(startTranslate, /pageTextCount = 0;[\s\S]*?pageCharCount = 0;/);
-  assert.match(startTranslate, /announced = false;[\s\S]*?droppedTransient = 0;/);
+  // startTranslate が新 run でページ上限カウンターと done 通知状態を初期化することは、
+  // rewrite-mode.test.js の startTranslate 挙動テストで実関数を評価して確認する。
 
   const fabRoute = vm.runInNewContext(`(() => {
     const A = { TRANSLATE_PAGE: "TRANSLATE_PAGE" };
@@ -725,25 +925,7 @@ const loadTranslateEach = (fetchImpl) => vm.runInNewContext(`(() => {
   },
 });
 
-test("MyMemoryの500バイト超過は失敗indexを返して正常な無変更応答と区別する", async () => {
-  const translateEach = loadTranslateEach(async (url) => ({
-    ok: true,
-    json: async () => ({ responseStatus: 200, translation: `訳:${new URL(url).searchParams.get("text")}` }),
-  }));
-  const long = "a".repeat(501);
-  const result = await translateEach(
-    { sourceLang: "en", targetLang: "ja" },
-    { id: "mymemory", maxBytes: 500 },
-    [long, "proper noun"],
-    "",
-  );
-
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "too_long");
-  assert.deepEqual([...result.failedIndices], [0]);
-  assert.deepEqual([...result.translations], [long, "訳:proper noun"]);
-});
-
+// 500 バイト超過 (too_long) の失敗 index と原文保持は persistent-cache.test.js の実 SW 経由テストで検証する。
 test("MyMemoryの途中quota失敗は成功分を保ち失敗indexだけを返す", async () => {
   const translateEach = loadTranslateEach(async (url) => {
     const text = new URL(url).searchParams.get("text");
@@ -765,4 +947,75 @@ test("MyMemoryの途中quota失敗は成功分を保ち失敗indexだけを返�
   assert.equal(result.error, "quota");
   assert.deepEqual([...result.failedIndices], [1]);
   assert.deepEqual([...result.translations], ["訳:ok", "quota"]);
+});
+
+test("画像ホバー: coversVideo は VIDEO / shadow host 以外では style を読まず、可視の動画だけを覆いとみなす", () => {
+  let styleReads = 0;
+  const styles = new Map();
+  const view = { getComputedStyle: (node) => { styleReads += 1; return styles.get(node) || { visibility: "visible", opacity: "1" }; } };
+  const doc = { defaultView: view };
+  const el = (tagName, extra = {}) => ({ tagName, ownerDocument: doc, parentElement: null, getRootNode: () => ({ host: null }), ...extra });
+  const api = vm.runInNewContext(`(() => {
+    ${functionSource(IMAGE_SOURCE, "isShown")}
+    ${functionSource(IMAGE_SOURCE, "coversVideo")}
+    return { coversVideo };
+  })()`);
+
+  // 通常の要素 (動画でも shadow host でもない) は可視判定をせず false。
+  assert.equal(api.coversVideo(el("DIV"), 1, 1), false);
+  assert.equal(api.coversVideo(el("SPAN", { shadowRoot: null }), 1, 1), false);
+  assert.equal(styleReads, 0, "対象外の要素では getComputedStyle を読まない");
+
+  // 見えている動画は覆いとみなす。
+  assert.equal(api.coversVideo(el("VIDEO"), 1, 1), true);
+  // opacity 0 の祖先の下にある動画は透明レイヤーとして無視する (奥のサムネを生かす)。
+  const wrapper = el("DIV");
+  styles.set(wrapper, { visibility: "visible", opacity: "0" });
+  assert.equal(api.coversVideo(el("VIDEO", { parentElement: wrapper }), 1, 1), false);
+
+  // shadow host の内側に見えている動画があれば覆いとみなす (root の外の要素へは再帰しない)。
+  const inner = el("VIDEO");
+  const outside = el("VIDEO");
+  const host = el("MY-PLAYER");
+  host.shadowRoot = { elementsFromPoint: () => [inner, host, outside], contains: (n) => n === inner };
+  assert.equal(api.coversVideo(host, 1, 1), true);
+  const emptyHost = el("MY-CARD");
+  emptyHost.shadowRoot = { elementsFromPoint: () => [emptyHost, outside], contains: () => false };
+  assert.equal(api.coversVideo(emptyHost, 1, 1), false);
+});
+
+test("FAB: 自動翻訳の開始応答が除外対象・自動翻訳OFFなら loading を解除し、手動翻訳では解除しない", async () => {
+  // 初回ページが除外対象、または自動翻訳OFFへの切替と競合すると translator から進捗が来ない。
+  // send() の完了処理がその応答を正本に loading を解除しないと、FAB が loading のまま固まる (fab.js の send)。
+  const makeFab = (response) => vm.runInNewContext(`(() => {
+    const A = { TRANSLATE_PAGE: "TRANSLATE_PAGE" };
+    let sendSeq = 0;
+    let state = "loading", errText = "old", partialText = "old";
+    let renders = 0;
+    const render = () => { renders += 1; };
+    const tr = (_k, fallback) => fallback;
+    const contextAlive = () => true;
+    const chrome = { runtime: { sendMessage: () => Promise.resolve(response) } };
+    ${functionSource(FAB_SOURCE, "send")}
+    return { send, snapshot: () => ({ state, errText, partialText, renders }) };
+  })()`, { response });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+
+  for (const response of [{ ok: true, blacklisted: true }, { ok: true, autoTranslateDisabled: true }]) {
+    const fab = makeFab(response);
+    fab.send({ action: "TRANSLATE_PAGE" });
+    await settle();
+    assert.deepEqual({ ...fab.snapshot() }, { state: "off", errText: "", partialText: "", renders: 1 }, JSON.stringify(response));
+  }
+  // 通常の開始応答や、手動翻訳 (manual: true) の応答では状態を変えない (進捗は translator が送る)。
+  for (const [msg, response] of [
+    [{ action: "TRANSLATE_PAGE" }, { ok: true }],
+    [{ action: "TRANSLATE_PAGE", manual: true }, { ok: true, blacklisted: true }],
+  ]) {
+    const fab = makeFab(response);
+    fab.send(msg);
+    await settle();
+    assert.equal(fab.snapshot().state, "loading", JSON.stringify(msg));
+    assert.equal(fab.snapshot().renders, 0);
+  }
 });

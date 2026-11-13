@@ -123,7 +123,7 @@ test("カスタム選択時だけ追加指示をLLMの通常・ストリーム�
   const original = ProviderApi.buildSystemPrompt("en", "ja");
   assert.equal(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "natural", customPrompt: " " }), original);
   assert.equal(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "constructor" }), original);
-  for (const style of ["formal", "casual", "literal"]) {
+  for (const style of ["formal"]) {
     assert.notEqual(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: style }), original);
   }
   const cute = ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "cute", customPrompt: "Use a formal tone" });
@@ -132,21 +132,47 @@ test("カスタム選択時だけ追加指示をLLMの通常・ストリーム�
   assert.equal(ProviderApi.buildRequest("mymemory", opts).body, undefined);
 });
 
-test("方言は日本語への通常・ストリーム・画像翻訳にだけ適用する", () => {
-  for (const [style, dialect] of [["osaka", "Kansai"], ["ibaraki", "Ibaraki"]]) {
+// 保存できるスタイル (TRANSLATION_STYLES) に指示文を書き忘れると「選べるが何も変わらない」ずれになる。
+// natural と custom (利用者の入力だけを送る) 以外は、日本語訳で互いに異なる専用指示を持つことを固定する。
+test("全ての翻訳スタイルが専用の指示文を持つ", () => {
+  const natural = ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "natural" });
+  const prompts = g.SettingsSchema.TRANSLATION_STYLES.filter(style => style !== "natural" && style !== "custom")
+    .map(style => ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: style }));
+  for (const prompt of prompts) assert.notEqual(prompt, natural);
+  assert.equal(new Set(prompts).size, prompts.length);
+});
+
+// 通常翻訳の「まろやか」は方言と違って全言語で使える。翻訳先が日本語以外でも和らげる指示を付け、
+// 通常・ストリーム・画像の全経路へ同じ指示を渡す。
+test("通常翻訳のまろやかは翻訳先言語を問わず和らげる指示を付ける", () => {
+  for (const targetLang of ["ja", "en"]) {
+    const opts = { texts: ["Hello"], sourceLang: "fr", targetLang, translationStyle: "mild" };
+    for (const provider of g.Providers.ids.filter(id => g.Providers.get(id).batch !== false)) {
+      const bodies = [false, true].map(stream => JSON.stringify(ProviderApi.buildRequest(provider, { ...opts, stream }).body));
+      if (g.Providers.get(provider).visionModel) bodies.push(JSON.stringify(ProviderApi.buildImageRequest(provider, opts).body));
+      for (const body of bodies) assert.match(body, /softening harmful, hostile/);
+    }
+  }
+  // 言い換え専用文 (翻訳しない指示) と取り違えない。
+  assert.doesNotMatch(ProviderApi.buildSystemPrompt("en", "ja", false, { translationStyle: "mild" }), /Never translate/);
+});
+
+test("方言・ギャル文字は日本語への通常・ストリーム・画像翻訳にだけ適用する", () => {
+  for (const [style, dialect] of [["osaka", "Kansai dialect"], ["ibaraki", "Ibaraki dialect"], ["gyaru", "gyaru-moji"]]) {
     for (const targetLang of ["ja", "en"]) {
       const opts = { texts: ["Hello"], sourceLang: "en", targetLang, translationStyle: style };
       for (const provider of g.Providers.ids.filter(id => g.Providers.get(id).batch !== false)) {
         const bodies = [false, true].map(stream => JSON.stringify(ProviderApi.buildRequest(provider, { ...opts, stream }).body));
         if (g.Providers.get(provider).visionModel) bodies.push(JSON.stringify(ProviderApi.buildImageRequest(provider, opts).body));
-        for (const body of bodies) assert.equal(body.includes(`${dialect} dialect`), targetLang === "ja");
+        for (const body of bodies) assert.equal(body.includes(dialect), targetLang === "ja");
       }
     }
   }
 });
 
-test("辞書のプロトタイプ名やヘルパー名をプロバイダ定義として返さない", () => {
-  for (const id of ["constructor", "__proto__", "toString", "get", "ids", "supportsImage"]) {
+// 未知 ID ("nope") も同じ同値クラス (定義に無い ID は null / buildRequest は unknown provider で throw)。
+test("未知 ID・辞書のプロトタイプ名・ヘルパー名をプロバイダ定義として返さない", () => {
+  for (const id of ["nope", "constructor", "__proto__", "toString", "get", "ids", "supportsImage"]) {
     assert.equal(g.Providers.get(id), null);
     assert.throws(() => ProviderApi.buildRequest(id, {}), /unknown provider/);
   }
@@ -159,7 +185,9 @@ test("MyMemoryの言語変換でプロトタイプ値を展開しない", () => 
 
 // ---- buildSystemPrompt ----
 
-test("ProviderApi exposes a positive translation prompt version for cache invalidation", () => {
+// promptVersion は翻訳キャッシュキーの要素。cacheKey は欠損を 0 に倒すため、未定義になっても
+// キャッシュ系テストは通ってしまう。プロンプト変更時の旧キャッシュ無効化を保証する値として正の整数を固定する。
+test("promptVersion is a positive integer used to invalidate cached translations", () => {
   assert.equal(Number.isInteger(ProviderApi.promptVersion) && ProviderApi.promptVersion > 0, true);
 });
 
@@ -170,13 +198,9 @@ test("buildSystemPrompt includes target language and the mixed-language rule", (
   assert.match(p, /translations/);                  // {"translations":[...]} 指示
 });
 
-test("buildSystemPrompt names an explicit source language", () => {
+test("buildSystemPrompt with explicit source names it and translates ONLY that language (third languages stay)", () => {
   const p = ProviderApi.buildSystemPrompt("en", "ja");
   assert.match(p, /source language is English/i);
-});
-
-test("buildSystemPrompt with explicit source translates ONLY that language (third languages stay)", () => {
-  const p = ProviderApi.buildSystemPrompt("en", "ja");
   assert.match(p, /Translate ONLY the elements written in English/);
   assert.match(p, /any other language unchanged/i);
   assert.doesNotMatch(p, /NOT in Japanese/); // 「target 以外は全部訳す」ルールは source 確定時には出さない
@@ -253,12 +277,24 @@ test("buildRequest falls back to provider default model", () => {
   assert.equal(r.body.model, g.Providers.openai.defaultModel);
 });
 
-test("OpenAI 互換プロバイダ(openrouter/deepseek/groq/fugu)は chat/completions 形状を共有する", () => {
-  // OpenAI と同形 (Bearer 認証・chat/completions・json_object・max_tokens) を新 3 社で確認。
-  ["openrouter", "deepseek", "groq", "fugu"].forEach((id) => {
+// OpenAI 以外の OpenAI 互換プロバイダ。openai 本体は max_completion_tokens を使うため、この表には入れない
+// (openai の形状は "buildRequest openai shape" で検証する)。endpoint / models URL のホストは実定義を写さず
+// リテラルで固定し、定義の書き換えミスを検出する。旧 xai / fugu 個別テストはこの表へ統合した。
+const OPENAI_COMPAT_HOSTS = {
+  xai: "https://api.x.ai/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+  deepseek: "https://api.deepseek.com/v1",
+  groq: "https://api.groq.com/openai/v1",
+  fugu: "https://api.sakana.ai/v1",
+};
+
+test("OpenAI 互換プロバイダ(xai/openrouter/deepseek/groq/fugu)は chat/completions 形状を共有する", () => {
+  // OpenAI と同形 (Bearer 認証・chat/completions・json_object・max_tokens) を互換 5 社で確認。
+  Object.entries(OPENAI_COMPAT_HOSTS).forEach(([id, base]) => {
     const provider = g.Providers.get(id);
     const r = ProviderApi.buildRequest(id, { texts: ["Hello"], sourceLang: "auto", targetLang: "ja", apiKey: "k-" + id });
-    assert.equal(r.url, provider.endpoint, `${id} endpoint`);
+    assert.equal(r.url, `${base}/chat/completions`, `${id} endpoint`);
+    assert.equal(r.url, provider.endpoint, `${id} endpoint は定義と一致`);
     assert.equal(r.method, "POST", `${id} method`);
     assert.equal(r.headers.Authorization, "Bearer k-" + id, `${id} auth`);
     assert.equal(r.body.model, provider.defaultModel, `${id} default model`);
@@ -275,14 +311,29 @@ test("OpenAI 互換プロバイダ(openrouter/deepseek/groq/fugu)は chat/comple
     } else if (id === "groq") {
       assert.equal(r.body.reasoning_effort, "low", `${id} minimum reasoning_effort`);
       assert.equal(r.body.temperature, 0, `${id} temperature`);
-    } else if (id === "fugu") assert.deepEqual(r.body.reasoning, { effort: "high" }, `${id} minimum reasoning`);
+    } else if (id === "fugu") {
+      // Fugu は high が API の受理する最小値 (none/minimal/low は拒否)。温度も送らない。
+      assert.deepEqual(r.body.reasoning, { effort: "high" }, `${id} minimum reasoning`);
+      assert.ok(!("temperature" in r.body), `${id} は temperature を送らない`);
+    }
+    // 明示したモデルは既定へ置き換えずそのまま送る (現行一覧の末尾モデルで確認)。
+    const explicit = provider.models[provider.models.length - 1];
+    assert.equal(ProviderApi.buildRequest(id, { texts: ["Hi"], targetLang: "ja", model: explicit, apiKey: "k" }).body.model, explicit, `${id} explicit model`);
+    // モデル一覧は endpoint の /chat/completions を /models に置換した URL へ同じ Bearer で取りに行く。
+    const models = ProviderApi.buildModelsRequest(id, "k-" + id);
+    assert.equal(models.url, `${base}/models`, `${id} models url`);
+    assert.equal(models.headers.Authorization, "Bearer k-" + id, `${id} models auth`);
   });
 });
 
-test("OpenAI 互換プロバイダは parseResponse / streamDelta も openai と同じ経路に乗る", () => {
-  ["openrouter", "deepseek", "groq", "fugu"].forEach((id) => {
-    const json = { choices: [{ message: { content: '{"translations":["やあ"]}' } }] };
+test("OpenAI 互換プロバイダは parseResponse / parseUsage / streamDelta も openai と同じ経路に乗る", () => {
+  Object.keys(OPENAI_COMPAT_HOSTS).forEach((id) => {
+    const json = {
+      choices: [{ message: { content: '{"translations":["やあ"]}' } }],
+      usage: { prompt_tokens: 4, completion_tokens: 3 },
+    };
     assert.deepEqual(ProviderApi.parseResponse(id, json), ["やあ"], `${id} parseResponse`);
+    assert.deepEqual(ProviderApi.parseUsage(id, json), { input: 4, output: 3 }, `${id} parseUsage`);
     assert.equal(ProviderApi.streamDelta(id, { choices: [{ delta: { content: "あ" } }] }), "あ", `${id} streamDelta`);
   });
 });
@@ -549,10 +600,6 @@ test("明示したモデル別 effort を各社のネイティブ request 形式
   assert.deepEqual(openrouter.body.reasoning, { effort: "high" });
 });
 
-test("buildRequest throws on unknown provider", () => {
-  assert.throws(() => ProviderApi.buildRequest("nope", { texts: [] }));
-});
-
 test("buildRequest opts.stream enables SSE for openai/xai (and usage in last chunk)", () => {
   const r = ProviderApi.buildRequest("openai", { texts: ["x"], targetLang: "ja", model: "gpt-5.4-mini", apiKey: "k", stream: true });
   assert.equal(r.body.stream, true);
@@ -630,50 +677,7 @@ test("parseUsage missing usage returns zeros", () => {
   assert.deepEqual(ProviderApi.parseUsage("openai", {}), { input: 0, output: 0 });
 });
 
-// ---- xAI (Grok) は OpenAI 互換 ----
-
-test("buildRequest xai is OpenAI-compatible (Bearer + chat completions)", () => {
-  const r = ProviderApi.buildRequest("xai", {
-    texts: ["Hi"], targetLang: "ja", model: "grok-4-1-fast-non-reasoning", apiKey: "xai-key",
-  });
-  assert.equal(r.url, "https://api.x.ai/v1/chat/completions");
-  assert.equal(r.headers.Authorization, "Bearer xai-key");
-  assert.equal(r.body.model, "grok-4-1-fast-non-reasoning");
-  assert.equal(r.body.messages.length, 2);
-  assert.equal(r.body.response_format.type, "json_object");
-});
-
-test("parseResponse / parseUsage xai (OpenAI-compatible shape)", () => {
-  const json = {
-    choices: [{ message: { content: '{"translations":["やあ"]}' } }],
-    usage: { prompt_tokens: 4, completion_tokens: 3 },
-  };
-  assert.deepEqual(ProviderApi.parseResponse("xai", json), ["やあ"]);
-  assert.deepEqual(ProviderApi.parseUsage("xai", json), { input: 4, output: 3 });
-});
-
-// ---- Sakana Fugu は OpenAI 互換 ----
-
-test("buildRequest fugu (Sakana) is OpenAI-compatible (Bearer + chat completions)", () => {
-  const r = ProviderApi.buildRequest("fugu", {
-    texts: ["Hi"], targetLang: "ja", model: "fugu", apiKey: "sakana-key",
-  });
-  assert.equal(r.url, "https://api.sakana.ai/v1/chat/completions");
-  assert.equal(r.headers.Authorization, "Bearer sakana-key");
-  assert.equal(r.body.model, "fugu");
-  assert.equal(r.body.response_format.type, "json_object");
-  // Fugu は high が API の受理する最小値 (none/minimal/low は拒否)
-  assert.deepEqual(r.body.reasoning, { effort: "high" });
-  assert.ok(!("temperature" in r.body));
-  assert.ok(r.body.max_tokens > 0);                 // max_completion_tokens ではなく max_tokens
-  assert.ok(!("max_completion_tokens" in r.body));
-});
-
-test("buildModelsRequest fugu → GET /models with Bearer (endpoint の /chat/completions を /models に置換)", () => {
-  const r = ProviderApi.buildModelsRequest("fugu", "sakana-key");
-  assert.equal(r.url, "https://api.sakana.ai/v1/models");
-  assert.equal(r.headers.Authorization, "Bearer sakana-key");
-});
+// xAI (Grok) / Sakana Fugu の OpenAI 互換形状 (要求・応答・usage・/models) は OPENAI_COMPAT_HOSTS の表で検証する。
 
 // ---- MyMemory (無料 NMT・GET・1テキスト/リクエスト) ----
 
@@ -717,6 +721,34 @@ test("buildModelsRequest anthropic/gemini carry the right auth header", () => {
   const gm = ProviderApi.buildModelsRequest("gemini", "gk");
   assert.match(gm.url, /generativelanguage\.googleapis\.com\/v1beta\/models/);
   assert.equal(gm.headers["x-goog-api-key"], "gk");
+});
+
+// 認証ヘッダーを内部関数へ集約しても、テキスト・画像・モデル一覧の 3 経路で送る値が変わらないことを固定する。
+// モデル一覧は GET なので Content-Type を付けない契約も含める。Gemini のキーは URL に載せない (ヘッダーのみ)。
+test("認証ヘッダー: 3方式×テキスト・画像・モデル一覧のヘッダー全体が従来値と一致し、呼び出しごとに別オブジェクトを返す", () => {
+  const anthropicAuth = { "x-api-key": "k", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
+  const cases = [
+    ["openai", { Authorization: "Bearer k" }],
+    ["openrouter", { Authorization: "Bearer k" }],
+    ["anthropic", anthropicAuth],
+    ["gemini", { "x-goog-api-key": "k" }],
+  ];
+  for (const [provider, auth] of cases) {
+    const text = ProviderApi.buildRequest(provider, { texts: ["Hi"], targetLang: "ja", apiKey: "k" });
+    assert.deepStrictEqual(text.headers, { "Content-Type": "application/json", ...auth }, `${provider} text`);
+    const image = ProviderApi.buildImageRequest(provider, { imageBase64: "A", targetLang: "ja", apiKey: "k" });
+    assert.deepStrictEqual(image.headers, { "Content-Type": "application/json", ...auth }, `${provider} image`);
+    const models = ProviderApi.buildModelsRequest(provider, "k");
+    assert.deepStrictEqual(models.headers, auth, `${provider} models`);
+    for (const url of [text.url, image.url, models.url]) assert.ok(!url.includes("k=") && !url.includes("key="), `${provider} url`);
+    // 共有オブジェクトを返すと、ある要求のヘッダー変更が別要求へ漏れる。
+    const again = ProviderApi.buildRequest(provider, { texts: ["Hi"], targetLang: "ja", apiKey: "k" });
+    assert.notStrictEqual(again.headers, text.headers, `${provider} fresh object`);
+    assert.notStrictEqual(ProviderApi.buildModelsRequest(provider, "k").headers, models.headers, `${provider} fresh models`);
+  }
+  // キー未指定でも従来どおり空文字を埋める (送信前の no_api_key 判定は SW 側の責務)。
+  assert.deepStrictEqual(ProviderApi.buildModelsRequest("openai").headers, { Authorization: "Bearer " });
+  assert.deepStrictEqual(ProviderApi.buildRequest("mymemory", { texts: ["Hi"], targetLang: "ja", apiKey: "k" }).headers, {});
 });
 
 test("buildModelsRequest returns null for mymemory (no model list)", () => {
@@ -792,51 +824,57 @@ test("buildImageRequest returns null for mymemory (no vision)", () => {
   assert.equal(ProviderApi.buildImageRequest("mymemory", { imageBase64: "x" }), null);
 });
 
-test("parseImageBlocks extracts blocks and clamps box to 0..1", () => {
+// 画像応答の正規化は本番経路と同じ parseImageResult で検証する (旧 parseImageBlocks は本番未使用のため撤去)。
+// parseImageResult は全行が validImageRow を満たすことを要求し、1 行でも不正なら { ok:false, error:"parse" } を返す
+// (不正行を黙って捨てて [] にする旧関数とは契約が異なる)。
+test("parseImageResult extracts blocks and clamps box to 0..1", () => {
   const json = { choices: [{ message: { content: '{"blocks":[{"original":"Hi","translation":"やあ","box":{"x":0.1,"y":0.2,"w":1.5,"h":-0.3}}]}' } }] };
-  const r = ProviderApi.parseImageBlocks("openai", json);
-  assert.equal(r.length, 1);
-  assert.equal(r[0].translation, "やあ");
-  assert.equal(r[0].box.w, 1);  // 1.5 → clamp 1
-  assert.equal(r[0].box.h, 0);  // -0.3 → clamp 0
+  const r = ProviderApi.parseImageResult("openai", json);
+  assert.equal(r.ok, true);
+  assert.equal(r.blocks.length, 1);
+  assert.equal(r.blocks[0].translation, "やあ");
+  assert.equal(r.blocks[0].box.w, 1);  // 1.5 → clamp 1
+  assert.equal(r.blocks[0].box.h, 0);  // -0.3 → clamp 0
 });
 
-test("parseImageBlocks returns [] when there are no blocks", () => {
+test("parseImageResult returns ok with no blocks for an image without text", () => {
   const json = { choices: [{ message: { content: '{"blocks":[]}' } }] };
-  assert.deepEqual(ProviderApi.parseImageBlocks("openai", json), []);
+  assert.deepEqual(ProviderApi.parseImageResult("openai", json), { ok: true, blocks: [] });
 });
 
-test("parseImageBlocks rejects non-string translation (schema slip → no [object Object])", () => {
+test("parseImageResult rejects non-string translation (schema slip → no [object Object])", () => {
   const json = { choices: [{ message: { content: '{"blocks":[{"translation":{"text":"x"},"box":{"x":0,"y":0,"w":0.5,"h":0.1}}]}' } }] };
-  assert.deepEqual(ProviderApi.parseImageBlocks("openai", json), []);
+  assert.deepEqual(ProviderApi.parseImageResult("openai", json), { ok: false, error: "parse" });
 });
 
-test("parseImageBlocks captures cy (midline) and falls back to box center", () => {
+test("parseImageResult captures cy (midline) and falls back to box center", () => {
   const withCy = { choices: [{ message: { content: '{"blocks":[{"translation":"訳","cy":0.5,"box":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}]}' } }] };
-  assert.equal(ProviderApi.parseImageBlocks("openai", withCy)[0].cy, 0.5); // 明示 cy を採用
+  assert.equal(ProviderApi.parseImageResult("openai", withCy).blocks[0].cy, 0.5); // 明示 cy を採用
   const noCy = { choices: [{ message: { content: '{"blocks":[{"translation":"訳","box":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}]}' } }] };
-  assert.ok(Math.abs(ProviderApi.parseImageBlocks("openai", noCy)[0].cy - 0.25) < 1e-9); // 欠落時は y+h/2 = 0.25
+  assert.ok(Math.abs(ProviderApi.parseImageResult("openai", noCy).blocks[0].cy - 0.25) < 1e-9); // 欠落時は y+h/2 = 0.25
 });
 
-test("parseImageBlocks converts Gemini box_2d [ymin,xmin,ymax,xmax]/1000 to box + cy", () => {
+test("parseImageResult converts Gemini box_2d [ymin,xmin,ymax,xmax]/1000 to box + cy", () => {
   const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[200,100,400,600],"original":"Hi","translation":"やあ"}]' }] } }] };
-  const r = ProviderApi.parseImageBlocks("gemini", g);
-  assert.equal(r.length, 1);
-  assert.equal(r[0].translation, "やあ");
+  const r = ProviderApi.parseImageResult("gemini", g);
+  assert.equal(r.ok, true);
+  assert.equal(r.blocks.length, 1);
+  const [b] = r.blocks;
+  assert.equal(b.translation, "やあ");
   // ymin .2 / xmin .1 / ymax .4 / xmax .6 → x .1, y .2, w .5, h .2, cy .3 (x/y 反転していないことの確認)
-  assert.ok(Math.abs(r[0].box.x - 0.1) < 1e-9);
-  assert.ok(Math.abs(r[0].box.y - 0.2) < 1e-9);
-  assert.ok(Math.abs(r[0].box.w - 0.5) < 1e-9);
-  assert.ok(Math.abs(r[0].box.h - 0.2) < 1e-9);
-  assert.ok(Math.abs(r[0].cy - 0.3) < 1e-9);
+  assert.ok(Math.abs(b.box.x - 0.1) < 1e-9);
+  assert.ok(Math.abs(b.box.y - 0.2) < 1e-9);
+  assert.ok(Math.abs(b.box.w - 0.5) < 1e-9);
+  assert.ok(Math.abs(b.box.h - 0.2) < 1e-9);
+  assert.ok(Math.abs(b.cy - 0.3) < 1e-9);
 });
 
-test("parseImageBlocks (gemini) drops items without a valid 4-element box_2d", () => {
+test("parseImageResult (gemini) rejects items without a valid 4-element box_2d", () => {
   const g = { candidates: [{ content: { parts: [{ text: '[{"box_2d":[1,2,3],"translation":"x"},{"translation":"y"}]' }] } }] };
-  assert.deepEqual(ProviderApi.parseImageBlocks("gemini", g), []);
+  assert.deepEqual(ProviderApi.parseImageResult("gemini", g), { ok: false, error: "parse" });
 });
 
-test("parseImageBlocks keeps explicit kind and leaves missing/unknown kind undefined (kind 非対応モデル判別用)", () => {
+test("parseImageResult keeps explicit kind and leaves missing/unknown kind undefined (kind 非対応モデル判別用)", () => {
   // openai 分岐: logo/text は明示値のみ保持、欠落・未知値は undefined (filterBlocks が hasKind=false を判定して
   // looksLikeBrandWordmark 保険を走らせるため。"text" に倒すと hasKind が常に真になり保険が死ぬ)。
   const oa = { choices: [{ message: { content: '{"blocks":[' +
@@ -844,7 +882,7 @@ test("parseImageBlocks keeps explicit kind and leaves missing/unknown kind undef
     '{"translation":"本文","box":{"x":0,"y":0.5,"w":0.3,"h":0.05}},' +
     '{"translation":"見出し","kind":"text","box":{"x":0,"y":0.6,"w":0.3,"h":0.05}},' +
     '{"translation":"未知","kind":"banana","box":{"x":0,"y":0.7,"w":0.3,"h":0.05}}]}' } }] };
-  const r = ProviderApi.parseImageBlocks("openai", oa);
+  const r = ProviderApi.parseImageResult("openai", oa).blocks;
   assert.equal(r.length, 4);
   assert.equal(r[0].kind, "logo");
   assert.equal(r[1].kind, undefined);  // 欠落 → undefined
@@ -853,7 +891,7 @@ test("parseImageBlocks keeps explicit kind and leaves missing/unknown kind undef
   // gemini 分岐も同様: logo 保持、欠落は undefined
   const g = { candidates: [{ content: { parts: [{ text:
     '[{"box_2d":[0,0,50,200],"translation":"Claude","kind":"logo"},{"box_2d":[500,0,550,300],"translation":"本文"}]' }] } }] };
-  const rg = ProviderApi.parseImageBlocks("gemini", g);
+  const rg = ProviderApi.parseImageResult("gemini", g).blocks;
   assert.equal(rg[0].kind, "logo");
   assert.equal(rg[1].kind, undefined);
 });

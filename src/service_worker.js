@@ -42,7 +42,8 @@ if (typeof importScripts === "function") {
         settingsMem = null;
         refreshActiveAutoTranslateSiteMenu();
       }
-      if (area === "sync" && Object.keys(changes).some(key => key.startsWith(SettingsSync.PREFIX))) {
+      // V3（新版端末）に加え、旧版端末が書く V2 の変更でも再収束する（旧→新の片方向取り込み）。
+      if (area === "sync" && Object.keys(changes).some(key => SettingsSync.isSyncKey(key))) {
         receiveSyncedSettings().catch(() => {});
       }
     });
@@ -158,10 +159,14 @@ if (typeof importScripts === "function") {
       // ワーカー終了後も再送できるよう、通信前に次回実行を確保する。
       await chrome.alarms.create(SettingsSync.ALARM, { delayInMinutes: 1 });
       const state = await loadSettingsSync();
-      const remote = await chrome.storage.sync.get([...SettingsSync.KEYS, ...(!state.joined ? SettingsSync.LEGACY_KEYS : state.legacyCleanup)]);
+      // V3（書き込み先）と V2（旧版端末の変更・読むだけ）を読む。V1 は初参加時と撤去待ちの間だけ読む。
+      const remote = await chrome.storage.sync.get([...SettingsSync.KEYS, ...SettingsSync.V2_KEYS,
+        ...(!state.joined ? SettingsSync.LEGACY_KEYS : state.legacyCleanup)]);
       if (generation !== settingsSyncGeneration) return base;
       SettingsSync.join(state, base, remote);
       const projected = SettingsSync.project(state, base);
+      // 送信は V3 だけ。V2 へは set も remove もしない（旧版との書込み往復を構造的に起こさない）。
+      // 既存端末の V3 への移行も、V3 側と差があるバケットを送るこの判定だけで成立する。
       const desired = SettingsSync.pack(state);
       const uploads = Object.fromEntries(Object.entries(desired).filter(([key, value]) => !SettingsSync.equal(value, remote[key])));
       state.legacyCleanup = SettingsSync.LEGACY_KEYS.filter(key => state.legacyCleanup.includes(key) || Object.hasOwn(remote, key));
@@ -177,10 +182,11 @@ if (typeof importScripts === "function") {
       }
       if (changed) await saveSettings(projected, state);
       if (generation !== settingsSyncGeneration) return settingsMem || base;
-      SettingsSync.checkQuota(desired);
+      // V2・V1 は消せないため、今回読んだ同期領域の残りも合計へ含めて上限を確かめる。
+      SettingsSync.checkQuota(desired, remote);
       if (Object.keys(uploads).length) await chrome.storage.sync.set(uploads);
       if (generation !== settingsSyncGeneration) return settingsMem || base;
-      // 旧試作形式は初回移行時だけ読み、V2保存成功後に撤去する。
+      // 旧試作形式 V1 は初回移行時だけ読み、V3保存成功後に撤去する（V2 は旧版が使うので消さない）。
       if (legacy.length) await chrome.storage.sync.remove(legacy);
       state.pending = false;
       state.legacyCleanup = [];
@@ -211,6 +217,7 @@ if (typeof importScripts === "function") {
       let syncChanged = false;
       if (next.syncSettings || base.syncSettings) {
         state = await loadSettingsSync();
+        // 同期の OFF→ON では保持していた記録（未知IDの記録を含む）も捨て、join で同期領域から取り直す。
         if (next.syncSettings !== base.syncSettings) state = { ...state, joined: false, records: {}, pending: false };
         if (next.syncSettings) {
           syncChanged = SettingsSync.recordChanges(state, base, next, changedAt) || !base.syncSettings;
@@ -631,6 +638,29 @@ if (typeof importScripts === "function") {
   }
 
   // ---- 翻訳代理 fetch (核心) ----
+  // 通常経路 (translateBatch) と SSE 経路 (translateBatchStream) が ProviderApi.buildRequest へ渡す
+  // オプションを 1 か所に集約する。両経路の差は stream:true の有無だけで、言語・推論量・訳調・言い換えの
+  // 指定がずれると「stream だけ別プロンプト / 別キャッシュ意味」になるため二重管理しない。
+  // 例外 (reasoningEffortFor 等) は呼び出し側の try で扱う: 通常経路は "build" エラー、stream 経路は null
+  // (非stream へフォールバック) と失敗時の戻り値が異なるため、ここでは握りつぶさない。
+  // 画像 (buildImageRequest) と NMT の translateEach は要求形が異なるので対象外。
+  function textRequestOptions(settings, providerId, model, apiKey, texts, contexts, stream) {
+    const options = {
+      texts,
+      contexts,
+      sourceLang: settings.sourceLang,
+      targetLang: settings.targetLang,
+      model,
+      apiKey,
+      reasoningEffort: reasoningEffortFor(settings, providerId, model),
+      translationStyle: settings.translationStyle, customPrompt: settings.customPrompt,
+      rewriteMode: settings.rewriteMode === true, rewriteStyle: settings.rewriteStyle,
+    };
+    // 従来どおり通常経路では stream キー自体を付けない (buildRequest は truthy 判定だが、要求オプションの形も保つ)。
+    if (stream) options.stream = true;
+    return options;
+  }
+
   async function translateBatch(settings, texts, contexts, signal, opts) {
     const providerId = settings.provider;
     const tune = !(opts && opts.tune === false); // quick translate (単発) は学習(BatchTuner)を汚さない
@@ -639,6 +669,11 @@ if (typeof importScripts === "function") {
     const requiresKey = !provider || provider.requiresKey !== false;
     if (requiresKey && !apiKey) return { ok: false, error: "no_api_key", provider: providerId };
 
+    // 言い換えは LLM のプロンプトで実現する。NMT (MyMemory 等) へ同一言語ペアを送っても書き換わらず
+    // 無駄な呼び出しになるため、送信せず明示エラーで返す (popup でも言い換えモードを無効化している)。
+    if (settings.rewriteMode === true && provider && provider.batch === false) {
+      return { ok: false, error: "rewrite_unsupported", provider: providerId };
+    }
     // バッチ非対応プロバイダ (MyMemory 等) は 1 テキストずつ並列処理する
     if (provider && provider.batch === false) {
       return translateEach(settings, provider, texts, apiKey, signal);
@@ -648,16 +683,7 @@ if (typeof importScripts === "function") {
     const model = (settings.models && settings.models[providerId]) || undefined;
     let req;
     try {
-      req = ProviderApi.buildRequest(providerId, {
-        texts,
-        contexts,
-        sourceLang: settings.sourceLang,
-        targetLang: settings.targetLang,
-        model,
-        apiKey,
-        reasoningEffort: reasoningEffortFor(settings, providerId, model),
-        translationStyle: settings.translationStyle, customPrompt: settings.customPrompt,
-      });
+      req = ProviderApi.buildRequest(providerId, textRequestOptions(settings, providerId, model, apiKey, texts, contexts, false));
     } catch (e) {
       return { ok: false, error: "build", message: String((e && e.message) || e) };
     }
@@ -729,11 +755,7 @@ if (typeof importScripts === "function") {
     if (streamUnsupported.has(streamKey)) return null;
     let req;
     try {
-      req = ProviderApi.buildRequest(providerId, {
-        texts, contexts, sourceLang: settings.sourceLang, targetLang: settings.targetLang, model, apiKey,
-        reasoningEffort: reasoningEffortFor(settings, providerId, model), stream: true,
-        translationStyle: settings.translationStyle, customPrompt: settings.customPrompt,
-      });
+      req = ProviderApi.buildRequest(providerId, textRequestOptions(settings, providerId, model, apiKey, texts, contexts, true));
     } catch (_e) { return null; }
     await ensureMem();
     const t0 = Date.now();
@@ -1238,7 +1260,11 @@ if (typeof importScripts === "function") {
       const inspected = ImageRequestPolicy.inspectBytes(bytes, ctype);
       if (!inspected.ok) return inspected;
       const { mime } = inspected;
-      return { ok: true, b64: base64FromBytes(bytes), mime, animated: isAnimatedImage(bytes, mime) };
+      // アニメーション判定は生バイトだけで完結するため、base64 化 (最大 MAX_IMAGE_BYTES の文字列生成) より先に行う。
+      // アニメ画像は translateImage が vision を呼ばず即 "animated" で終えるので、b64 を作っても捨てるだけになる。
+      // 戻り値の形 (ok/mime/animated) は従来どおりで、b64 だけをアニメ時に省く。
+      if (isAnimatedImage(bytes, mime)) return { ok: true, mime, animated: true };
+      return { ok: true, b64: base64FromBytes(bytes), mime, animated: false };
     } catch (e) {
       if (e && e.name === "AbortError") return { ok: false, error: "aborted" };
       return { ok: false, error: "image_fetch", message: String((e && e.message) || e) };
@@ -1259,6 +1285,7 @@ if (typeof importScripts === "function") {
     if (!got.ok) return got;
     // アニメーション画像 (アニメ GIF/WebP・APNG) は canvas inpaint で焼くと元 <img> のアニメが静止画に固まるため
     // 翻訳しない。content はこの error を受けて以後その画像の「訳」ボタンを出さない。vision を呼ぶ前に弾いて API 消費も避ける。
+    // fetchImageBytes はアニメ時に b64 を作らないため、b64 を参照するのはこの判定より後に限る。
     if (got.animated) return { ok: false, error: "animated" };
     const b64 = got.b64, mime = got.mime;
 
@@ -1395,7 +1422,7 @@ if (typeof importScripts === "function") {
     pageSessions.delete(tabId);
     persistPageSessions();
     // 集約状態を直接リセットする (translatePage と対称化)。通常は translator の "restored" 通知が reset を促すが、
-    // フレームが context 失効/離脱して "restored" を返せないと st.errored/loading が残置する。ここで直接リセットすれば
+    // フレームが context 失効/離脱して "restored" を返せないと st.erroredFrames/loading が残置する。ここで直接リセットすれば
     // 「翻訳が loading に張り付いた → FAB クリックで復元」が確実に状態を解除できる手動脱出になる。
     resetFrameProgress(tabId);
     // translator 未注入のタブ (画像翻訳のみ等) では translator の "restored" 通知が来ず、FAB/popup が
@@ -1411,7 +1438,7 @@ if (typeof importScripts === "function") {
   // ---- フレーム横断の進捗集約 ----
   // 同一タブの複数フレーム (allFrames 注入) の進捗を集約し、参加フレームが全部 done になってから
   // グローバル done を発行する。小さい iframe / 子フレームが先に done で UI が早期確定するのを防ぐ。
-  const frameProgress = new Map(); // tabId -> { active:Set<frameId>, done:Set<frameId>, timer:id|null }
+  const frameProgress = new Map(); // tabId -> { active, done, partialFrames, erroredFrames: Set<frameId>, timer:id|null }
   const FRAME_DONE_GRACE_MS = 8000; // 一部フレーム done 後、残りがこの時間応答しなければ離脱とみなし done を発行
   // 直近の翻訳エラーをタブ単位で状態化する。自動翻訳/FAB はエラー後に popup を開かないと理由が分からないため、
   // メモリに加えて短期の storage.session にも保存し、SW休止後でもTTL内なら原因 (キー無効/quota 等) を出せるようにする。
@@ -1466,57 +1493,106 @@ if (typeof importScripts === "function") {
     lastErrorByTab.delete(tabId); // 新セッション開始/復元で直近エラーをクリア (古い理由が残らないように)
     void clearPersistedLastError(tabId);
   }
+  // 集約値はフレーム単位で持つ。partial / error を tab 単位の真偽値にすると、content だけで新 run に
+  // 入り直したフレーム (手動翻訳中の SPA 遷移・自動翻訳中のサブフレーム内 SPA 遷移。translator.js の
+  // handleLocationChange → startTranslate) の前ルート分を消せず、新ルートの done に旧 partial が乗ったり、
+  // 旧ルートの error が新ルートの progress/done を握りつぶしたりする (FAB 状態を前ルートから持ち越さない契約に反する)。
+  //   partialFrames: done(partial) を送ったフレーム + done watchdog が未完のまま猶予切れにしたフレーム
+  //   erroredFrames: error を送ったフレーム (1 つでも残る間は error を終端として restore 以外を中継しない)
+  //   renewedFrames: 新 run に入ってまだ done / error を出していないサブフレーム (無言終了に備えて watchdog を張り直す対象)
+  function newFrameProgressState() {
+    return { active: new Set(), done: new Set(), partialFrames: new Set(), erroredFrames: new Set(), renewedFrames: new Set(), timer: null };
+  }
+  // 未完フレームが残る間の done watchdog。iframe の離脱/ナビゲーション/無言終了で永久に loading へ張り付くのを
+  // 防ぐが、生存中の遅い frame を「完全 done」と偽装しない。猶予後は pendingFrames 付き partial として通知する。
+  // doneMsg は中継する done 通知の雛形 (state: "done" の TRANSLATION_PROGRESS)。
+  function armDoneWatchdog(tabId, st, doneMsg) {
+    clearFrameTimer(st);
+    st.timer = setTimeout(() => {
+      const cur = frameProgress.get(tabId);
+      if (cur) {
+        cur.timer = null;
+        const pendingFrames = [...cur.active].filter((f) => !cur.done.has(f));
+        // 猶予切れの partial は未完フレームに帰属させる。従来の tab 単位 partial と同じく、そのフレームが
+        // 後から done しても partial は残し、そのフレームが新 run に入ったときだけ消える。
+        for (const f of pendingFrames) cur.partialFrames.add(f);
+        relayProgress(tabId, Object.assign({}, doneMsg, { partial: true, pendingFrames }));
+      }
+    }, FRAME_DONE_GRACE_MS);
+  }
   function handleFrameProgress(tabId, frameId, msg) {
     let st = frameProgress.get(tabId);
-    if (!st) { st = { active: new Set(), done: new Set(), errored: false, timer: null }; frameProgress.set(tabId, st); }
+    if (!st) { st = newFrameProgressState(); frameProgress.set(tabId, st); }
     // error は終端。どれかのフレームが error を出したら、その後の done/progress で上書きしない
     // (別フレームの done が error 表示を消して「成功したように見える」のを防ぐ)。restore/新セッションでリセット。
     if (msg.state === "error") {
-      st.errored = true; clearFrameTimer(st);
+      st.erroredFrames.add(frameId); st.renewedFrames.delete(frameId); clearFrameTimer(st);
       lastErrorByTab.set(tabId, { detail: msg.detail, ts: Date.now() }); // 後から popup を開いても理由を出せるよう状態化
       void persistLastError(tabId, msg.detail);
       relayProgress(tabId, msg); return;
     }
-    if (st.errored && msg.state !== "restored") return; // 終端後は restore 以外を中継しない
+    if (msg.state === "restored") {
+      resetFrameProgress(tabId);
+      relayProgress(tabId, msg);
+      return;
+    }
+    // 同じフレームが done / error を送った後の progress は「そのフレームの新 run」とみなす。
+    // translator.js は announced (done 通知済み) の間は flush の progress を送らず、fatal (error) 後は flush 自体を
+    // 止めるため、done/error 後に progress が来るのは startTranslate (runId 更新 + announced/fatal リセット) だけ。
+    // このときそのフレームの前 run の partial / error だけを初期化する (他フレームの集約値には触れない)。
+    const newRun = msg.state === "progress" && (st.done.has(frameId) || st.erroredFrames.has(frameId));
+    if (newRun) {
+      st.partialFrames.delete(frameId);
+      if (frameId !== 0) st.renewedFrames.add(frameId); // done / error まで、同じ run の後続 progress でも watchdog を張り直す
+      if (st.erroredFrames.delete(frameId) && st.erroredFrames.size === 0) {
+        // 最後の error 元が新 run に入った = タブはもう error 状態ではない。popup が前ルートの理由を
+        // TTL (90 秒) の間出し続けないよう、直近エラーも新セッション開始時 (resetFrameProgress) と同様に消す。
+        lastErrorByTab.delete(tabId);
+        void clearPersistedLastError(tabId);
+      }
+    }
+    // error が残る間も active/done/partial の記録は続け、中継だけを止める。記録を止めると、error 中に done した
+    // フレームが error 解消後も「未完」に見え、done watchdog の猶予切れ partial を誤発火させるため。
+    const errored = st.erroredFrames.size > 0;
     switch (msg.state) {
       case "progress":
         st.done.delete(frameId);
         st.active.add(frameId);
         clearFrameTimer(st); // 新たに翻訳中のフレームが出たので done watchdog を解除
-        if (st.done.size === 0 && st.active.size === 1) relayProgress(tabId, msg); // 最初の進捗で loading 表示
+        // 最初の進捗で loading 表示。新 run の進捗も中継する: 他フレームが done 済みだと「最初の進捗」条件を
+        // 満たさず、FAB/popup が前ルートの done / error 表示のまま新ルートの翻訳中を示せないため。
+        if (!errored && (newRun || (st.done.size === 0 && st.active.size === 1))) relayProgress(tabId, msg);
+        // サブフレームの新 run は、done を出す前に再遷移してテキスト不足/同一言語で「無言終了」し得る
+        // (iframe の skip は通知しない: translator.js の startTranslate)。他の参加フレームが全て done 済みだと
+        // done watchdog を張る契機が無く、上で中継した loading が永久に残るため、ここでも同じ watchdog を張る。
+        // メインフレーム (frameId 0) は無言終了せず skipped/done/error を必ず送るので対象外 (遅い翻訳を partial と誤表示しない)。
+        // 判定は newRun (その run の最初の progress だけ真) ではなく renewedFrames で行う。translator は startTranslate の
+        // progress の直後に初回 flush の progress も送るため、上の clearFrameTimer で解除された watchdog を張り直す必要がある。
+        if (!errored && st.renewedFrames.has(frameId) && [...st.active].every((f) => f === frameId || st.done.has(f))) {
+          armDoneWatchdog(tabId, st, Object.assign({}, msg, { state: "done" }));
+        }
         break;
       case "done":
         st.active.add(frameId);
         st.done.add(frameId);
-        if (msg.partial) st.partial = true; // どれかのフレームがレート制限等で一部未訳なら集約して done に乗せる
+        st.renewedFrames.delete(frameId); // 新 run を完走した (以後の progress は次の新 run 判定に任せる)
+        // どれかのフレームがレート制限等で一部未訳なら集約して done に乗せる (フレーム単位で記録し新 run で消せるようにする)
+        if (msg.partial) st.partialFrames.add(frameId);
         clearFrameTimer(st);
+        if (errored) break; // 終端 error 中は中継しない (記録だけ)
         if ([...st.active].every((f) => st.done.has(f))) {
-          relayProgress(tabId, Object.assign({}, msg, { partial: Boolean(st.partial) })); // 全参加フレーム完了
+          relayProgress(tabId, Object.assign({}, msg, { partial: st.partialFrames.size > 0 })); // 全参加フレーム完了
         } else {
-          // 未完フレームが残る。iframe の離脱/ナビゲーションで永久に loading へ張り付くのを防ぐが、
-          // 生存中の遅いframeを「完全done」と偽装しない。猶予後は pending_frames 付き partial として通知する。
-          st.timer = setTimeout(() => {
-            const cur = frameProgress.get(tabId);
-            if (cur) {
-              cur.timer = null;
-              cur.partial = true;
-              const pendingFrames = [...cur.active].filter((f) => !cur.done.has(f));
-              relayProgress(tabId, Object.assign({}, msg, { partial: true, pendingFrames }));
-            }
-          }, FRAME_DONE_GRACE_MS);
+          armDoneWatchdog(tabId, st, msg);
         }
         break;
       case "skipped":
         // メインフレームが「ページ言語=翻訳先」で翻訳不要と判定。iframe が翻訳中ならそちらの done 表示に任せ、
         // どのフレームも翻訳していないときだけ中継して FAB/popup を未翻訳状態に戻す。
-        if (st.active.size === 0) relayProgress(tabId, msg);
-        break;
-      case "restored":
-        resetFrameProgress(tabId);
-        relayProgress(tabId, msg);
+        if (!errored && st.active.size === 0) relayProgress(tabId, msg);
         break;
       default: // 未知の state は念のため中継 (error は上の専用パスで終端化済み)
-        relayProgress(tabId, msg);
+        if (!errored) relayProgress(tabId, msg);
     }
   }
   // タブが閉じたら集約状態と in-flight を後始末する (離脱フレーム/タブの取り残し防止)
@@ -1736,6 +1812,9 @@ if (typeof importScripts === "function") {
               // 旧 provider・旧キー・旧言語で実行されるのを防ぐ (TRANSLATE_IMAGE と同じ理由)。
               await settingsWriteChain;
               settings = resolveSettings(msg.settings, await getSettingsCached()); // quick等は最新設定を使う
+              // 言い換えモードはページ翻訳 (popup/FAB/右クリック/自動) だけに適用する。選択範囲・クイック翻訳は
+              // 「訳す」操作なので、保存値が ON でも通常翻訳として送る (プロンプトとキャッシュキーも通常側になる)。
+              settings = { ...settings, rewriteMode: false };
               // popup専用の言語を使う。選択範囲の翻訳は従来どおりページ翻訳と同じ言語を使う。
               if (MessagePolicy.isExtensionPageSender(sender, extensionBase)) {
                 settings = { ...settings, sourceLang: settings.quickSourceLang, targetLang: settings.quickTargetLang };
@@ -2045,10 +2124,18 @@ if (typeof importScripts === "function") {
     });
   }
 
+  // 右クリックメニュー項目は全タブ共通の 1 個なので、文言は「いま表示されているタブ」(最後にフォーカスされた
+  // ウィンドウのアクティブタブ) に合わせる。onClicked は押されたタブの URL で追加/削除するため、背景タブの
+  // 読み込み完了でその URL の文言へ書き換えると、表示中の文言と実際の動作が逆になり得る。
   if (chrome.tabs) {
     chrome.tabs.onActivated.addListener(() => { refreshActiveAutoTranslateSiteMenu(); });
     chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-      if (changeInfo.url || changeInfo.status === "complete") refreshAutoTranslateSiteMenu(tab).catch(() => { /* noop */ });
+      if (!(changeInfo.url || changeInfo.status === "complete")) return;
+      // 非アクティブタブ (背景タブ) の更新は表示中の文言に関係しないので無視する。
+      if (!tab || !tab.active) return;
+      // アクティブでも非フォーカスのウィンドウのタブかもしれない。event の tab を直接使わず、
+      // 最後にフォーカスされたウィンドウのアクティブタブを引き直して更新する (onActivated と同じ基準)。
+      refreshActiveAutoTranslateSiteMenu();
     });
   }
 

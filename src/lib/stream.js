@@ -40,6 +40,7 @@
    */
   function createTranslationsExtractor() {
     // phase: scan(配列開始'['待ち) | between(要素間) | str(文字列中) | esc(エスケープ) | u(\uXXXX) | done
+    //        | broken(要素が文字列でない崩れた応答。以後は何も返さず、done にもならない)
     let phase = "scan";
     let buf = "";    // 組み立て中の文字列要素
     let uHex = "";   // \u の 16 進 4 桁
@@ -48,7 +49,7 @@
       const out = [];
       const s = String(chunk == null ? "" : chunk);
       for (let i = 0; i < s.length; i++) {
-        if (phase === "done") break;
+        if (phase === "done" || phase === "broken") break;
         const c = s[i];
         if (phase === "scan") {
           if (c === "[") phase = "between"; // 最初の '[' = translations 配列開始 (フェンス/前置きは読み飛ばす)
@@ -57,6 +58,12 @@
         if (phase === "between") {
           if (c === '"') { phase = "str"; buf = ""; }
           else if (c === "]") phase = "done";
+          else if (c !== "," && c.trim() !== "") {
+            // 要素がオブジェクト/数値/null 等に崩れた応答 ({"translation":"…"} 等)。ここで読み飛ばすと
+            // キー名や後続要素を訳文として返し添字がずれる。早出しの訳文は translatedNodes に登録されて
+            // 完全パース失敗後の再翻訳でも直らないため、崩れ以降は何も返さない (既に返した要素の添字は正しい)。
+            phase = "broken";
+          }
           // ',' や空白は無視
           continue;
         }

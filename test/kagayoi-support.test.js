@@ -3,8 +3,8 @@
 /**
  * お問い合わせ / 評価ボタンの組み込み確認。
  *
- * 部品の正本は Kagayoi.Support（public/assets/contact-form.js と
- * clients/chrome-extension/support-footer.js）で、この拡張には逐語コピーを同梱している。
+ * 部品の正本は exact 固定した npm パッケージ @kagayoi/support-extension（dist/ の JS 2本・CSS 3本）で、
+ * この拡張には `bun --bun run sync:support` で src/shared/ へ逐語コピーを同梱している（一致は `--check` で検証）。
  * ここでは「同梱漏れ」「読み込み順の崩れ」「product-id の書き間違い」を止める。
  * 部品そのものの挙動は Kagayoi.Support 側のテストが見る。
  */
