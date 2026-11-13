@@ -133,3 +133,16 @@ test("web-extのFileFilterが実OSのパスで秘密ファイル・依存・成�
     }
   }
 });
+
+// web-ext → @devicefarmer/adbkit は node-forge を exact 固定するため、override で 1.4.3 以降へ上げる。
+// GHSA-6889-vf6x-f3g5 / GHSA-w4xr-hqv8-ch44 / GHSA-6cv4-p8m7-4r25 / GHSA-j8rw-jp99-435v（<=1.4.2）の再発を防ぐ。
+test("web-extが実際に解決するnode-forgeが既知脆弱性の修正版で、鍵生成APIを維持する", () => {
+  const adbkitRequire = createRequire(webExtRequire.resolve("@devicefarmer/adbkit"));
+  const manifest = adbkitRequire("node-forge/package.json");
+  const [major, minor, patch] = manifest.version.split(".").map(Number);
+  assert.equal(major, 1);
+  assert.ok(minor > 4 || (minor === 4 && patch >= 3), `node-forge ${manifest.version} は 1.4.3 未満`);
+  const forge = adbkitRequire("node-forge");
+  assert.equal(typeof forge.pki.rsa.generateKeyPair, "function");
+  assert.equal(typeof forge.md.sha1.create, "function");
+});

@@ -4,7 +4,9 @@
  * 設計方針:
  * - `src/` の IIFE + globalThis 公開定数を明示列挙 (no-implicit-globals 違反を防ぎつつ、
  *   actions.js / translation-core.js / lang.js / providers.js 等が公開する定数を読み取り専用 global として承認する)
- * - Chrome 内蔵 AI のグローバル (Translator / LanguageDetector / LanguageModel) も将来利用のため許可
+ * - ブラウザ / WebExtensions / Chrome 内蔵 AI のグローバル (chrome / browser / Translator / LanguageDetector /
+ *   LanguageModel 等) は globals パッケージの browser・webextensions に readonly で定義済みのため、個別に重複宣言しない
+ *   (Service Worker 専用の importScripts だけは globals.browser に無いので明示する)
  * - `test/` は Node 標準 test runner 環境
  */
 
@@ -51,10 +53,11 @@ module.exports = [
       "web-ext-artifacts/**",
       "temp-build*/**",
       "**/*.min.js",
+      "test/fixtures/**", // 旧版コードの逐語コピー (互換テスト用)。lint 対象外
     ],
   },
   {
-    // 拡張機能本体 (src/): ブラウザ + WebExtensions + globalThis 公開定数 + 内蔵 AI
+    // 拡張機能本体 (src/): ブラウザ (内蔵 AI 含む) + WebExtensions + SW の importScripts + globalThis 公開定数
     files: ["src/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
@@ -62,12 +65,7 @@ module.exports = [
       globals: {
         ...globals.browser,
         ...globals.webextensions,
-        chrome: "readonly",
-        browser: "readonly",
-        importScripts: "readonly",
-        Translator: "readonly",
-        LanguageDetector: "readonly",
-        LanguageModel: "readonly",
+        importScripts: "readonly", // globals.browser に無い Service Worker 専用 API
         ...ACTIONS_GLOBALS,
       },
     },
