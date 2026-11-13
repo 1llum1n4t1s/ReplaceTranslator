@@ -90,7 +90,7 @@ test("ギャル文字の選択肢も日本語の翻訳先だけに表示し、�
   assert.equal(h.state.settings.translationStyle, "gyaru");
 });
 
-test("言い換えモードは翻訳元/翻訳先を自動で固定表示し、スタイル欄を入れ替え、OFFで従来設定へ戻す", () => {
+test("言い換えモードは翻訳元/翻訳先/翻訳スタイルの欄を変えず、rewriteMode だけを保存する", () => {
   const h = startupHarness();
   h.api.bind();
   h.state.settings = SettingsSchema.normalize({ sourceLang: "en", targetLang: "fr", translationStyle: "formal" });
@@ -98,48 +98,60 @@ test("言い換えモードは翻訳元/翻訳先を自動で固定表示し、�
   assert.equal(h.element("rewrite-mode").checked, false);
   assert.equal(h.element("source").value, "en");
   assert.equal(h.element("target").value, "fr");
-  assert.equal(h.element("source").disabled, false);
-  assert.equal(h.element("rewrite-style-row").classList.contains("hidden"), true);
-  assert.equal(h.element("translation-style-row").classList.contains("hidden"), false);
+  assert.equal(h.element("translation-style").value, "formal");
 
   h.element("rewrite-mode").checked = true;
   h.element("rewrite-mode").listeners.change({ target: h.element("rewrite-mode") });
-  // rewriteMode だけを保存し、翻訳元/翻訳先/翻訳スタイルの保存値には触れない
+  // rewriteMode だけを保存し、翻訳元/翻訳先/翻訳スタイルの保存値・表示には触れない (言い換えは翻訳への追加処理)
   assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteMode: true });
-  assert.equal(h.element("source").value, "auto");
-  assert.equal(h.element("target").value, "auto");
-  assert.equal(h.element("source").disabled, true);
-  assert.equal(h.element("target").disabled, true);
-  assert.equal(h.element("target-rewrite-auto").hidden, false);
+  assert.equal(h.element("source").value, "en");
+  assert.equal(h.element("target").value, "fr");
+  assert.notEqual(h.element("source").disabled, true, "翻訳元は言い換え中も操作できる");
+  assert.notEqual(h.element("target").disabled, true, "翻訳先は言い換え中も操作できる");
+  assert.equal(h.element("translation-style").value, "formal");
+  assert.equal(h.element("translation-style-row").classList.contains("hidden"), false);
+  // 言い換えスタイル欄は ON のときだけ出す (翻訳スタイル欄と入れ替えず、両方を並べる)
   assert.equal(h.element("rewrite-style-row").classList.contains("hidden"), false);
-  assert.equal(h.element("translation-style-row").classList.contains("hidden"), true);
   assert.equal(h.element("rewrite-style").value, "mild");
-  assert.equal(h.state.settings.sourceLang, "en");
-  assert.equal(h.state.settings.targetLang, "fr");
-  assert.equal(h.state.settings.translationStyle, "formal");
 
-  h.element("rewrite-style").listeners.change({ target: { value: "ibaraki" } });
-  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteStyle: "ibaraki" });
+  h.element("rewrite-style").listeners.change({ target: { value: "toxic" } });
+  assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteStyle: "toxic" }, "言い換えスタイルだけを保存する");
+
+  // 言い換え ON の保存値でも、翻訳元/翻訳先は保存値どおりに表示する
+  h.state.settings = SettingsSchema.normalize({ rewriteMode: true, rewriteStyle: "formal", sourceLang: "en", targetLang: "fr" });
+  h.api.reflect();
+  assert.equal(h.element("rewrite-mode").checked, true);
+  assert.equal(h.element("source").value, "en");
+  assert.equal(h.element("target").value, "fr");
+  assert.equal(h.element("rewrite-style").value, "formal");
 
   h.element("rewrite-mode").checked = false;
   h.element("rewrite-mode").listeners.change({ target: h.element("rewrite-mode") });
   assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteMode: false });
-  assert.equal(h.element("source").value, "en");
-  assert.equal(h.element("target").value, "fr");
-  assert.equal(h.element("source").disabled, false);
-  assert.equal(h.element("target-rewrite-auto").hidden, true);
-  assert.equal(h.element("translation-style-row").classList.contains("hidden"), false);
+  assert.equal(h.element("rewrite-style-row").classList.contains("hidden"), true, "OFF では言い換えスタイル欄を隠す");
 });
 
-test("言い換えの方言は翻訳元/翻訳先が自動のままでも選択でき、言語を固定しない", () => {
+test("言い換えスタイルの方言・ギャル文字は翻訳先が日本語のときだけ選べ、保存値は保持する", () => {
   const h = startupHarness();
-  for (const style of ["osaka", "ibaraki", "gyaru"]) {
-    h.state.settings = SettingsSchema.normalize({ rewriteMode: true, rewriteStyle: style, sourceLang: "en", targetLang: "fr" });
-    h.api.reflect();
-    assert.equal(h.element("rewrite-style").value, style);
-    assert.equal(h.element("source").value, "auto");
-    assert.equal(h.element("target").value, "auto");
+  h.state.settings = SettingsSchema.normalize({ rewriteMode: true, rewriteStyle: "osaka", targetLang: "ja" });
+  h.api.reflect();
+  for (const style of SettingsSchema.JAPANESE_ONLY_STYLES) assert.equal(h.element(`rewrite-style-${style}`).hidden, false, style);
+  assert.equal(h.element("rewrite-style").value, "osaka");
+  h.state.settings.targetLang = "en";
+  h.api.reflect();
+  for (const style of SettingsSchema.JAPANESE_ONLY_STYLES) {
+    assert.equal(h.element(`rewrite-style-${style}`).hidden, true, style);
+    assert.equal(h.element(`rewrite-style-${style}`).disabled, true, style);
   }
+  assert.equal(h.element("rewrite-style").value, "mild", "日本語以外の翻訳先では mild として表示する");
+  assert.equal(h.state.settings.rewriteStyle, "osaka", "保存値は書き換えない");
+});
+
+test("popup には廃止した翻訳先の「自動判定」が無い", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "src/popup/popup.html"), "utf8");
+  const js = fs.readFileSync(path.join(__dirname, "..", "src/popup/popup.js"), "utf8");
+  assert.doesNotMatch(html, /id="target-rewrite-auto"/);
+  assert.doesNotMatch(js, /"target-rewrite-auto"/);
 });
 
 test("MyMemory では言い換えをONにできず、同期で来たONは外す操作だけ許可する", () => {
@@ -149,7 +161,6 @@ test("MyMemory では言い換えをONにできず、同期で来たONは外す�
   h.state.settings = SettingsSchema.normalize({ provider: "mymemory", rewriteMode: false });
   h.api.reflect();
   assert.equal(h.element("rewrite-mode").disabled, true);
-  // スタイル選択は provider がプロンプト非対応なら ON/OFF に関わらず無効 (popup.js updateKeyWarning の実装どおり)。
   assert.equal(h.element("rewrite-style").disabled, true);
 
   // 別PCから同期で来た ON: チェックを外す操作だけ許可する (スタイル選択は引き続き無効)。
@@ -164,7 +175,6 @@ test("MyMemory では言い換えをONにできず、同期で来たONは外す�
   h.element("rewrite-mode").listeners.change({ target: h.element("rewrite-mode") });
   assert.deepEqual({ ...h.requests.at(-1).message.patch }, { rewriteMode: false });
   assert.equal(h.element("rewrite-mode").disabled, true);
-  assert.equal(h.element("rewrite-style").disabled, true);
 });
 
 test("翻訳スタイルの保存失敗時、翻訳先が日本語以外なら方言の保存値を自然として表示する", async () => {

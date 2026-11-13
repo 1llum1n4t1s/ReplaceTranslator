@@ -299,6 +299,30 @@ test("v1.0.33 の local state を持つ端末をアップグレードすると�
   up.assertNoV2Writes();
 });
 
+test("v1.0.34 が同期した言い換え設定は同じ ID・値のまま適用し、書き戻しを往復させない", async () => {
+  // v1.0.34 も rewriteMode / rewriteStyle を同じ ID・値で V3 へ書いていた。そのまま適用し、
+  // 記録を書き換えたり削除したりしない (書込みゼロで落ち着く)。
+  const remote = {};
+  const stamp = [1000, 0, "device-v134"];
+  inject(remote, V3, '["rewriteStyle"]', { value: "toxic", stamp });
+  inject(remote, V3, '["rewriteMode"]', { value: true, stamp });
+  const n1 = newDevice(remote, "device-n1");
+  await n1.applySettingsPatch({ syncSettings: true });
+  await settle([n1]);
+  same(n1.state().records['["rewriteStyle"]'], { value: "toxic", stamp });
+  assert.equal(n1.settings().rewriteStyle, "toxic");
+  assert.equal(n1.settings().rewriteMode, true);
+  same(remote[bucketOf(V3, '["rewriteStyle"]')].items['["rewriteStyle"]'], { value: "toxic", stamp });
+  assert.equal(await n1.sync(), 0, "落ち着いた後は書込みゼロ");
+  // 端末の再起動 (local state からの復元) 後も記録を保持し、書込みゼロのまま。
+  const again = newDevice(remote, "unused-id", { time: 9000,
+    local: { [StorageKeys.SETTINGS]: SettingsSchema.normalize({ ...J(n1.settings()), syncSettings: true }), [S.STATE_KEY]: J(n1.state()) } });
+  await again.sync();
+  same(again.state().records['["rewriteStyle"]'], { value: "toxic", stamp });
+  assert.equal(await again.sync(), 0);
+  again.assertNoV2Writes();
+});
+
 test("新版の state を旧版へ戻しても壊れず、再アップグレードで V3 の記録が戻る", async () => {
   const { remote, n1, all } = await setup();
   n1.time(1000);

@@ -116,7 +116,6 @@
     const prov = detail.provider ? `${detail.provider}: ` : "";
     let why = "";
     if (detail.error === "no_api_key") why = tr("statusNoKey", "API キーが未設定です");
-    else if (detail.error === "rewrite_unsupported") why = tr("statusRewriteUnsupported", "このサービスは言い換えモードに対応していません");
     else if (detail.error === "network") why = tr("statusNetwork", "ネットワークエラー");
     else if (detail.error === "http") {
       if (detail.status === 401 || detail.status === 403) why = tr("statusBadKey", "API キーが無効か権限がありません");

@@ -329,34 +329,31 @@
     const japanese = state.settings.targetLang === "ja";
     // 方言・ギャル文字は日本語専用なので、翻訳先が日本語のときだけ選択肢に出す。
     // option の id (style-osaka 等) は popup.html の固定 id。一覧は SettingsSchema.JAPANESE_ONLY_STYLES を正本にする。
+    // 言い換えスタイルの方言・ギャル文字 (rewrite-style-osaka 等) も同じ規則で出し分ける。
     for (const style of SettingsSchema.JAPANESE_ONLY_STYLES) {
-      const id = `style-${style}`;
-      $(id).hidden = !japanese;
-      $(id).disabled = !japanese;
+      for (const id of [`style-${style}`, `rewrite-style-${style}`]) {
+        $(id).hidden = !japanese;
+        $(id).disabled = !japanese;
+      }
     }
+    // 保存値は保持し、表示だけ既定へ倒す (翻訳先を日本語へ戻すとそのまま有効になる。providers も同じく mild/natural 扱い)。
     const style = state.settings.translationStyle;
     $("translation-style").value = !japanese && SettingsSchema.JAPANESE_ONLY_STYLES.includes(style) ? "natural" : style;
+    const rewriteStyle = state.settings.rewriteStyle;
+    $("rewrite-style").value = !japanese && SettingsSchema.JAPANESE_ONLY_STYLES.includes(rewriteStyle) ? "mild" : rewriteStyle;
   }
 
-  // 言い換えモードの表示。ON の間は翻訳元/翻訳先を「自動→自動」で固定表示し、スタイル欄を専用の選択へ入れ替える。
-  // 保存値 (sourceLang/targetLang/translationStyle) は書き換えないので、OFF に戻すと従来の設定がそのまま表示される。
+  // 言い換えモードの表示。言い換えは翻訳への追加処理なので、翻訳元/翻訳先/翻訳スタイルの欄は ON/OFF で変えない。
+  // 言い換えスタイル欄は ON のときだけ出す (OFF では使わない設定なので隠す。保存値は保持する)。
   function reflectRewriteMode() {
     const on = state.settings.rewriteMode === true;
     $("rewrite-mode").checked = on;
-    // 翻訳先には auto が無いため、言い換え中だけ表示用の「自動判定」を出す (init で追加する固定 option)。
-    const targetAuto = $("target-rewrite-auto");
-    if (targetAuto) { targetAuto.hidden = !on; targetAuto.disabled = !on; }
-    $("source").disabled = on;
-    $("target").disabled = on;
-    $("source").value = on ? "auto" : state.settings.sourceLang;
-    $("target").value = on ? "auto" : state.settings.targetLang;
     $("rewrite-style-row").classList.toggle("hidden", !on);
-    $("translation-style-row").classList.toggle("hidden", on);
-    // 方言も常に選べる (日本語は方言へ、他言語はまろやかに言い換えるため、ページ言語で選択を制限しない)。
-    $("rewrite-style").value = state.settings.rewriteStyle;
   }
 
   function reflect() {
+    $("source").value = state.settings.sourceLang;
+    $("target").value = state.settings.targetLang;
     reflectStyleLanguage();
     reflectRewriteMode();
     if (!settingsDrafts.has("custom-prompt")) $("custom-prompt").value = state.settings.customPrompt;
@@ -457,8 +454,8 @@
       loadModels(false);
     }
     if (Object.hasOwn(patch, "translationStyle")) updateKeyWarning();
-    if (Object.hasOwn(patch, "targetLang") || Object.hasOwn(patch, "translationStyle")) reflectStyleLanguage();
-    if (["sourceLang", "targetLang", "rewriteMode", "rewriteStyle"].some(key => Object.hasOwn(patch, key))) {
+    if (["targetLang", "translationStyle", "rewriteStyle"].some(key => Object.hasOwn(patch, key))) reflectStyleLanguage();
+    if (Object.hasOwn(patch, "rewriteMode")) {
       reflectRewriteMode();
       updateKeyWarning();
     }
@@ -538,7 +535,6 @@
     const prov = provId && Providers.get(provId);
     const pfx = prov ? `${prov.label}: ` : "";
     if (detail.error === "no_api_key") return pfx + msg("statusNoKey", "API key is not set");
-    if (detail.error === "rewrite_unsupported") return pfx + msg("statusRewriteUnsupported", "This service does not support rewrite mode");
     if (detail.error === "network") return pfx + msg("statusNetwork", "Network error");
     if (detail.error === "http") {
       if (detail.status === 401 || detail.status === 403) return pfx + msg("statusBadKey", "API key is invalid or unauthorized");
@@ -725,11 +721,6 @@
     setLinks();
     fillLangSelect($("source"), true);
     fillLangSelect($("target"), false);
-    const targetAuto = option("auto", msg("langRewriteAuto", "自動判定"));
-    targetAuto.id = "target-rewrite-auto";
-    targetAuto.hidden = true;
-    targetAuto.disabled = true;
-    $("target").appendChild(targetAuto);
     fillLangSelect($("qt-source"), true);
     fillLangSelect($("qt-target"), false);
     const showSyncStatus = (value) => {
@@ -812,13 +803,13 @@
       updateKeyWarning();
       if (await saving) rerunQuickTranslate();
     });
-    // 言い換えモード: rewriteMode だけを保存する。翻訳元/翻訳先/翻訳スタイルの保存値には触れないので、
-    // OFF に戻すと従来の翻訳設定へそのまま戻る。
+    // 言い換えモード: rewriteMode だけを保存する。翻訳元/翻訳先/翻訳スタイルは言い換え中もそのまま翻訳に使う。
     $("rewrite-mode").addEventListener("change", (e) => {
       save({ rewriteMode: e.target.checked });
       reflectRewriteMode();
       updateKeyWarning();
     });
+    // 言い換えスタイル: rewriteStyle だけを保存する (翻訳スタイルとは独立。翻訳先言語で書かれた文の言い換え方)。
     $("rewrite-style").addEventListener("change", (e) => { save({ rewriteStyle: e.target.value }); });
     $("custom-prompt").addEventListener("input", () => settingsDrafts.add("custom-prompt"));
     $("custom-prompt").addEventListener("blur", async (e) => {

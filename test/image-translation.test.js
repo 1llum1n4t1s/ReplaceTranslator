@@ -96,15 +96,14 @@ test("実SWの画像経路: 不正応答も打ち切りも再送せず、利用�
 // 画像翻訳は SW が rewriteMode:false を強制するのではなく、buildImageRequest へ言い換えの指定を渡さないことで
 // 通常翻訳になる (DESIGN.md「状態と保存」)。保存値が言い換え ON でも翻訳スタイルだけが画像要求に入ることを確かめる。
 test("実SWの画像経路: 言い換えONの保存値でも言い換え文を送らず、翻訳スタイルを適用する", async () => {
-  const h = imageHarness({ settings: { rewriteMode: true, rewriteStyle: "toxic", translationStyle: "cute" } });
+  const h = imageHarness({ settings: { rewriteMode: true, translationStyle: "cute" } });
   assert.equal((await h.translate()).ok, true);
   assert.equal(h.apiRequests.length, 1);
   const body = JSON.stringify(h.apiRequests[0]);
   assert.match(body, /adorable/, "cute の翻訳スタイル指示が入る");
-  // 下の2つの否定は、画像プロンプトの組み立てが将来 rewriteMode を参照するようになった場合の退行検出用。
+  // 下の否定は、画像プロンプトの組み立てが将来 rewriteMode を参照するようになった場合の退行検出用。
   // 現状の buildImagePrompt は rewriteMode を見ないため、SW が誤って指定を渡しても落ちない点に注意する。
-  assert.doesNotMatch(body, /Never translate/, "言い換えプロンプトは入らない");
-  assert.doesNotMatch(body, /snarky/, "toxic の言い換え指示も入らない");
+  assert.doesNotMatch(body, /do not translate it; rewrite it/, "言い換えの規則は入らない");
 });
 
 const pngChunk = (type, data) => {

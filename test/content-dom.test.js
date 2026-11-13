@@ -483,9 +483,9 @@ test("古い run の flush 完了は新 run の flushing を下ろさず、新 r
   assert.deepEqual([...api.progress].filter((state) => state === "done"), ["done"], "新 flush の完了で 1 回だけ done");
 });
 
-test("flush は言い換え非対応・キー未設定の応答で全体中断し、done ではなく error を通知する", async () => {
+test("flush はキー未設定の応答で全体中断し、done ではなく error を通知する", async () => {
   const { TranslationBatch } = require("./_load-actions.js");
-  for (const error of ["rewrite_unsupported", "no_api_key"]) {
+  for (const error of ["no_api_key"]) {
     const api = loadFlush(TranslationBatch);
     api.push("text");
     const pending = api.flush();

@@ -37,11 +37,12 @@
         </div>
       </div>
 
-      <!-- 言い換えモード: ON の間は翻訳元/翻訳先を「自動→自動」に固定し、スタイルを専用の選択肢へ入れ替える -->
+      <!-- 言い換えモード: 翻訳元/翻訳先による翻訳に追加で、翻訳先言語の文を同じ言語のまま言い換えスタイルで言い換える。
+           翻訳元/翻訳先/翻訳スタイルの設定には触れない。言い換えスタイル欄は ON のときだけ表示する -->
       <div class="switch-field">
         <div class="switch-text">
           <label class="switch-label" for="rewrite-mode" data-i18n="optRewriteMode">言い換えモード</label>
-          <div id="rewrite-mode-help" class="switch-desc" data-i18n="optRewriteModeDesc">翻訳せず、ページと同じ言語のまま書き換えます。LLMで利用でき、MyMemoryは非対応です。</div>
+          <div id="rewrite-mode-help" class="switch-desc" data-i18n="optRewriteModeDesc">翻訳に加えて、もともと翻訳先の言語で書かれた文を「言い換えスタイル」で言い換えます。翻訳先の言語のページも言い換えます。LLMで利用でき、MyMemoryは非対応です。</div>
         </div>
         <input id="rewrite-mode" type="checkbox" aria-describedby="rewrite-mode-help">
       </div>
@@ -52,11 +53,11 @@
           <option value="mild" data-i18n="rewriteStyleMild">まろやか</option>
           <option value="formal" data-i18n="rewriteStyleFormal">フォーマル</option>
           <option value="toxic" data-i18n="rewriteStyleToxic">トキシック</option>
-          <option value="ibaraki" data-i18n="rewriteStyleIbaraki">まろやか（茨城弁）</option>
-          <option value="osaka" data-i18n="rewriteStyleOsaka">まろやか（関西弁）</option>
-          <option value="gyaru" data-i18n="rewriteStyleGyaru">まろやか（ギャル文字）</option>
+          <option id="rewrite-style-ibaraki" value="ibaraki" data-i18n="rewriteStyleIbaraki">まろやか（茨城弁）</option>
+          <option id="rewrite-style-osaka" value="osaka" data-i18n="rewriteStyleOsaka">まろやか（関西弁）</option>
+          <option id="rewrite-style-gyaru" value="gyaru" data-i18n="rewriteStyleGyaru">まろやか（ギャル文字）</option>
         </select>
-        <div id="rewrite-style-help" class="switch-desc" data-i18n="rewriteStyleHelp">「まろやか」は有害・攻撃的な表現を穏やかに、「フォーマル」は丁寧な文体に、「トキシック」は逆に辛辣な口調に言い換えます。この3つは全言語で使えます。方言・ギャル文字付きは日本語の文を穏やかにしつつ方言やギャル文字にし、ほかの言語の文はまろやかに言い換えます。</div>
+        <div id="rewrite-style-help" class="switch-desc" data-i18n="rewriteStyleHelp">翻訳先の言語で書かれた文の言い換え方です。「まろやか」は攻撃的な表現を穏やかに、「フォーマル」は丁寧な文体に、「トキシック」は逆に辛辣な口調にします。方言・ギャル文字付きは翻訳先が日本語のときだけ選べ、穏やかにしつつ方言やギャル文字にします。訳文には「翻訳スタイル」を使います。</div>
       </div>
 
       <div id="translation-style-row" class="row">
@@ -66,6 +67,7 @@
           <option value="cute" data-i18n="styleCute">かわいく</option>
           <option value="formal" data-i18n="styleFormal">丁寧・フォーマル</option>
           <option value="mild" data-i18n="styleMild">まろやか</option>
+          <option value="toxic" data-i18n="styleToxic">トキシック</option>
           <option id="style-osaka" value="osaka" data-i18n="styleOsaka">関西弁</option>
           <option id="style-ibaraki" value="ibaraki" data-i18n="styleIbaraki">茨城弁</option>
           <option id="style-gyaru" value="gyaru" data-i18n="styleGyaru">ギャル文字</option>

@@ -675,12 +675,9 @@ if (typeof importScripts === "function") {
     const requiresKey = !provider || provider.requiresKey !== false;
     if (requiresKey && !apiKey) return { ok: false, error: "no_api_key", provider: providerId };
 
-    // 言い換えは LLM のプロンプトで実現する。NMT (MyMemory 等) へ同一言語ペアを送っても書き換わらず
-    // 無駄な呼び出しになるため、送信せず明示エラーで返す (popup でも言い換えモードを無効化している)。
-    if (settings.rewriteMode === true && provider && provider.batch === false) {
-      return { ok: false, error: "rewrite_unsupported", provider: providerId };
-    }
-    // バッチ非対応プロバイダ (MyMemory 等) は 1 テキストずつ並列処理する
+    // バッチ非対応プロバイダ (MyMemory 等) は 1 テキストずつ並列処理する。
+    // 言い換えは LLM のプロンプトで行うため、NMT は rewriteMode を見ずに通常翻訳する
+    // (ページ翻訳の開始時に rewriteActive で OFF に確定済み。別PCから同期された ON でも翻訳は止めない)。
     if (provider && provider.batch === false) {
       return translateEach(settings, provider, texts, apiKey, signal);
     }
@@ -1392,8 +1389,11 @@ if (typeof importScripts === "function") {
     // 各 await 後に世代を確認する: 古い呼び出しが後から pageSessions.set で新セッションを上書きしたり、
     // 古い注入失敗が新セッションを巻き添え削除したりしないようにする (並行した翻訳開始/OFF との競合対策)
     if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
-    const settings = await getSettings();
+    const stored = await getSettings();
     if (tabGen.get(tabId) !== myGen) return { ok: true, superseded: true };
+    // 言い換えが実際に効くか (LLM のときだけ) をここで確定し、セッション (= 各バッチのプロンプト/キャッシュキー) と
+    // content (= 同一言語スキップの解除) に同じ値を渡す。NMT では保存値が ON でも通常翻訳として走らせる。
+    const settings = { ...stored, rewriteMode: SettingsSchema.rewriteActive(stored) };
     pageSessions.set(tabId, { id: myGen, settings });
     persistPageSessions();
     try {

@@ -142,6 +142,25 @@ test("全ての翻訳スタイルが専用の指示文を持つ", () => {
   assert.equal(new Set(prompts).size, prompts.length);
 });
 
+// 翻訳スタイルの「トキシック」はまろやかの逆で、方言と違って全言語で使える。言い換えスタイルと同じ禁止事項を必ず付け、
+// 通常・ストリーム・画像の全経路へ同じ指示を渡す。
+test("翻訳スタイルのトキシックは翻訳先言語を問わず辛辣な口調と禁止事項を指示する", () => {
+  for (const targetLang of ["ja", "en"]) {
+    const opts = { texts: ["Hello"], sourceLang: "fr", targetLang, translationStyle: "toxic" };
+    for (const provider of g.Providers.ids.filter(id => g.Providers.get(id).batch !== false)) {
+      const bodies = [false, true].map(stream => JSON.stringify(ProviderApi.buildRequest(provider, { ...opts, stream }).body));
+      if (g.Providers.get(provider).visionModel) bodies.push(JSON.stringify(ProviderApi.buildImageRequest(provider, opts).body));
+      for (const body of bodies) {
+        assert.match(body, /Use a blunt, snarky, sarcastic, rude, and grumpy tone/, `${provider} ${targetLang}`);
+        assert.match(body, /Never use slurs, hate speech toward protected groups, threats of violence, sexual content/, `${provider} ${targetLang}`);
+        assert.doesNotMatch(body, /softening harmful/, `${provider} ${targetLang}`);
+      }
+    }
+  }
+  assert.equal(g.SettingsSchema.normalize({ translationStyle: "toxic" }).translationStyle, "toxic");
+  assert.equal(g.SettingsSchema.JAPANESE_ONLY_STYLES.includes("toxic"), false);
+});
+
 // 通常翻訳の「まろやか」は方言と違って全言語で使える。翻訳先が日本語以外でも和らげる指示を付け、
 // 通常・ストリーム・画像の全経路へ同じ指示を渡す。
 test("通常翻訳のまろやかは翻訳先言語を問わず和らげる指示を付ける", () => {

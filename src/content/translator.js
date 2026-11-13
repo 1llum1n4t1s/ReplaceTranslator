@@ -854,7 +854,7 @@
           rememberTranslations(batch, res.translations, true); // 正常応答 → 訳文=原文 (変化なし) もキャッシュし再送信を断つ
         } else if (outcome.kind === "fatal") {
           // 全体中断して popup/FAB に理由を通知する。分類器が fatal にするのは次のとき:
-          //  - no_api_key / rewrite_unsupported: キーが無い / 言い換え非対応 (NMT) なら何も訳せない
+          //  - no_api_key: キーが無いなら何も訳せない
           //  - LLM の恒久エラー 401/403 (キー無効/失効)・400 (リクエスト不正)・404 (モデル無し): 全バッチ同型に失敗する。
           //    skip して done にすると「未翻訳なのにエラーも出ない (理由不明で詰む)」ため、無言 skip せず原因を見せる。
           //    入力サイズ起因の 400/413 (TranslationBatch.isOversize) はバッチ固有なので fatal にせず requeue へ流す。
@@ -1304,18 +1304,11 @@
     // 自動翻訳では、ページ言語=翻訳先のページを翻訳しない
     // (日本語ページの英語メニュー等の断片を巻き込まない + API 呼び出しゼロ)。
     // popup/FAB/右クリックからの手動翻訳は、少数の異言語テキストを明示的に訳したい意図なのでこの判定を通さない。
-    if (settings.rewriteMode === true) {
-      // 言い換えモード: 同じ言語のまま書き換えるので同一言語スキップを通さない (手動・自動とも)。
-      // 翻訳元/翻訳先の保存値は使わず、ページ主要言語を両方に入れて送る (popup も「自動→自動」固定表示)。
-      translating = false;
-      runId += 1;
-      const myDetect = runId;
-      const detected = await detectPageLang();
-      if (runId !== myDetect) return;
-      const rewriteLang = Lang.resolveRewriteLang(detected);
-      dbg("rewrite detectPageLang lang=", detected.lang, "style=", settings.rewriteStyle);
-      settings = Object.assign({}, settings, { sourceLang: rewriteLang, targetLang: rewriteLang });
-    } else if (settings.sourceLang === "auto") {
+    // 言い換えモード (SW が LLM のときだけ rewriteMode を残して送る) は、翻訳先言語の文も「まろやか」に
+    // 言い換える対象なので、翻訳先言語が主体のページでも同一言語スキップしない。翻訳元/翻訳先は通常どおり使う。
+    // SW 側で確定済みだが、NMT で ON が届いても無駄な同一言語の呼び出しを出さないよう content でも重ねて確かめる。
+    const softenRun = settings.rewriteMode === true && !isNmtProvider();
+    if (settings.sourceLang === "auto") {
       translating = false; // 検出の await 中は旧 observers/ループを止めておく
       runId += 1;
       const myDetect = runId;
@@ -1326,8 +1319,8 @@
       // (日本語UI に囲まれた英語本文記事のような混在ページで、本文を skip で取り残さないため)。
       const otherPct = detected.langs.filter((l) => l.code !== settings.targetLang).reduce((a, l) => a + l.pct, 0);
       const mixedOther = otherPct >= MIXED_LANG_THRESHOLD; // 非 target がこの割合以上 = 混在ページとみなし skip しない (散在する数語の異言語は閾値未満で従来どおり skip)
-      const skipSameLanguage = Lang.shouldSkipSameLanguage(pageLang, settings.targetLang, otherPct, MIXED_LANG_THRESHOLD, manual);
-      dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther, "manual=", manual);
+      const skipSameLanguage = !softenRun && Lang.shouldSkipSameLanguage(pageLang, settings.targetLang, otherPct, MIXED_LANG_THRESHOLD, manual);
+      dbg("detectPageLang lang=", pageLang, "langs=", JSON.stringify(detected.langs), "otherPct=", otherPct, "mixedOther=", mixedOther, "manual=", manual, "soften=", softenRun);
       if (skipSameLanguage) {
         // 実質ページ全体が翻訳先言語 → 訳すものが無い
         dbg("SKIP same-language (pageLang===targetLang)");

@@ -25,7 +25,7 @@ test("翻訳スタイル・追加指示を正規化し、設定変更で別の�
   const mild = SettingsSchema.mergePatch(base, { translationStyle: "mild" });
   assert.equal(mild.translationStyle, "mild");
   assert.notEqual(key(base), key(mild));
-  assert.notEqual(key(mild), key(SettingsSchema.mergePatch(base, { rewriteMode: true, rewriteStyle: "mild" })));
+  assert.notEqual(key(mild), key(SettingsSchema.mergePatch(mild, { rewriteMode: true })));
   assert.equal(key(base), key(SettingsSchema.mergePatch(base, { customPrompt: "短く訳す" })));
   assert.notEqual(key(SettingsSchema.mergePatch(base, { translationStyle: "custom" })),
     key(SettingsSchema.mergePatch(base, { translationStyle: "custom", customPrompt: "短く訳す" })));
@@ -337,9 +337,9 @@ test("TranslationBatch.classifyBatchResult keeps the translator branch order and
   assert.deepEqual(classify(null, llm), { kind: "drop", transient: false });
   assert.deepEqual(classify(undefined), { kind: "drop", transient: false });
 
-  // 2. キー未設定・言い換え非対応は translations があっても fatal (partial より前)。NMT でも fatal。
+  // 2. キー未設定は translations があっても fatal (partial より前)。NMT でも fatal。
   // 訳文の有無 × LLM/NMT の全組み合わせを固定する (旧 rewrite-mode.test.js の重複テストをここへ統合)。
-  for (const error of ["no_api_key", "rewrite_unsupported"]) {
+  for (const error of ["no_api_key"]) {
     for (const options of [llm, nmt]) {
       const label = `${error} nmt=${options.isNmt}`;
       assert.deepEqual(classify({ ok: false, error, translations: ["a"] }, options), { kind: "fatal" }, `${label} with translations`);

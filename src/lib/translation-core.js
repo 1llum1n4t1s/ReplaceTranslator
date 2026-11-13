@@ -262,15 +262,17 @@
   const EMPTY_REASONING_EFFORTS = Object.freeze(Object.fromEntries(
     PROVIDER_IDS.map((id) => [id, Object.freeze({})])
   ));
-  // 言い換えモードのスタイル。osaka/ibaraki は翻訳スタイルと同じ ID (表示は関西弁/茨城弁) に揃える。
-  const REWRITE_STYLES = Object.freeze(["mild", "formal", "toxic", "osaka", "ibaraki", "gyaru"]);
   // 通常翻訳の翻訳スタイル。normalize の許可リスト・popup の選択肢・providers の指示が同じ一覧を参照する
   // (以前は各所に同じ配列を手書きしており、スタイル追加時の更新漏れで「保存できるが指示が付かない」等がずれ得た)。
   // 廃止した casual/literal はここに含めず、normalize で natural へ移行する。
-  const TRANSLATION_STYLES = Object.freeze(["natural", "cute", "formal", "mild", "osaka", "ibaraki", "gyaru", "custom"]);
+  const TRANSLATION_STYLES = Object.freeze(["natural", "cute", "formal", "mild", "toxic", "osaka", "ibaraki", "gyaru", "custom"]);
   // 日本語専用の翻訳スタイル (方言・ギャル文字)。翻訳先が日本語以外のときは指示を付けず、popup も選択肢を隠す。
   // 保存値は保持するので、翻訳先を日本語へ戻すとそのまま有効になる。
   const JAPANESE_ONLY_STYLES = Object.freeze(["osaka", "ibaraki", "gyaru"]);
+  // 言い換えスタイル (言い換えモード ON のとき、翻訳先言語で書かれた文の言い換え方)。
+  // ID と値は v1.0.34 の rewriteStyle と同じにして、旧版端末との同期記録をそのまま適用できるようにする。
+  // osaka/ibaraki/gyaru は JAPANESE_ONLY_STYLES と同じく翻訳先が日本語のときだけ効き、それ以外は mild 扱い。
+  const REWRITE_STYLES = Object.freeze(["mild", "formal", "toxic", "osaka", "ibaraki", "gyaru"]);
   const DEFAULT_SETTINGS = Object.freeze({
     provider: "mymemory",        // キー不要で即翻訳できる MyMemory を既定に (インストール直後にすぐ使える)
     sourceLang: "auto",          // auto = ページの主要言語を検出して翻訳元にする (検出不能時は target 以外を翻訳)
@@ -285,10 +287,11 @@
     reasoningEfforts: EMPTY_REASONING_EFFORTS, // provider → model ID → 明示 effort。欠損は翻訳向け自動最小値
     translationStyle: "natural",
     customPrompt: "", // LLMへの追加翻訳指示。出力形式・翻訳対象の契約は維持する
-    // 言い換えモード: ページ翻訳だけを「同じ言語のまま書き換える」動作へ切り替える。
-    // sourceLang/targetLang/translationStyle は書き換えず保持し、OFF に戻したらそのまま従来設定で翻訳する。
+    // 言い換えモード: 翻訳元/翻訳先による通常のページ翻訳に追加で、すでに翻訳先言語で書かれた文を
+    // 翻訳先言語のまま rewriteStyle で言い換える (LLM のみ)。翻訳先言語が主体のページも同一言語スキップしない。
+    // 翻訳元/翻訳先/翻訳スタイルの設定はそのまま使い、OFF なら従来どおりの翻訳だけを行う。
     rewriteMode: false,
-    rewriteStyle: "mild", // mild=穏やかな表現へ (全言語) / formal=丁寧・フォーマルな表現へ (全言語) / toxic=辛辣な表現へ (全言語・まろやかの逆) / osaka=関西弁 / ibaraki=茨城弁 / gyaru=ギャル文字 (方言・ギャル文字は日本語の要素を穏やかにしつつ方言へ。他言語は mild 扱い)
+    rewriteStyle: "mild", // mild=まろやか / formal=丁寧 / toxic=辛辣 / osaka=関西弁 / ibaraki=茨城弁 / gyaru=ギャル文字 (方言・ギャル文字も穏やかにしつつ書き換える。日本語以外の翻訳先では mild)
     syncSettings: false, // この端末でのブラウザー設定同期への明示 opt-in
     autoTranslate: false,        // 全ページ自動翻訳 (popup トグルで ON/OFF。ON で開いたページを自動翻訳)
     autoTranslateBlacklist: Object.freeze([]), // 自動翻訳だけを抑止する URL/host glob の複数行リスト
@@ -376,6 +379,15 @@
     };
   }
 
+  // 言い換えが実際に効くか。言い換えは LLM のプロンプトで行うため、NMT (MyMemory 等の batch:false) では
+  // 保存値が ON でも通常翻訳として扱う (同一言語スキップも従来どおり。翻訳先言語のページごとに無駄な NMT 呼び出しを出さない)。
+  // ページ翻訳の開始時に SW がこの判定で rewriteMode を確定し、content・セッション・プロンプトが同じ値を使う。
+  function rewriteActive(settings) {
+    if (!settings || settings.rewriteMode !== true) return false;
+    const provider = Providers.get(settings.provider);
+    return Boolean(provider && provider.batch !== false);
+  }
+
   // 入れ子は変更された項目だけを適用する。推論量のnullは自動へ戻す削除指定。
   function mergeSettingsPatch(base, patch) {
     const p = patch && typeof patch === "object" ? patch : {};
@@ -408,6 +420,7 @@
     TRANSLATION_STYLES,
     JAPANESE_ONLY_STYLES,
     REWRITE_STYLES,
+    rewriteActive,
   });
 
   // ---- トークン使用量ヘルパー ----
@@ -542,11 +555,14 @@
       String(scope || ""), provider, model, reasoningEffort,
       typeof s.sourceLang === "string" ? s.sourceLang : "",
       typeof s.targetLang === "string" ? s.targetLang : "",
-      // 言い換えモードは既存のスタイル枠へ "rewrite:<style>" を入れて分ける。配列要素を増やすと
-      // 通常翻訳のキーまで変わり、既存の永続キャッシュが全て外れるため要素数は維持する。
-      s.rewriteMode === true ? "rewrite:" + (typeof s.rewriteStyle === "string" ? s.rewriteStyle : "mild")
-        : (typeof s.translationStyle === "string" ? s.translationStyle : "natural"),
-      s.rewriteMode !== true && s.translationStyle === "custom" && typeof s.customPrompt === "string" ? s.customPrompt : "",
+      // 言い換えモードは既存のスタイル枠へ "soften:<言い換えスタイル>:<翻訳スタイル>" を入れて分ける。配列要素を
+      // 増やすと通常翻訳のキーまで変わり、既存の永続キャッシュが全て外れるため要素数は維持する。
+      // v1.0.34 の "rewrite:<style>" (ページ全体を同じ言語のまま書き換える旧方式) とは接頭辞を変え、
+      // 旧方式の結果 (他言語の文も翻訳せず言い換えたもの) が永続キャッシュから当たらないようにする。
+      (s.rewriteMode === true ? "soften:" + (typeof s.rewriteStyle === "string" ? s.rewriteStyle : "mild") + ":" : "")
+        + (typeof s.translationStyle === "string" ? s.translationStyle : "natural"),
+      // 言い換え中も翻訳部分にはカスタム指示を送るので、通常翻訳と同じくキーに含める。
+      s.translationStyle === "custom" && typeof s.customPrompt === "string" ? s.customPrompt : "",
       Number(promptVersion) || 0,
       text,
       typeof context === "string" ? context : "",
@@ -601,7 +617,7 @@
   // 呼び出し側に残し、ここは分岐の「順序と条件」だけを固定する (テスト可能にするため切り出した)。
   // 返り値の kind:
   //   "apply"   = 完全な正常応答。訳文を適用しメモに登録する
-  //   "fatal"   = 全体中断して理由を通知する (キー未設定・言い換え非対応・LLM の恒久 4xx・1 日上限・全件失敗)
+  //   "fatal"   = 全体中断して理由を通知する (キー未設定・LLM の恒久 4xx・1 日上限・全件失敗)
   //   "partial" = 一時エラーだが部分訳文あり (MyMemory の一部 429 等)。成功分だけ適用する
   //   "requeue" = 出力切れ / 入力サイズ超過。未訳ノードを小さい batch で再キューする
   //   "drop"    = 訳文を伴わない失敗。処理済み扱いで飛ばす。transient=true のときだけ未訳数を partial 通知に数える
@@ -610,7 +626,7 @@
     const opts = options || {};
     // ok でも translations が配列でない応答は末尾の drop (transient でない) に落とす (旧 else-if 連鎖と同じ)。
     if (res && res.ok && Array.isArray(res.translations)) return { kind: "apply" };
-    if (res && (res.error === "no_api_key" || res.error === "rewrite_unsupported")) return { kind: "fatal" };
+    if (res && res.error === "no_api_key") return { kind: "fatal" };
     // LLM の恒久エラー (400 リクエスト不正 / 401・403 キー無効 / 404 モデル無し) は全バッチ同型に失敗するので fatal。
     // 入力サイズ起因の 400 (isOversize) はバッチ固有なので除外し、下の requeue へ流す。NMT は per-text 制限なので除外。
     // status は厳密比較 (=== 400 等) のまま保つ (文字列 "400" は fatal にしない = 旧挙動)。

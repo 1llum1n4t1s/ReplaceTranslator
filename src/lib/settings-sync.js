@@ -25,6 +25,7 @@
   const ALARM = "settings-sync-retry";
   const SCALARS = ["provider", "sourceLang", "targetLang", "autoTranslate", "showFab",
     "showImageButton", "selectionMode", "fabOpacity", "translationStyle", "customPrompt", "quickSourceLang", "quickTargetLang",
+    // rewriteStyle は v1.0.34 と同じ ID・値なので、旧版端末の記録もそのまま適用する。
     "rewriteMode", "rewriteStyle"];
   const LEGACY_FIELDS = [...SCALARS, "models", "reasoningEfforts", "autoTranslateBlacklist"];
   const LEGACY_KEYS = LEGACY_FIELDS.map(key => "settingsSyncV1." + key);
