@@ -26,7 +26,9 @@ Translate the web page you are viewing in place using the cloud LLM of your choi
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
 - Translation styles — choose adorable, formal, and other styles; additional prompts apply only with Custom
 - Rewrite mode — in addition to translating, rewrites text already written in the target language in a chosen style, such as softening harsh wording or making it formal (LLMs only)
-- Quick translate — a dedicated tab with source and target languages independent of page translation
+- Selection translation — translate selected text with Ctrl+Shift+L (Command+Shift+L on Mac) or the right-click menu, shown as a bubble or inline next to the original
+- Quick translate — a dedicated tab with source and target languages independent of page translation; copy the result or have the source and translation read aloud
+- Translation cache — identical text in the same context is reused from an on-device cache to save API usage. The persistent cache, which survives browser restarts (up to 30 days), is saved only when you turn it on
 - Image text translation (experimental, vision-capable LLMs)
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
 
@@ -35,7 +37,7 @@ In line with each provider's terms, this extension works with API keys (API toke
 
 [How to use]
 1. Install from the Chrome Web Store
-2. Click the toolbar icon, open the "Keys" tab, and enter the API key for the provider you want (MyMemory needs no key)
+2. Click the toolbar icon, open the "API settings" tab, and enter the API key for the provider you want (MyMemory needs no key)
 3. In the "Translate" tab, pick the source and target languages, then click "Translate". Click "Restore" to go back
 4. You can also toggle translate/restore from the floating button at the bottom-right of the page, or the right-click menu
 5. Add or remove sites where auto-translate should stay off from the "Exclusions" tab or the right-click menu

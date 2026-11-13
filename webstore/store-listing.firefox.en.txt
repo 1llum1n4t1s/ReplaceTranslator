@@ -24,7 +24,9 @@ Translate the page you are viewing in place using the cloud LLM of your choice. 
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
 - Translation styles — choose adorable, formal, and other styles; additional prompts apply only with Custom
 - Rewrite mode — in addition to translating, rewrites text already written in the target language in a chosen style, such as softening harsh wording or making it formal (LLMs only)
-- Quick translate — a dedicated tab with source and target languages independent of page translation
+- Selection translation — translate selected text with Ctrl+Shift+L (Command+Shift+L on Mac) or the right-click menu, shown as a bubble or inline next to the original
+- Quick translate — a dedicated tab with source and target languages independent of page translation; copy the result or have the source and translation read aloud
+- Translation cache — identical text in the same context is reused from an on-device cache to save API usage. The persistent cache, which survives browser restarts (up to 30 days), is saved only when you turn it on
 - Image text translation (experimental, vision-capable LLMs)
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
 
