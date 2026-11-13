@@ -37,7 +37,21 @@
         </div>
       </div>
 
-      <!-- 言い換えモード: 翻訳元/翻訳先による翻訳に追加で、翻訳先言語の文を同じ言語のまま言い換えスタイルで言い換える。
+      <!-- 翻訳 / 原文に戻すボタンは言語選択の直下に置き、言い換え・翻訳スタイル等の詳細設定より先に操作できるようにする。
+           API キー未設定の警告はボタンの直前、進捗ステータスはボタンの直後に置いて操作との対応を保つ -->
+      <div id="key-warning" class="warn hidden">
+        <span data-i18n="warnNoKey">このサービスの API キーが未設定です。</span>
+        <button id="warn-keys" class="link-btn" type="button" data-i18n="warnSetKey">API設定へ</button>
+      </div>
+
+      <div class="actions">
+        <button id="translate" class="btn primary" type="button" data-i18n="btnTranslate">翻訳</button>
+        <button id="restore" class="btn ghost" type="button" data-i18n="btnRestore">原文に戻す</button>
+      </div>
+
+      <div id="status" class="status" aria-live="polite"></div>
+
+      <!-- 言い換えモード:翻訳元/翻訳先による翻訳に追加で、翻訳先言語の文を同じ言語のまま言い換えスタイルで言い換える。
            翻訳元/翻訳先/翻訳スタイルの設定には触れない。言い換えスタイル欄は ON のときだけ表示する -->
       <div class="switch-field">
         <div class="switch-text">
@@ -80,18 +94,6 @@
           <div id="custom-prompt-help" class="switch-desc" data-i18n="customPromptHelp">「カスタム」選択中のみ使用します。最大2,000文字で、入力欄から離れると保存します。ページ・選択範囲・クイック翻訳・画像に共通で適用します。</div>
         </div>
       </div>
-
-      <div id="key-warning" class="warn hidden">
-        <span data-i18n="warnNoKey">このサービスの API キーが未設定です。</span>
-        <button id="warn-keys" class="link-btn" type="button" data-i18n="warnSetKey">API設定へ</button>
-      </div>
-
-      <div class="actions">
-        <button id="translate" class="btn primary" type="button" data-i18n="btnTranslate">翻訳</button>
-        <button id="restore" class="btn ghost" type="button" data-i18n="btnRestore">原文に戻す</button>
-      </div>
-
-      <div id="status" class="status" aria-live="polite"></div>
 
       <!-- 設定群: 自動翻訳 + 各機能の表示設定 (同じ操作子に揃えて 1 枠にまとめる) -->
       <div class="opts">
@@ -170,7 +172,8 @@
               <label class="lbl" for="qt-source" data-i18n="qtSource">翻訳元（クイック）</label>
               <select id="qt-source" class="sel"></select>
             </div>
-            <div class="swap" aria-hidden="true">→</div>
+            <!-- 翻訳元⇄翻訳先の入れ替え。翻訳元が auto のときは翻訳先に auto を入れられないため popup.js が無効化する -->
+            <button id="qt-swap" class="swap-btn" type="button" data-i18n-title="qtSwapTitle" data-i18n-aria-label="qtSwapTitle" title="翻訳元と翻訳先を入れ替える" aria-label="翻訳元と翻訳先を入れ替える">⇄</button>
             <div class="col">
               <label class="lbl" for="qt-target" data-i18n="qtTarget">翻訳先（クイック）</label>
               <select id="qt-target" class="sel"></select>

@@ -274,7 +274,20 @@ body {
 .sel:focus { outline: none; border-color: var(--coral); box-shadow: 0 0 0 3px var(--wash), var(--shadow-sm); }
 
 .prompt-options textarea { display: block; width: 100%; min-height: 90px; margin-bottom: 6px; font-family: var(--sans); }
+/* クイック翻訳は中央列に入れ替えボタンを置くため、矢印用の細い列 (--swap-col) より広げる */
 .qt-langs { margin-bottom: 10px; }
+/* .row.two (詳細度 0,2,0) の列定義を上書きするため、同じクラスを重ねて詳細度を上げる */
+.row.two.qt-langs { grid-template-columns: 1fr 34px 1fr; }
+.swap-btn {
+  /* 高さは隣の .sel (padding 10px + 文字行) に揃える */
+  width: 34px; height: 42px; padding: 0;
+  font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+  border: 1px solid var(--hair); border-radius: var(--r-sm);
+  background: var(--paper-2); color: var(--vermilion);
+}
+.swap-btn:hover:not(:disabled) { border-color: var(--coral); background: var(--wash); }
+.swap-btn:focus-visible { outline: none; border-color: var(--coral); box-shadow: 0 0 0 3px var(--wash); }
+.swap-btn:disabled { opacity: .45; cursor: not-allowed; }
 #translation-style:disabled, #custom-prompt:disabled { opacity: .6; cursor: not-allowed; }
 
 /* ---- 動的モデル一覧 (新しい順10件 + コスト相対バー) ---- */

@@ -573,6 +573,17 @@
   function updateQtDir() {
     const d = $("qt-dir");
     if (d && state.settings) d.textContent = `${langShort(state.settings.quickSourceLang)} → ${langShort(state.settings.quickTargetLang)}`;
+    // 翻訳先の選択肢に auto は無いので、翻訳元が auto の間は入れ替えボタンを無効にし、理由をツールチップで示す。
+    const swapBtn = $("qt-swap");
+    if (swapBtn && state.settings) {
+      const isAuto = state.settings.quickSourceLang === "auto";
+      swapBtn.disabled = isAuto;
+      const label = isAuto
+        ? msg("qtSwapAutoTitle", "翻訳元が「自動検出」のときは入れ替えできません")
+        : msg("qtSwapTitle", "翻訳元と翻訳先を入れ替える");
+      swapBtn.title = label;
+      swapBtn.setAttribute("aria-label", label);
+    }
   }
   // 翻訳元/翻訳先の変更でクイック翻訳を訳し直すフック (実体は setupQuickTranslate が差す)。
   // 入力済みのまま言語を切り替えると、run() を呼ぶ経路が入力イベントしか無く旧言語の訳文が残るため。
@@ -646,6 +657,29 @@
       window.clearTimeout(timer);
       run();
     };
+
+    // 翻訳元⇄翻訳先の入れ替え。言語を入れ替えて保存し、表示中の訳文があれば入力欄へ移して逆方向に訳し直す
+    // (一般的な翻訳サービスの入れ替えと同じ挙動)。
+    $("qt-swap").addEventListener("click", async () => {
+      const s = state.settings;
+      if (!s || s.quickSourceLang === "auto") return; // 翻訳先に auto は置けない (ボタンも無効化済み)
+      const from = s.quickSourceLang, to = s.quickTargetLang;
+      // 翻訳中・エラー表示中の出力は現在の入力と対応していないので入力欄へは移さない。
+      const translated = (qt.classList.contains("busy") || outEl.classList.contains("err"))
+        ? "" : (outEl.textContent || "").trim();
+      $("qt-source").value = to;
+      $("qt-target").value = from;
+      const saving = save({ quickSourceLang: to, quickTargetLang: from });
+      updateQtDir();
+      // 保存に失敗したら restoreSavedControls が言語欄を戻すので、入力欄も触らず訳し直さない。
+      if (!await saving) return;
+      if (translated) {
+        inEl.value = translated;
+        setCount();
+        render(""); // 古い方向の訳文を残さない (直後の run が新しい訳文を描く)
+      }
+      rerunQuickTranslate();
+    });
 
     inEl.addEventListener("input", schedule);
     inEl.addEventListener("keydown", (e) => {

@@ -161,6 +161,8 @@
   "qtPlaceholder": { "message": "ここに入力 / 貼り付け（このページは翻訳しません）" },
   "qtOutPlaceholder": { "message": "訳文がここに出ます" },
   "qtClear": { "message": "クリア" },
+  "qtSwapTitle": { "message": "翻訳元と翻訳先を入れ替える" },
+  "qtSwapAutoTitle": { "message": "翻訳元が「自動検出」のときは入れ替えできません" },
   "qtCopy": { "message": "コピー" },
   "qtSpeakIn": { "message": "🔊 原文" },
   "qtSpeakOut": { "message": "🔊 訳文" },

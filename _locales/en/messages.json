@@ -161,6 +161,8 @@
   "qtPlaceholder": { "message": "Type or paste here (does not translate the page)" },
   "qtOutPlaceholder": { "message": "Translation appears here" },
   "qtClear": { "message": "Clear" },
+  "qtSwapTitle": { "message": "Swap source and target languages" },
+  "qtSwapAutoTitle": { "message": "Cannot swap while the source language is set to auto-detect" },
   "qtCopy": { "message": "Copy" },
   "qtSpeakIn": { "message": "🔊 Source" },
   "qtSpeakOut": { "message": "🔊 Result" },
