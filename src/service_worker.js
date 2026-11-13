@@ -20,10 +20,15 @@ if (typeof importScripts === "function") {
 (function () {
   // ---- 設定の取得/保存 ----
   let persistentTranslationCacheEnabled = false;
+  // 上の値を storage の設定から一度でも確定したか。SW が TRANSLATE_BATCH で直接起こされると、起動時の
+  // 設定プリロードより先にバッチが届き得る。未確定の false のまま進むと永続層を読まずに API を呼ぶため、
+  // translateWithCache は未確定ならまず設定を読む。
+  let persistentTranslationCachePreferenceKnown = false;
   async function getSettings() {
     const data = await chrome.storage.local.get(StorageKeys.SETTINGS);
     const settings = SettingsSchema.normalize(data[StorageKeys.SETTINGS]);
     persistentTranslationCacheEnabled = settings.persistentTranslationCache === true;
+    persistentTranslationCachePreferenceKnown = true;
     return settings;
   }
 
@@ -123,6 +128,7 @@ if (typeof importScripts === "function") {
     // 設定保存が成功する前に true にすると、storage 書き込み失敗時でも in-flight 翻訳が原文を
     // 永続化し得る。必ず保存成功後に preference を切り替える。
     persistentTranslationCacheEnabled = normalized.persistentTranslationCache === true;
+    persistentTranslationCachePreferenceKnown = true;
     settingsMem = normalized; // キャッシュを最新化 (onChanged より先に確定させる)
     if (previousCachePreference !== persistentTranslationCacheEnabled) {
       await syncPersistentTranslationCache(persistentTranslationCacheEnabled);
@@ -1710,6 +1716,11 @@ if (typeof importScripts === "function") {
       return withProviderSlot(settings, signal, () =>
         translateWithHeal(settings, texts, contexts, signal, batchId, tabId, frameId, quick)
       );
+    }
+    // 起動直後で永続キャッシュの同意がまだ確定していなければ、設定を 1 回だけ読んで確定させる
+    // (getSettingsCached はモデル一覧等も待つため、翻訳のホットパスでは storage 読込だけにする)。
+    if (!persistentTranslationCachePreferenceKnown) {
+      try { await getSettings(); } catch (_e) { /* 読めなければ session/Map cache だけで続行 */ }
     }
     await ensureTranslationCache(persistentTranslationCacheEnabled);
     const translations = new Array(texts.length);

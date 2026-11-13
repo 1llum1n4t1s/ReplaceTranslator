@@ -81,6 +81,27 @@ test("opt-in persists translations across worker restart; opt-out clears both ca
   assert.equal(restarted.requests.length, 1);
 });
 
+// SW が TRANSLATE_BATCH で直接起こされると、起動時の設定プリロードより先にバッチが届き得る。
+// 同意 (persistentTranslationCache) が未確定の false のまま進むと永続層を読まずに API を呼んでいたため、
+// 設定の読込を遅らせた順序でも最初のバッチが永続キャッシュに当たることを固定する。
+test("worker woken by a batch reads the opt-in before the first lookup and hits the persistent cache", async () => {
+  const seed = pageHarness({ initial: { provider: "anthropic", apiKeys: { anthropic: "test-key" }, persistentTranslationCache: true } });
+  assert.equal((await translate(seed)).translations[0], "test translation");
+  await seed.suspend();
+  assert.equal(seed.disk[seed.context.StorageKeys.PERSISTENT_TRANSLATION_CACHE].length, 1);
+  for (const delay of [5, 30]) {
+    const restarted = pageHarness({ disk: structuredClone(seed.disk), localGet: async (keys, get) => {
+      if ((Array.isArray(keys) ? keys : [keys]).includes(seed.context.StorageKeys.SETTINGS)) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      return get(keys);
+    } });
+    const res = await translate(restarted);
+    assert.equal(res.cacheHits, 1, `settings delay ${delay}ms`);
+    assert.equal(restarted.requests.length, 0, `settings delay ${delay}ms`);
+  }
+});
+
 test("cache reuses only matching context and page scope", async () => {
   const h = pageHarness({ initial: { provider: "anthropic", apiKeys: { anthropic: "test-key" } } });
   const a = { url: "https://example.com/page?first#one", contexts: ["bank of a river"] };
