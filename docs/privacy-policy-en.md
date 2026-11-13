@@ -17,7 +17,7 @@ The only exception is the contact form you submit yourself. Only then are the em
 
 ## Settings sync (optional)
 - Each setting carries its edit timestamp, logical counter, and a randomly generated device ID to resolve conflicts. Exclusion-rule and reasoning-preference deletion records are retained to prevent older devices from restoring removed entries. The device ID is generated within this extension; it does not use your PC name or hardware identifiers.
-- "Sync settings across PCs" is off by default. Only when you enable it on each PC, languages, translation service, models, reasoning effort, translation style, additional prompts, display preferences, auto-translate, and exclusion rules are stored in `chrome.storage.sync` and shared through the browser provider's sync service across PCs using the same account. They do not pass through the developer's servers.
+- "Sync settings across PCs" is off by default. Only when you enable it on each PC, languages, translation service, models, reasoning effort, translation style, additional prompts, rewrite mode settings, display preferences, auto-translate, and exclusion rules are stored in `chrome.storage.sync` and shared through the browser provider's sync service across PCs using the same account. They do not pass through the developer's servers.
 - API keys, source text, translations, caches, usage counts, and your persistent-cache preference are not synced.
 - Turning it off stops sync reads and writes on that device and keeps the current local and synced settings. Synced data is handled under your browser provider's privacy policy.
 

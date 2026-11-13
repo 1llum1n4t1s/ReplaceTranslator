@@ -17,6 +17,7 @@ A Chrome / Firefox extension that translates the page you are viewing **in place
 - **Token-saving cache** — exact text matches in the same page scope and context are reused from an on-device cache; persistence across browser restarts is stored only when you explicitly opt in
 - **Image text translation (experimental)** — hover an image and click 訳 to translate its text (vision-capable LLMs). Text stays at least 12 CSS px, and partial results or output errors are reported
 - **Translation styles** — choose natural, adorable, formal, and other styles. Additional instructions are editable and applied only with Custom
+- **Rewrite mode** — rewrite a page in its own language instead of translating it, such as softening harsh wording or making it formal (LLMs only)
 - **Independent quick translation** — a dedicated tab with source and target languages saved separately from page translation
 - **Multilingual** — pick the source (auto-detect available) and target language freely
 - **Privacy-first** — API keys stay local in your browser; text is sent only to the provider you chose

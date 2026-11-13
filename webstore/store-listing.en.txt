@@ -25,6 +25,7 @@ Translate the web page you are viewing in place using the cloud LLM of your choi
 - Auto-translate exclusions — skip auto-translate only on sites matching a URL, host, or wildcard rule
 - Infinite scroll / SPA friendly — content loaded later is translated automatically
 - Translation styles — choose adorable, formal, and other styles; additional prompts apply only with Custom
+- Rewrite mode — rewrite a page in its own language instead of translating it, such as softening harsh wording or making it formal (LLMs only)
 - Quick translate — a dedicated tab with source and target languages independent of page translation
 - Image text translation (experimental, vision-capable LLMs)
 - Privacy-first — API keys stay local in your browser; text is sent only to the provider you chose
