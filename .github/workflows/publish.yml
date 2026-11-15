@@ -1,4 +1,7 @@
 name: Publish to Chrome Web Store + Firefox AMO
+# CWS は「アップロード」と「審査への申請」を別 workflow に分けている。
+# この workflow は検証済みZIPを下書きとしてアップロードするだけで、申請しない。
+# 申請は掲載画像などを Dashboard で整えた後に、cws-submit.yml を手動で実行する。
 
 on:
   push:
@@ -158,7 +161,7 @@ jobs:
           Publish-R2Artifact -AccountId $env:R2_ARTIFACT_ACCOUNT_ID -Bucket $env:R2_ARTIFACT_BUCKET -AccessKeyId $env:R2_ARTIFACT_ACCESS_KEY_ID -SecretAccessKey $env:R2_ARTIFACT_SECRET_ACCESS_KEY -Name 'replace-translator-firefox-source' -Path @('firefox-build/') | Out-Null
 
   publish:
-    name: Chrome Web Store にアップロード + Submit for review
+    name: Chrome Web Store アップロード（申請は cws-submit.yml）
     runs-on: ubuntu-latest
     needs: package
     environment: chrome-web-store
@@ -194,7 +197,7 @@ jobs:
           test -n "$EXPECTED_SHA256"
           echo "$EXPECTED_SHA256  replace-translator.zip" | sha256sum --check
 
-      - name: Chrome Web Store に検証済み ZIP を HTTP 提出
+      - name: Chrome Web Store にアップロード（下書き）
         shell: pwsh
         env:
           CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
@@ -210,7 +213,7 @@ jobs:
           }
           pwsh -NoProfile -File scripts/Test-PublishCws.ps1 -WorkDirectory "$env:RUNNER_TEMP/cws-publisher-tests"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pwsh -NoProfile -File scripts/Publish-Cws.ps1 -Archive "replace-translator.zip" -ExpectedSha256 "${{ needs.package.outputs.zip_sha256 }}" -CheckExistingVersion -ExistingVersionPolicy Published
+          pwsh -NoProfile -File scripts/Publish-Cws.ps1 -Archive "replace-translator.zip" -ExpectedSha256 "${{ needs.package.outputs.zip_sha256 }}" -CheckExistingVersion -ExistingVersionPolicy Published -Stage Upload
           exit $LASTEXITCODE
 
   publish-firefox:
