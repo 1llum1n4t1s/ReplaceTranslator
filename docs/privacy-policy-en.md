@@ -1,6 +1,6 @@
 # Privacy Policy — Replace AI Translator API
 
-Last updated: 2026-11-01
+Last updated: 2026-11-15
 
 ## Information we collect
 Replace AI Translator API's developer does not collect, store, or receive any of your data through the translation features, and the extension uses no analytics and no tracking. The text you translate — and, if you enable image translation, the images — are sent only to the translation provider you choose (see "Page text" and "Image translation" below).
@@ -24,6 +24,7 @@ The only exception is the contact form you submit yourself. Only then are the em
 ## Page text
 - When you click "Translate", the text on the page is sent only to the provider's API you selected, in order to receive the translation.
 - When you use the Custom translation style, your additional prompt is sent to the same provider.
+- When you turn on "Rewrite mode" (supported by LLM providers only), page text that is already written in your target language is also sent to the same provider's API so it can be rewritten.
 - To reduce repeated API requests for identical text, the extension caches source text, nearby context, and translations on-device for the browser session. The same cache is stored on-device for up to 30 days (up to 2,000 entries) only when you explicitly enable "Persistent translation cache". Turning it off deletes the saved cache. This cache is never sent to the developer's servers.
 - How that text is handled is governed by each provider's privacy policy and terms:
   - OpenAI: https://openai.com/policies/
@@ -36,6 +37,11 @@ The only exception is the contact form you submit yourself. Only then are the em
   - Sakana AI (Fugu): https://console.sakana.ai/privacy-policy
   - MyMemory (Translated): https://mymemory.translated.net/doc/en/tos.php
 - No page text is ever sent to any server operated by the extension's developer (the only destination is the provider's API you chose). The only thing that reaches the developer's server is what you type into the contact form yourself.
+
+## Model list and pricing lookup (models.dev)
+- When you save a provider API key or press the model-list refresh button, the extension downloads model pricing, display names, and reasoning-capability information from the open-source model catalog models.dev (`https://models.dev/api.json`). The result is cached on-device (`chrome.storage.local`) for up to one hour.
+- This is a plain GET request without credentials. It does not include page text, images, API keys, your settings, or anything that identifies you. As with any HTTP request, however, your IP address and similar connection data may be visible to the operator of models.dev. If the request fails, translation keeps working with bundled information.
+- models.dev: https://models.dev/
 
 ## Image translation (optional)
 - Image translation runs only when you explicitly act on an image (clicking the button shown on the image, or choosing "Translate this image" in the right-click menu). That single image is fetched and sent as image data to the vision-capable provider you selected, in order to read and translate the text inside the image. Images on the page are never sent automatically or in bulk.

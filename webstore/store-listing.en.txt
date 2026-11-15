@@ -82,56 +82,53 @@ English
 Yes
 
 ■ Single purpose description
-Translate the text (and, optionally, the text inside images) of the web page the user is viewing, using a cloud LLM / NMT API chosen by the user, and display the translation in place on the page.
+Translate the text of the web page being viewed (optionally including text inside images) with a cloud LLM / NMT API the user chose, and show the translation in place on the page.
+
+■ Data usage disclosure
+
+  - Data types collected (checked):
+    - Personally identifiable information
+    - Authentication information
+    - Personal communications
+    - Website content
+        Personally identifiable information, personal communications, and authentication information relate to the inquiries the user submits (email address, optional name, subject, message, email verification code) and to the handling of the translation service's API key.
+    Website content is the page text (and images, when image translation is enabled) sent to the API of the translation service the user chose, for translation. It is never sent to the developer's servers.
+
+  - Data types not collected:
+    Health information, Financial and payment information, Location, Web history, User activity
+
+  - How do you handle user data? (all three checked)
+    - Selling user data: No (I do not sell or transfer user data to third parties, outside of the approved use cases)
+    - Using or transferring user data for purposes unrelated to the item's single purpose: No (I do not use or transfer user data for purposes that are unrelated to my item's single purpose)
+    - Using or transferring user data to determine creditworthiness or for lending: No (I do not use or transfer user data to determine creditworthiness or for lending purposes)
+
+  Certifications: all three checked (see "How do you handle user data?" above).
 
 ■ Permission justification
 
   activeTab:
-  Used when the user triggers translation from the popup or the right-click menu, to read the
-  current tab's page content and replace it with the translated text.
+  Used when the user runs translation from the popup, the right-click menu, or a shortcut, to read the current tab's page content and replace it with the translation result.
 
   storage:
-  Stores the user's settings (including auto-translate exclusions), API key, monthly token usage, and the auto-tuned batch size
-  locally in the browser (chrome.storage.local). When enabled, settings and exclusion rules also use chrome.storage.sync. API keys and translation data are not synced. Nothing is sent to the developer.
+  Used to save settings (including the auto-translate exclusion list), API keys, token usage, the translation cache, and the auto-tuned batch size inside the browser (chrome.storage.local). Only if the user turns on "Sync settings across PCs", the settings and the exclusion list are also saved to chrome.storage.sync. API keys and translated content are never synced, and are never sent to the developer.
 
   alarms:
-  Retries incomplete settings sync. The retry alarm is cleared when sync is turned off.
+  Retries a settings sync that has not completed. The retry alarm is cleared when sync is turned off.
 
   scripting:
-  Injects the translation engine (translator.js) into the target page (all frames) on demand to
-  translate text nodes in place and to restore the original text.
+  Used to inject the translation engine (translator.js) and the selected-text translation script into the frames of the target page only when needed, to translate text and restore the original.
 
   contextMenus:
-  Adds page translation, original restoration, and auto-translate exclusion controls to the right-click menu.
+  Used to add the following to the right-click menu: translate page, translate selected text, translate image, restore original, and exclude (or stop excluding) this site from auto-translation.
 
-  host permissions (<all_urls>):
-  Needed so the user can translate any web page. The content script is injected into the page,
-  and requests to the translation provider's API are proxied from the background service worker
-  (so the API key is never exposed to the page context, and CORS is avoided). No host is contacted
-  except the translation provider the user selected.
+■ Host permission justification
+
+  So that any web page (including local files the user has allowed) can be translated. A translate button and an image-translate button are shown on the page, and requests to the translation APIs are made from the background (service worker) so the API key is never handed to the page. The destinations are the API of the translation service the user chose (for translation and for fetching the model list), models.dev for model pricing information, and support.kagayoi.com when the user submits an inquiry. Page content is never sent to the developer's servers.
 
 ■ Are you using remote code?
 No
 (All code is contained within the extension package; no remote code is loaded or executed. Calls to
 translation providers transmit data, not executable code.)
-
-■ Data usage disclosure
-
-  What user data do you collect / transfer?
-  - Website content: YES. The page text (and, when image translation is enabled, images) is sent
-    only to the translation provider the user selected, solely to perform the translation. It is
-    never sent to the developer's servers.
-  - Personally identifiable information: No
-  - Health information: No
-  - Financial and payment information: No
-  - Authentication information: The API key is stored locally only (chrome.storage.local) and is
-    sent only to the selected provider's API for authentication. It is never sent to the developer.
-  - Personal communications / location / web history / user activity: No
-
-  Certifications (all true):
-  - I do not sell or transfer user data to third parties, outside of the approved use cases
-  - I do not use or transfer user data for purposes that are unrelated to my item's single purpose
-  - I do not use or transfer user data to determine creditworthiness or for lending purposes
 
 ------------------------------------------------------------
 
