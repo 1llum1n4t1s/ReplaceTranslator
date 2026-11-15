@@ -65,14 +65,13 @@ Replace AI Translator API
 → icons/icon128.png
 
 ■ スクリーンショット（1280x800）※最大5枚、最低1枚
-  日本語版: webstore/images/ja/01-hero.png 〜 05-image-quick.png
-  英語版:   webstore/images/en/01-hero.png 〜 05-image-quick.png
+  各言語版: webstore/images/<ロケール>/screenshot-01.png 〜 screenshot-05.png（ロケール: en ja zh_CN zh_TW ko es fr de pt_BR）
 
 ■ プロモーション タイル（小）（440x280）※任意
-→ webstore/images/{ja,en}/promo-small-440x280.png
+→ webstore/images/tile-small.png（全言語共通・英字表記）
 
 ■ マーキー プロモーション タイル（1400x560）※任意（フィーチャー候補に必要）
-→ webstore/images/{ja,en}/promo-marquee-1400x560.png
+→ webstore/images/tile-marquee.png（全言語共通・英字表記）
 
 ------------------------------------------------------------
 

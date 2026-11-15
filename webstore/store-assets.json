@@ -1,0 +1,321 @@
+{
+  "brand": "Replace AI Translator API",
+  "icon": "icons/icon.svg",
+  "extensionDir": ".",
+  "palette": {
+    "primary": "#2F6FD6",
+    "secondary": "#F0503C"
+  },
+  "locales": [
+    "en",
+    "ja",
+    "zh_CN",
+    "zh_TW",
+    "ko",
+    "es",
+    "fr",
+    "de",
+    "pt_BR"
+  ],
+  "captures": [
+    {
+      "id": "popup-translate",
+      "kind": "popup",
+      "page": "src/popup/popup.html",
+      "height": 568
+    },
+    {
+      "id": "popup-api",
+      "kind": "popup",
+      "page": "src/popup/popup.html",
+      "height": 572
+    },
+    {
+      "id": "popup-quick",
+      "kind": "popup",
+      "page": "src/popup/popup.html",
+      "height": 512
+    },
+    {
+      "id": "page-translated",
+      "kind": "page",
+      "url": "https://www.example.com/news/harbor-library",
+      "fixture": "article.html",
+      "waitFor": "#__rt_fab",
+      "width": 1120,
+      "height": 524,
+      "storage": {
+        "settings": {
+          "provider": "anthropic",
+          "showFab": true
+        },
+        "contentFlags": {
+          "autoTranslate": false,
+          "showFab": true,
+          "showImageButton": false,
+          "imageCapable": true,
+          "selectionMode": "bubble",
+          "fabOpacity": 1
+        }
+      }
+    }
+  ],
+  "slides": [
+    {
+      "layout": "hero",
+      "capture": "popup-translate",
+      "product": "Replace AI Translator",
+      "tagline": {
+        "msg": "headerTagline"
+      },
+      "chips": [
+        {
+          "en": "Replaces text in place",
+          "ja": "ページ上で置換翻訳",
+          "zh_CN": "原位置替换翻译",
+          "zh_TW": "原位置取代翻譯",
+          "ko": "페이지에서 바로 교체",
+          "es": "Traducción en la propia página",
+          "fr": "Traduction sur place",
+          "de": "Übersetzung direkt auf der Seite",
+          "pt_BR": "Tradução na própria página"
+        },
+        {
+          "en": "Your own API key",
+          "ja": "自分のAPIキーで利用",
+          "zh_CN": "使用自己的API密钥",
+          "zh_TW": "使用自己的 API 金鑰",
+          "ko": "내 API 키로 사용",
+          "es": "Con su propia clave de API",
+          "fr": "Avec votre propre clé API",
+          "de": "Mit eigenem API-Schlüssel",
+          "pt_BR": "Com a sua própria chave de API"
+        },
+        {
+          "en": "Restore the original anytime",
+          "ja": "いつでも原文に戻せる",
+          "zh_CN": "随时还原原文",
+          "zh_TW": "隨時還原原文",
+          "ko": "언제든 원문 복원",
+          "es": "Restaure el original cuando quiera",
+          "fr": "Rétablissez l’original à tout moment",
+          "de": "Original jederzeit wiederherstellen",
+          "pt_BR": "Restaure o original quando quiser"
+        }
+      ]
+    },
+    {
+      "layout": "feature",
+      "capture": "popup-api",
+      "kicker": {
+        "msg": "tabApi"
+      },
+      "title": {
+        "en": "Bring your own API key",
+        "ja": "自分のAPIキーで使う",
+        "zh_CN": "使用自己的API密钥",
+        "zh_TW": "使用自己的 API 金鑰",
+        "ko": "내 API 키로 사용",
+        "es": "Use su propia clave de API",
+        "fr": "Utilisez votre propre clé API",
+        "de": "Mit Ihrem eigenen API-Schlüssel",
+        "pt_BR": "Use a sua própria chave de API"
+      },
+      "body": {
+        "en": "Pick a provider, enter your key, and translate. Keys stay in this browser and go only to that provider.",
+        "ja": "プロバイダーを選んでキーを入力するだけ。キーはこのブラウザー内に保存され、そのプロバイダーにだけ送信されます。",
+        "zh_CN": "选择服务商并输入密钥即可翻译。密钥保存在此浏览器中，只会发送给该服务商。",
+        "zh_TW": "選擇服務供應商並輸入金鑰即可翻譯。金鑰儲存在此瀏覽器中，只會傳送給該服務供應商。",
+        "ko": "제공업체를 고르고 키를 입력하면 바로 번역할 수 있습니다. 키는 이 브라우저에만 저장되며 해당 제공업체로만 전송됩니다.",
+        "es": "Elija un proveedor, introduzca su clave y traduzca. Las claves se quedan en este navegador y solo se envían a ese proveedor.",
+        "fr": "Choisissez un fournisseur, saisissez votre clé et traduisez. Les clés restent dans ce navigateur et ne sont envoyées qu’à ce fournisseur.",
+        "de": "Anbieter wählen, Schlüssel eingeben, übersetzen. Die Schlüssel bleiben in diesem Browser und gehen nur an den jeweiligen Anbieter.",
+        "pt_BR": "Escolha um provedor, informe sua chave e traduza. As chaves ficam neste navegador e são enviadas somente a esse provedor."
+      },
+      "bullets": [
+        {
+          "en": "Works with OpenAI, Anthropic, Gemini, Grok and more",
+          "ja": "OpenAI・Anthropic・Gemini・Grokなどに対応",
+          "zh_CN": "支持 OpenAI、Anthropic、Gemini、Grok 等",
+          "zh_TW": "支援 OpenAI、Anthropic、Gemini、Grok 等",
+          "ko": "OpenAI, Anthropic, Gemini, Grok 등 지원",
+          "es": "Compatible con OpenAI, Anthropic, Gemini, Grok y más",
+          "fr": "Compatible avec OpenAI, Anthropic, Gemini, Grok et d’autres",
+          "de": "Unterstützt OpenAI, Anthropic, Gemini, Grok und weitere",
+          "pt_BR": "Compatível com OpenAI, Anthropic, Gemini, Grok e mais"
+        },
+        {
+          "en": "MyMemory works without a key",
+          "ja": "MyMemoryならキー不要",
+          "zh_CN": "MyMemory 无需密钥",
+          "zh_TW": "MyMemory 無需金鑰",
+          "ko": "MyMemory는 키 없이 사용",
+          "es": "MyMemory funciona sin clave",
+          "fr": "MyMemory fonctionne sans clé",
+          "de": "MyMemory funktioniert ohne Schlüssel",
+          "pt_BR": "O MyMemory não precisa de chave"
+        }
+      ]
+    },
+    {
+      "layout": "wide",
+      "capture": "page-translated",
+      "title": {
+        "en": "Translate the page where it is",
+        "ja": "ページをその場で翻訳",
+        "zh_CN": "就地翻译整个页面",
+        "zh_TW": "就地翻譯整個網頁",
+        "ko": "페이지를 그 자리에서 번역",
+        "es": "Traduzca la página en su sitio",
+        "fr": "Traduisez la page sur place",
+        "de": "Seiten direkt vor Ort übersetzen",
+        "pt_BR": "Traduza a página no próprio local"
+      },
+      "body": {
+        "en": "Text is replaced in place and the layout stays. Restore the original with one click.",
+        "ja": "文字をその場で置き換え、レイアウトはそのまま。ワンクリックで原文に戻せます。",
+        "zh_CN": "文字就地替换，版式保持不变。一键即可还原原文。",
+        "zh_TW": "文字就地取代，版面維持不變。一鍵即可還原原文。",
+        "ko": "텍스트만 그 자리에서 바뀌고 레이아웃은 그대로. 한 번 클릭으로 원문으로 되돌립니다.",
+        "es": "El texto se reemplaza en su sitio y el diseño no cambia. Restaure el original con un clic.",
+        "fr": "Le texte est remplacé sur place et la mise en page reste intacte. Rétablissez l’original en un clic.",
+        "de": "Der Text wird vor Ort ersetzt, das Layout bleibt. Mit einem Klick zurück zum Original.",
+        "pt_BR": "O texto é substituído no lugar e o layout permanece. Restaure o original com um clique."
+      }
+    },
+    {
+      "layout": "feature",
+      "capture": "popup-quick",
+      "kicker": {
+        "msg": "qtTitle"
+      },
+      "title": {
+        "en": "Translate short text on the spot",
+        "ja": "短い文は、その場ですぐ翻訳",
+        "zh_CN": "短文随时即译",
+        "zh_TW": "短文隨時即時翻譯",
+        "ko": "짧은 문장은 바로 번역",
+        "es": "Traduzca textos breves al instante",
+        "fr": "Traduisez un court texte à la volée",
+        "de": "Kurze Texte sofort übersetzen",
+        "pt_BR": "Traduza textos curtos na hora"
+      },
+      "body": {
+        "en": "Type or paste text into Quick translate. It keeps its own language pair, separate from page translation.",
+        "ja": "クイック翻訳に入力または貼り付けるだけ。言語設定はページ翻訳とは別に保存されます。",
+        "zh_CN": "在快速翻译中输入或粘贴文字即可。语言设置与页面翻译分开保存。",
+        "zh_TW": "在快速翻譯中輸入或貼上文字即可。語言設定與網頁翻譯分開儲存。",
+        "ko": "퀵 번역에 입력하거나 붙여넣기만 하면 됩니다. 언어 설정은 페이지 번역과 따로 저장됩니다.",
+        "es": "Escriba o pegue texto en Traducción rápida. Sus idiomas se guardan aparte de los de la página.",
+        "fr": "Saisissez ou collez du texte dans Traduction rapide. Ses langues sont distinctes de celles de la page.",
+        "de": "Text in die Schnellübersetzung eingeben oder einfügen. Die Sprachen werden getrennt von der Seitenübersetzung gespeichert.",
+        "pt_BR": "Digite ou cole o texto na Tradução rápida. Os idiomas são salvos separadamente dos da página."
+      },
+      "bullets": [
+        {
+          "en": "Copy the result or hear it read aloud",
+          "ja": "訳文のコピーや音声読み上げに対応",
+          "zh_CN": "可复制译文或朗读",
+          "zh_TW": "可複製譯文或朗讀",
+          "ko": "번역문 복사와 음성 읽기 지원",
+          "es": "Copie el resultado o escúchelo",
+          "fr": "Copiez le résultat ou écoutez-le",
+          "de": "Ergebnis kopieren oder vorlesen lassen",
+          "pt_BR": "Copie o resultado ou ouça a leitura"
+        }
+      ]
+    },
+    {
+      "layout": "steps",
+      "title": {
+        "en": "Start in three steps",
+        "ja": "3ステップで使い始める",
+        "zh_CN": "三步即可开始",
+        "zh_TW": "三步驟即可開始",
+        "ko": "세 단계로 시작하기",
+        "es": "Empiece en tres pasos",
+        "fr": "Démarrez en trois étapes",
+        "de": "In drei Schritten loslegen",
+        "pt_BR": "Comece em três passos"
+      },
+      "steps": [
+        {
+          "title": {
+            "en": "Add your key",
+            "ja": "キーを入力",
+            "zh_CN": "输入密钥",
+            "zh_TW": "輸入金鑰",
+            "ko": "키 입력",
+            "es": "Añada su clave",
+            "fr": "Ajoutez votre clé",
+            "de": "Schlüssel eintragen",
+            "pt_BR": "Informe sua chave"
+          },
+          "body": {
+            "en": "Enter an API key, or use MyMemory with no key.",
+            "ja": "APIキーを入力。キー不要のMyMemoryも選べます。",
+            "zh_CN": "输入 API 密钥，或选用无需密钥的 MyMemory。",
+            "zh_TW": "輸入 API 金鑰，或選用無需金鑰的 MyMemory。",
+            "ko": "API 키를 입력하거나 키가 필요 없는 MyMemory를 선택하세요.",
+            "es": "Introduzca una clave de API o use MyMemory, que no requiere clave.",
+            "fr": "Saisissez une clé API ou utilisez MyMemory, sans clé.",
+            "de": "API-Schlüssel eingeben oder MyMemory ohne Schlüssel nutzen.",
+            "pt_BR": "Digite uma chave de API ou use o MyMemory, que dispensa chave."
+          }
+        },
+        {
+          "title": {
+            "en": "Choose languages",
+            "ja": "言語を選ぶ",
+            "zh_CN": "选择语言",
+            "zh_TW": "選擇語言",
+            "ko": "언어 선택",
+            "es": "Elija los idiomas",
+            "fr": "Choisissez les langues",
+            "de": "Sprachen wählen",
+            "pt_BR": "Escolha os idiomas"
+          },
+          "body": {
+            "en": "Set the source and target languages.",
+            "ja": "翻訳元と翻訳先の言語を選びます。",
+            "zh_CN": "选择来源语言和目标语言。",
+            "zh_TW": "選擇來源與目標語言。",
+            "ko": "원문 언어와 번역할 언어를 고릅니다.",
+            "es": "Indique el idioma de origen y el de destino.",
+            "fr": "Indiquez la langue source et la langue cible.",
+            "de": "Ausgangs- und Zielsprache festlegen.",
+            "pt_BR": "Defina o idioma de origem e o de destino."
+          }
+        },
+        {
+          "title": {
+            "en": "Translate",
+            "ja": "翻訳する",
+            "zh_CN": "开始翻译",
+            "zh_TW": "開始翻譯",
+            "ko": "번역하기",
+            "es": "Traduzca",
+            "fr": "Traduisez",
+            "de": "Übersetzen",
+            "pt_BR": "Traduza"
+          },
+          "body": {
+            "en": "Use the popup, the page button, or the right-click menu. Restore anytime.",
+            "ja": "ポップアップ、ページ上のボタン、右クリックから実行。いつでも元に戻せます。",
+            "zh_CN": "可通过弹出窗口、页面按钮或右键菜单操作，随时还原。",
+            "zh_TW": "可透過彈出視窗、頁面按鈕或右鍵選單操作，隨時還原。",
+            "ko": "팝업, 페이지 버튼, 오른쪽 클릭 메뉴로 실행하고 언제든 되돌릴 수 있습니다.",
+            "es": "Use la ventana emergente, el botón de la página o el menú contextual. Restaure cuando quiera.",
+            "fr": "Utilisez la fenêtre contextuelle, le bouton de la page ou le menu contextuel. Rétablissez à tout moment.",
+            "de": "Per Popup, Seitenschaltfläche oder Kontextmenü starten. Jederzeit wiederherstellen.",
+            "pt_BR": "Use o pop-up, o botão da página ou o menu de contexto. Restaure quando quiser."
+          }
+        }
+      ]
+    }
+  ],
+  "tiles": {
+    "tagline": "In-place page translation with LLMs",
+    "capture": "popup-translate"
+  }
+}

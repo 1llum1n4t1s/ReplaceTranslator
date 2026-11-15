@@ -65,13 +65,13 @@ English
 → icons/icon128.png
 
 ■ Screenshots (1280x800) — up to 5, at least 1
-  webstore/images/en/01-hero.png … 05-image-quick.png
+  webstore/images/en/screenshot-01.png … screenshot-05.png
 
 ■ Small promo tile (440x280) — optional
-→ webstore/images/en/promo-small-440x280.png
+→ webstore/images/tile-small.png
 
 ■ Marquee promo tile (1400x560) — optional (required to be considered for featuring)
-→ webstore/images/en/promo-marquee-1400x560.png
+→ webstore/images/tile-marquee.png
 
 ------------------------------------------------------------
 

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="vitrina-fixture" content="article">
+<title></title>
+<!--
+  ストア画像用の固定ページ（架空の地域ニュース記事・中立的な骨組み）。
+  実在の媒体・商標・ロゴは使わない。文言は撮影時に store-assets.steps.mjs が
+  ロケール別の「翻訳済み」の文へ差し替える（実際の LLM 呼び出しはしない）。
+  差し替え対象は data-k 属性の要素。
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #fff; overflow: hidden; color: #1f2933; }
+  body { font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif; }
+  :lang(ja) body { font-family: "Noto Sans JP", "Yu Gothic UI", sans-serif; }
+  :lang(ko) body { font-family: "Malgun Gothic", sans-serif; }
+  :lang(zh-CN) body { font-family: "Microsoft YaHei UI", sans-serif; }
+  :lang(zh-TW) body { font-family: "Microsoft JhengHei UI", sans-serif; }
+  .top { height: 64px; display: flex; align-items: center; padding: 0 56px; gap: 24px; border-bottom: 1px solid #e6e9ee; }
+  .logo { width: 28px; height: 28px; border-radius: 8px; background: #cfd8e6; }
+  .nav { display: flex; gap: 20px; }
+  .nav i { display: block; width: 56px; height: 8px; border-radius: 4px; background: #e3e8ef; }
+  main { display: flex; gap: 40px; padding: 36px 56px; }
+  article { width: 640px; }
+  .meta { margin: 0 0 12px; font-size: 14px; font-weight: 600; letter-spacing: .02em; color: #5b6b7f; }
+  h1 { margin: 0 0 16px; font-size: 34px; line-height: 1.22; font-weight: 800; }
+  .hero { height: 104px; border-radius: 14px; background: linear-gradient(120deg, #c9d9f2, #e5ecf7); margin-bottom: 18px; }
+  p { margin: 0 0 14px; font-size: 17px; line-height: 1.65; color: #33404f; }
+  aside { flex: 1; padding-top: 28px; }
+  aside i { display: block; height: 10px; border-radius: 5px; background: #eceff4; margin-bottom: 14px; }
+  aside i:nth-child(3n) { width: 60%; }
+</style>
+</head>
+<body>
+  <div class="top"><div class="logo"></div><div class="nav"><i></i><i></i><i></i><i></i></div></div>
+  <main>
+    <article>
+      <p class="meta" data-k="meta">Local news · 3 min read</p>
+      <h1 data-k="title">Harbor Library Opens Its Doors</h1>
+      <div class="hero"></div>
+      <p data-k="p1">After two years of renovation, the old harbor warehouse has reopened as a public library with reading rooms, a children’s corner, and a quiet garden.</p>
+      <p data-k="p2">Members can borrow books for three weeks, and the building stays open until nine in the evening on weekdays.</p>
+    </article>
+    <aside><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></aside>
+  </main>
+</body>
+</html>
