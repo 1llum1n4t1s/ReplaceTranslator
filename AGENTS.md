@@ -14,6 +14,8 @@ This file provides guidance to Codex when working in this repository.
 - フォント同梱の作り直し: `uvx --from "fonttools[woff]==4.68.0" pyftsubset <IBMPlexSansJP-*.ttf> --unicodes=... --flavor=woff2`（入力版・hash・subset 契約は `src/popup/fonts/README.md`、§popup フォント参照）
 - `bun --bun run sync:support` — exact 固定した `@kagayoi/support-extension` から `src/shared/` の共通問い合わせ JS 2本・CSS 3本を同期。これらの逐語コピーは直接編集せず、更新時は依存を上げて同期し、`bun --bun run sync:support --check` で一致を検証する
 
+- **Chrome を起動するスクリプトを足すときはシード必須**: puppeteer.launch・chrome-launcher・Chrome の直接起動は、起動前に user-data-dir の `Local State` へ `{"password_manager":{"os_password_blank":false,"os_password_last_changed":"9223372036854775000"}}` を書く。Windows の Chromium は新規プロファイルごとに空パスワードで LogonUser を呼び（`password_manager_util_win.cc` の `CheckBlankPasswordWithPrefs`）、ログオン失敗（Security 4625）として数えられるため、並列・連続起動で Windows アカウントがロックされる（2026-11-15 実害）。userDataDir 未指定の起動は作らず、`webstore/vitrina/lib/capture.mjs` の `seedChromeProfile`（および一時プロファイルは D:\tmp 配下）と同等の処理を先に呼ぶ。`webstore/vitrina/` は逐語コピーで対策済み。
+
 ## 規約上の前提（設計の根拠）
 - 大手3社ともブラウザ拡張からサブスクのログインセッション流用は ToS 違反。**API トークンが唯一の正規ルート**。プロバイダ追加時も **API キー方式**で実装する
 - 翻訳エンジンと画像翻訳の一部関数・静的契約は `test/content-dom.test.js` で実ソースから検証する。ただし実 DOM + chrome API + LLM を組み合わせた統合テストは無い。変更時は `bun --bun run test` + `bun --bun run lint` を通し、統合ロジックを慎重にレビューする。実機確認は API キーが要るためゆろさん側で行う
@@ -89,15 +91,31 @@ bun "$HOME/.agents/skills/vava/scripts/update-amo-listing.mjs" --slug 'replace-t
 
 job間の検証済み成果物はprivate R2へSigV4で保存し、repository・commit・run・producer attemptのidentityと各ファイルのSHA-256/サイズを検証して復元する。設定は `vars.CLOUDFLARE_ACCOUNT_ID` / `vars.R2_ARTIFACT_BUCKET` と `secrets.R2_ARTIFACT_ACCESS_KEY_ID` / `secrets.R2_ARTIFACT_SECRET_ACCESS_KEY`。キーは当該bucket限定。`ci-artifacts/` は30日保持後にlifecycleで削除され、恒久配布とは区別する。
 
-CWSは `scripts/Publish-Cws.ps1`（PowerShell 7、API v2）を使う。既存OAuth secretsとpublisher/item IDを維持し、同期upload成功・応答ID・manifest版の一致を確認してpublishする。非同期uploadは版を確定できないため自動publishせず停止する。公開workflowはrepository単位の `queue: max` で最大100件まで直列化し、Dashboardや他の手動公開と並行しない。
+CWSは `scripts/Publish-Cws.ps1`（PowerShell 7、API v2）を使う。既存OAuth secretsとpublisher/item IDを維持し、同期upload成功・応答ID・manifest版の一致を確認する（既定の `-Stage All` はその後publishまで行うが、CIは `-Stage Upload` でアップロードだけを行い、申請は `cws-submit.yml` が `-Stage Publish` で行う）。非同期uploadは版を確定できないため自動publishせず停止する。公開workflowはrepository単位の `queue: max` で最大100件まで直列化し、Dashboardや他の手動公開と並行しない。
 
 ### CWS v2の再実行
 
 `Publish-Cws.ps1` は認証付きfetchStatusのitem identity・revision state・distributionChannelsのversionを検証する。PUBLISHED / PUBLISHED_TO_TESTERS の正常な登録版が今回versionと一致するときだけ、従来の再実行契約として「既に提出/公開済み・今回ZIPの新規送信なし」と明示して終了する。ストア配布bytesと今回ZIPの同一性を確認したとは扱わない。未提出draft・不明状態・非同期uploadは成功として扱わず停止する。新規送信はverifier receiptに一致するsnapshotを使い、同期uploadのID・版とpublish受付応答を確認する。公開はrepository単位で直列化し、外部Dashboard操作と並行しない。
 
+### CWS のアップロードと申請の分離
+
+`publish.yml` は検証済みZIPを `-Stage Upload` で下書きとしてアップロードするだけで、審査へは申請しない。新ロケールの掲載画像欄はアップロード後でないと Dashboard に出ないため、申請は別workflow `.github/workflows/cws-submit.yml`（手動実行、`-Stage Publish`）で行う。
+
+1. `release/x.y.z` を push する（publish.yml がアップロードする）
+2. Dashboard（Edictora）でロケール別の掲載画像などを整えて下書き保存する
+3. `gh workflow run cws-submit.yml -f version=x.y.z --ref release/x.y.z` で申請する
+
+- API v2 は未申請の下書き版を返さないため、下書きの版そのものは確認できない。`cws-submit.yml` は次を満たす場合だけ `:publish` する: 実行 ref が `release/<version>` で manifest の版が入力と一致する。`publish.yml` の直近のアップロード成功 run（固定ステップ名 `Chrome Web Store にアップロード（下書き）`。`actions: read` で履歴を参照）が同じ commit である。fetchStatus で item identity・直近アップロード状態・公開/審査中の版を確認できる。
+- 同版が申請済み・公開済み（PENDING_REVIEW / STAGED / PUBLISHED / PUBLISHED_TO_TESTERS）なら再送せず成功終了する。別版の審査中、より新しい版の存在、直近アップロードの進行中・失敗、状態不明は申請せず停止する。
+- Dashboard で手動アップロードした下書きなど、同じ commit のアップロード成功 run が無い場合は申請されない。その場合は Dashboard から手動で申請する。
+- 両workflowは同じ concurrency group で直列化する。申請中は Dashboard の操作を並行しない。
+- `cws-submit.yml` も `environment: chrome-web-store` を使い、`.cws-id` と `CWS_EXTENSION_ID` の一致を確認する。
+
 ### ストア画像の隔離依存
 
-スクリーンショット用 puppeteer は `webstore/` の Git 除外済み package に隔離する。本体の devDependencies へは追加しない。既存環境では `bun run --cwd webstore deps` の後、`bun webstore/generate-screenshots.js` を実行する。隔離側も Bun 1.4.4、公開後24時間待機、puppeteer のみ trustedDependencies を維持する。
+ストア掲載画像は Kagayoi 共通キット vitrina（正本は `Kagayoi.Support/clients/chrome-extension/store-assets/`）を `webstore/vitrina/` へ逐語コピーして作る（改変せず `bun <正本>/sync-kit.mjs --repo <このリポジトリ> [--check]` で同期）。データは `webstore/store-assets.json`（9言語の文言・palette・captures・slides）、`webstore/fixtures/`（翻訳済みの架空記事の固定ページ）、`webstore/store-assets.steps.mjs`（撮影前の状態作り。翻訳結果・クイック翻訳の訳文は fixture で、実際の LLM は呼ばない。API キーはダミー値の伏字）。実拡張を Chrome for Testing に読み込んで実UIを撮影する。出力は `webstore/images/<locale>/screenshot-01..05.png` と `webstore/images/tile-small.png`・`tile-marquee.png`（ロケール共通）。
+
+スクリーンショット用 puppeteer は `webstore/` の Git 除外済み package に隔離する（vitrina もここから解決する）。本体の devDependencies へは追加しない。既存環境では `bun run --cwd webstore deps` の後、`bun run generate-screenshots`（= `bun webstore/vitrina/vitrina.mjs generate --work-dir D:/tmp/replace-translator-store-assets`、Windows は release プロファイル）で生成し、`bun webstore/vitrina/vitrina.mjs verify` で検証する。popup の見た目を変えたら再生成する。隔離側も Bun 1.4.4、公開後24時間待機、puppeteer のみ trustedDependencies を維持する。
 
 新規環境では `webstore/package.json` に `private: true`、`packageManager: "bun@1.4.4"`、`dependencies: { "puppeteer": "25.17.0" }`、`trustedDependencies: ["puppeteer"]` と `scripts: { "deps": "bun ../scripts/Install-Dependencies.mjs", "deps:resolve": "bun install" }` を置き、`webstore/bunfig.toml` の `[install]` に `minimumReleaseAge = 86400`、`[run]` に `bun = true` を指定してから `bun run --cwd webstore deps:resolve` で隔離 lock を作る。以後は frozen install を使う。これらはローカル専用とし、強制 Git 追加しない。
 

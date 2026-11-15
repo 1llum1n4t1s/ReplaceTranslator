@@ -34,6 +34,13 @@ if (libs.length === 0) {
   process.exit(1);
 }
 
+// ローカライズ設定 (default_locale と __MSG_*__) は manifest.json のものをそのまま引き継ぐ。
+// 外れていると Firefox/AMO で拡張名が生の __MSG_appName__ のまま出るので、ここで検出する。
+if (manifest.default_locale !== "en" || !String(manifest.name).startsWith("__MSG_")) {
+  console.error('manifest.json は default_locale: "en" と name: "__MSG_*__" が必要です');
+  process.exit(1);
+}
+
 manifest.background = { scripts: [...libs, "src/service_worker.js"] };
 
 writeFileSync(out, JSON.stringify(manifest, null, 2) + "\n");

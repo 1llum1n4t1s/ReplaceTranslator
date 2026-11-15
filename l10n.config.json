@@ -1,0 +1,7 @@
+{
+  "ignore": [
+    { "path": "src/content/translator.js", "pattern": "^\\s*dbg\\(", "reason": "デバッグログ (localStorage __rt_debug=1 のときだけ出る開発者向け出力。UI には出ない)" },
+    { "path": "src/lib/lang.js", "pattern": "native:", "reason": "言語の自称名 (日本語・简体中文 等) は翻訳しない。auto の自称名は popup が langSourceAuto で差し替えるため画面に出ない" },
+    { "path": "src/lib/providers.js", "pattern": "ギャル文字|関西弁|茨城弁", "reason": "LLM へのプロンプト内の方言名 (モデルへ方言を指定する固有名詞。UI 文言ではない)" }
+  ]
+}

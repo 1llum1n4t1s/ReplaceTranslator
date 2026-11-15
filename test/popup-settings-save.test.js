@@ -277,27 +277,24 @@ test("クイック翻訳は保存待ちの入力を変更すると旧送信を�
   assert.equal(h.element("qt").classList.contains("busy"), false);
 });
 
-test("popup は aria-label を UI 言語に合わせ、共有部品が参照する文書言語は変えず、翻訳元の自動判定も UI 言語で出す", () => {
+test("popup は文言の置換を共通モジュールへ任せ、共有部品が参照する文書言語は変えず、翻訳元の自動判定も UI 言語で出す", () => {
   const popup = fs.readFileSync(path.join(__dirname, "../src/popup/popup.js"), "utf8");
   const i18n = popup.slice(popup.indexOf("  function applyI18n()"), popup.indexOf("  // ---- タブ ----"));
   const langs = popup.slice(popup.indexOf("  function option(value, label)"), popup.indexOf("  // ---- 翻訳タブ: サービス一覧 ----"));
-  const messages = { qtInputLabel: "Text to translate", langSourceAuto: "Detect language" };
-  const labelled = { getAttribute: () => "qtInputLabel", attrs: {}, setAttribute(name, value) { this.attrs[name] = value; } };
-  const missing = { getAttribute: () => "unknownKey", attrs: { "aria-label": "既定" }, setAttribute(name, value) { this.attrs[name] = value; } };
+  const messages = { langSourceAuto: "Detect language" };
+  const calls = [];
   const document = {
     documentElement: { lang: "ja" },
-    querySelectorAll: (selector) => selector === "[data-i18n-aria-label]" ? [labelled, missing] : [],
     createElement: () => ({ value: "", textContent: "" }),
   };
   const api = vm.runInNewContext(`(() => { ${i18n}\n${langs}\nreturn { applyI18n, fillLangSelect }; })()`, {
-    document, chrome: { i18n: { getMessage: (key) => messages[key] || "" } },
+    document, Localizer: { localizeDocument: () => calls.push("localizeDocument") },
     msg: (key, fallback) => messages[key] || fallback,
     Lang: { LANGUAGES: [{ code: "auto", native: "自動判定" }, { code: "ja", native: "日本語" }], targets: () => [{ code: "ja", native: "日本語" }] },
   });
   api.applyI18n();
-  assert.equal(labelled.attrs["aria-label"], "Text to translate");
-  assert.equal(missing.attrs["aria-label"], "既定", "未定義キーは HTML の既定名を保つ");
-  assert.equal(document.documentElement.lang, "ja", "共有サポート部品の表示言語を変えないよう <html lang> は書き換えない");
+  assert.deepEqual(calls, ["localizeDocument"], "data-i18n / data-i18n-attr の置換は Localizer.localizeDocument に一本化する");
+  assert.equal(document.documentElement.lang, "ja", "applyI18n は <html lang> を書き換えない (文書言語は applyDocumentLang が先頭で確定する)");
   const options = [];
   api.fillLangSelect({ replaceChildren() {}, appendChild: (o) => options.push([o.value, o.textContent]) }, true);
   assert.deepEqual(options, [["auto", "Detect language"], ["ja", "日本語"]]);

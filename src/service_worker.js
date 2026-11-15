@@ -14,7 +14,7 @@
 
 // 依存ライブラリ読み込み (Chrome: importScripts / Firefox: manifest の background.scripts で既読)
 if (typeof importScripts === "function") {
-  importScripts("/src/lib/actions.js", "/src/lib/translation-core.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js", "/src/lib/settings-sync.js");
+  importScripts("/src/shared/ui-localizer.js", "/src/lib/actions.js", "/src/lib/translation-core.js", "/src/lib/lang.js", "/src/lib/model-pricing.js", "/src/lib/providers.js", "/src/lib/stream.js", "/src/lib/settings-sync.js");
 }
 
 (function () {
@@ -1355,7 +1355,7 @@ if (typeof importScripts === "function") {
     // 右クリック時の frameId 注入) が担うため、ここでは翻訳エンジン (translator.js) だけを全フレームに注入する。
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: ["src/lib/actions.js", "src/lib/translation-core.js", "src/lib/lang.js", "src/content/translator.js"],
+      files: ["src/shared/ui-localizer.js", "src/lib/actions.js", "src/lib/translation-core.js", "src/lib/lang.js", "src/content/translator.js"],
     });
   }
 
@@ -1947,7 +1947,7 @@ if (typeof importScripts === "function") {
   function autoTranslateSiteMenuTitle(excluded) {
     const key = excluded ? "ctxAutoTranslateAllow" : "ctxAutoTranslateBlock";
     const fallback = excluded ? "Remove this site from auto-translate exclusions" : "Exclude this site from auto-translate";
-    return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback;
+    return Localizer.t(key, undefined, fallback);
   }
 
   async function refreshAutoTranslateSiteMenu(tab) {
@@ -1992,22 +1992,22 @@ if (typeof importScripts === "function") {
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
         id: "rt-translate",
-        title: (chrome.i18n && chrome.i18n.getMessage("ctxTranslate")) || "Translate this page",
+        title: Localizer.t("ctxTranslate", undefined, "Translate this page"),
         contexts: ["page"], // 選択時は専用の rt-translate-selection を出すため page のみ (二重表示を避ける)
       });
       chrome.contextMenus.create({
         id: "rt-translate-selection",
-        title: (chrome.i18n && chrome.i18n.getMessage("ctxTranslateSelection")) || "Translate selection",
+        title: Localizer.t("ctxTranslateSelection", undefined, "Translate selection"),
         contexts: ["selection"],
       });
       chrome.contextMenus.create({
         id: "rt-translate-image",
-        title: (chrome.i18n && chrome.i18n.getMessage("ctxTranslateImage")) || "Translate this image",
+        title: Localizer.t("ctxTranslateImage", undefined, "Translate this image"),
         contexts: ["image"],
       });
       chrome.contextMenus.create({
         id: "rt-restore",
-        title: (chrome.i18n && chrome.i18n.getMessage("ctxRestore")) || "Restore original",
+        title: Localizer.t("ctxRestore", undefined, "Restore original"),
         contexts: ["page"],
       });
       chrome.contextMenus.create({
@@ -2050,7 +2050,7 @@ if (typeof importScripts === "function") {
         try { ack = await chrome.tabs.sendMessage(tabId, { action: Actions.PING_SELECTION_CS }, { frameId: 0 }); } catch (_e) { /* 未注入 */ }
         const target = { tabId, frameIds: [0] };
         if (!ack || ack.selectionReady !== true) {
-          await chrome.scripting.executeScript({ target, files: ["src/lib/actions.js", "src/content/selection-translator.js"] });
+          await chrome.scripting.executeScript({ target, files: ["src/shared/ui-localizer.js", "src/lib/actions.js", "src/content/selection-translator.js"] });
         }
         if (!ack || ack.cssReady !== true) {
           await chrome.scripting.insertCSS({ target, files: ["src/content/selection-translator.css"] });
@@ -2084,10 +2084,28 @@ if (typeof importScripts === "function") {
   // iframe 画像の右クリック翻訳がトップで解決できず、メニューを押しても何も起きない無言 no-op になる)。
   function triggerImageTranslate(tabId, srcUrl, frameId) {
     sendCsOrInject(tabId, { action: Actions.TRANSLATE_IMAGE_CS, srcUrl: srcUrl || "" },
-      ["src/lib/actions.js", "src/content/image-translator.js"], "src/content/image-translator.css", frameId);
+      ["src/shared/ui-localizer.js", "src/lib/actions.js", "src/content/image-translator.js"], "src/content/image-translator.css", frameId);
   }
 
-  chrome.runtime.onInstalled.addListener(() => { setupContextMenus(); ensureContentFlags().catch(() => { /* noop */ }); });
+  // ツールバーアイコンの tooltip (manifest の default_title は選択言語に追従しないため setTitle で上書きする)
+  function applyActionTitle() {
+    try {
+      if (chrome.action && chrome.action.setTitle) {
+        const r = chrome.action.setTitle({ title: Localizer.t("defaultTitle", undefined, "Replace AI Translator API") });
+        if (r && typeof r.catch === "function") r.catch(() => { /* noop */ });
+      }
+    } catch (_e) { /* 失敗しても翻訳機能へ影響させない */ }
+  }
+  Localizer.ready.then(applyActionTitle, () => {});
+  // コンテキストメニューは作成時の文言で固定されるため、UI 言語が変わったら作り直す (他コンテキストの変更も届く)
+  Localizer.onChange(() => { setupContextMenus(); applyActionTitle(); });
+
+  chrome.runtime.onInstalled.addListener(async () => {
+    try { await Localizer.ready; await Localizer.ensureFresh(); } catch (_e) { /* 辞書の再構築に失敗しても標準言語で続行 */ }
+    setupContextMenus();
+    applyActionTitle();
+    ensureContentFlags().catch(() => { /* noop */ });
+  });
   ensureContentFlags().catch(() => { /* noop */ }); // SW 起動ごとに content 用フラグの存在を保証
   // SW 起動時に翻訳ホットパスの設定/集計メモリをプリロードし、cold start 後の最初の TRANSLATE_BATCH の
   // storage 待ち (設定 + BATCH_TUNING + TOKEN_USAGE) を消す (warm 時は settingsMem/tuningMem が効くので無害)。

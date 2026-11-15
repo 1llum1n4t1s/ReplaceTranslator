@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <script src="../shared/ui-localizer.js"></script>
   <link rel="stylesheet" href="popup.css">
   <title>Replace AI Translator API</title>
 </head>
@@ -10,15 +11,16 @@
     <img class="mark" src="../../icons/icon128.png" alt="" aria-hidden="true" width="42" height="42">
     <div class="hdr-text">
       <h1 class="hdr-title" data-i18n="headerTitle">Replace AI Translator API</h1>
-      <p class="hdr-sub" data-i18n="headerTagline">各社 LLM で、ページを置換翻訳</p>
+      <p class="hdr-sub" data-i18n="headerTagline">Replace any page with cloud LLMs</p>
     </div>
+    <select id="uiLanguage" class="hdr-lang" data-i18n-attr="aria-label:languageSelectLabel;title:languageSelectTitle"></select>
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab is-active" type="button" role="tab" data-tab="translate" aria-selected="true" data-i18n="tabTranslate">翻訳</button>
-    <button class="tab" type="button" role="tab" data-tab="quick" aria-selected="false" data-i18n="tabQuick">クイック翻訳</button>
-    <button class="tab" type="button" role="tab" data-tab="api" aria-selected="false" data-i18n="tabApi">API設定</button>
-    <button class="tab" type="button" role="tab" data-tab="blacklist" aria-selected="false" data-i18n="tabBlacklist">除外リスト</button>
+    <button class="tab is-active" type="button" role="tab" data-tab="translate" aria-selected="true" data-i18n="tabTranslate">Translate</button>
+    <button class="tab" type="button" role="tab" data-tab="quick" aria-selected="false" data-i18n="tabQuick">Quick</button>
+    <button class="tab" type="button" role="tab" data-tab="api" aria-selected="false" data-i18n="tabApi">API settings</button>
+    <button class="tab" type="button" role="tab" data-tab="blacklist" aria-selected="false" data-i18n="tabBlacklist">Exclusions</button>
     <span class="tab-ink" aria-hidden="true"></span>
   </nav>
 
@@ -27,12 +29,12 @@
     <section class="pane is-active" data-pane="translate">
       <div class="row two">
         <div class="col">
-          <label class="lbl" for="source" data-i18n="labelSource">翻訳元</label>
+          <label class="lbl" for="source" data-i18n="labelSource">From</label>
           <select id="source" class="sel"></select>
         </div>
         <div class="swap" aria-hidden="true">→</div>
         <div class="col">
-          <label class="lbl" for="target" data-i18n="labelTarget">翻訳先</label>
+          <label class="lbl" for="target" data-i18n="labelTarget">To</label>
           <select id="target" class="sel"></select>
         </div>
       </div>
@@ -40,13 +42,13 @@
       <!-- 翻訳 / 原文に戻すボタンは言語選択の直下に置き、言い換え・翻訳スタイル等の詳細設定より先に操作できるようにする。
            API キー未設定の警告はボタンの直前、進捗ステータスはボタンの直後に置いて操作との対応を保つ -->
       <div id="key-warning" class="warn hidden">
-        <span data-i18n="warnNoKey">このサービスの API キーが未設定です。</span>
-        <button id="warn-keys" class="link-btn" type="button" data-i18n="warnSetKey">API設定へ</button>
+        <span data-i18n="warnNoKey">No API key set for this provider.</span>
+        <button id="warn-keys" class="link-btn" type="button" data-i18n="warnSetKey">Open API settings</button>
       </div>
 
       <div class="actions">
-        <button id="translate" class="btn primary" type="button" data-i18n="btnTranslate">翻訳</button>
-        <button id="restore" class="btn ghost" type="button" data-i18n="btnRestore">原文に戻す</button>
+        <button id="translate" class="btn primary" type="button" data-i18n="btnTranslate">Translate</button>
+        <button id="restore" class="btn ghost" type="button" data-i18n="btnRestore">Restore</button>
       </div>
 
       <div id="status" class="status" aria-live="polite"></div>
@@ -55,43 +57,43 @@
            翻訳元/翻訳先/翻訳スタイルの設定には触れない。言い換えスタイル欄は ON のときだけ表示する -->
       <div class="switch-field">
         <div class="switch-text">
-          <label class="switch-label" for="rewrite-mode" data-i18n="optRewriteMode">言い換えモード</label>
-          <div id="rewrite-mode-help" class="switch-desc" data-i18n="optRewriteModeDesc">翻訳に加えて、もともと翻訳先の言語で書かれた文を「言い換えスタイル」で言い換えます。翻訳先の言語のページも言い換えます。LLMで利用でき、MyMemoryは非対応です。</div>
+          <label class="switch-label" for="rewrite-mode" data-i18n="optRewriteMode">Rewrite mode</label>
+          <div id="rewrite-mode-help" class="switch-desc" data-i18n="optRewriteModeDesc">In addition to translating, rewrites text already written in the target language using the rewrite style, including pages written in the target language. Available for LLMs; MyMemory is not supported.</div>
         </div>
         <input id="rewrite-mode" type="checkbox" aria-describedby="rewrite-mode-help">
       </div>
 
       <div id="rewrite-style-row" class="row hidden">
-        <label class="lbl" for="rewrite-style" data-i18n="labelRewriteStyle">言い換えスタイル</label>
+        <label class="lbl" for="rewrite-style" data-i18n="labelRewriteStyle">Rewrite style</label>
         <select id="rewrite-style" class="sel" aria-describedby="rewrite-style-help">
-          <option value="mild" data-i18n="rewriteStyleMild">まろやか</option>
-          <option value="formal" data-i18n="rewriteStyleFormal">フォーマル</option>
-          <option value="toxic" data-i18n="rewriteStyleToxic">トキシック</option>
-          <option id="rewrite-style-ibaraki" value="ibaraki" data-i18n="rewriteStyleIbaraki">まろやか（茨城弁）</option>
-          <option id="rewrite-style-osaka" value="osaka" data-i18n="rewriteStyleOsaka">まろやか（関西弁）</option>
-          <option id="rewrite-style-gyaru" value="gyaru" data-i18n="rewriteStyleGyaru">まろやか（ギャル文字）</option>
+          <option value="mild" data-i18n="rewriteStyleMild">Mellow</option>
+          <option value="formal" data-i18n="rewriteStyleFormal">Formal</option>
+          <option value="toxic" data-i18n="rewriteStyleToxic">Toxic</option>
+          <option id="rewrite-style-ibaraki" value="ibaraki" data-i18n="rewriteStyleIbaraki">Mellow (Ibaraki dialect)</option>
+          <option id="rewrite-style-osaka" value="osaka" data-i18n="rewriteStyleOsaka">Mellow (Kansai dialect)</option>
+          <option id="rewrite-style-gyaru" value="gyaru" data-i18n="rewriteStyleGyaru">Mellow (Gyaru-moji)</option>
         </select>
-        <div id="rewrite-style-help" class="switch-desc" data-i18n="rewriteStyleHelp">翻訳先の言語で書かれた文の言い換え方です。「まろやか」は攻撃的な表現を穏やかに、「フォーマル」は丁寧な文体に、「トキシック」は逆に辛辣な口調にします。方言・ギャル文字付きは翻訳先が日本語のときだけ選べ、穏やかにしつつ方言やギャル文字にします。訳文には「翻訳スタイル」を使います。</div>
+        <div id="rewrite-style-help" class="switch-desc" data-i18n="rewriteStyleHelp">How text already written in the target language is rewritten. Mellow softens harsh or aggressive wording, Formal makes it polite and formal, and Toxic does the opposite with a snarky, rude tone. The dialect and Gyaru-moji variants are available only when the target language is Japanese; they soften text while turning it into dialect or Gyaru-moji. Translated text uses the translation style.</div>
       </div>
 
       <div id="translation-style-row" class="row">
-        <label class="lbl" for="translation-style" data-i18n="labelTranslationStyle">翻訳スタイル</label>
+        <label class="lbl" for="translation-style" data-i18n="labelTranslationStyle">Translation style</label>
         <select id="translation-style" class="sel" aria-describedby="translation-style-help">
-          <option value="natural" data-i18n="styleNatural">自然（標準）</option>
-          <option value="cute" data-i18n="styleCute">かわいく</option>
-          <option value="formal" data-i18n="styleFormal">丁寧・フォーマル</option>
-          <option value="mild" data-i18n="styleMild">まろやか</option>
-          <option value="toxic" data-i18n="styleToxic">トキシック</option>
-          <option id="style-osaka" value="osaka" data-i18n="styleOsaka">関西弁</option>
-          <option id="style-ibaraki" value="ibaraki" data-i18n="styleIbaraki">茨城弁</option>
-          <option id="style-gyaru" value="gyaru" data-i18n="styleGyaru">ギャル文字</option>
-          <option value="custom" data-i18n="styleCustom">カスタム</option>
+          <option value="natural" data-i18n="styleNatural">Natural (default)</option>
+          <option value="cute" data-i18n="styleCute">Adorable</option>
+          <option value="formal" data-i18n="styleFormal">Formal / polite</option>
+          <option value="mild" data-i18n="styleMild">Mellow</option>
+          <option value="toxic" data-i18n="styleToxic">Toxic</option>
+          <option id="style-osaka" value="osaka" data-i18n="styleOsaka">Kansai dialect</option>
+          <option id="style-ibaraki" value="ibaraki" data-i18n="styleIbaraki">Ibaraki dialect</option>
+          <option id="style-gyaru" value="gyaru" data-i18n="styleGyaru">Gyaru-moji</option>
+          <option value="custom" data-i18n="styleCustom">Custom</option>
         </select>
-        <div id="translation-style-help" class="switch-desc" data-i18n="translationStyleHelp">「カスタム」を選ぶとプロンプトを入力できます。LLMで利用でき、MyMemoryは非対応です。</div>
+        <div id="translation-style-help" class="switch-desc" data-i18n="translationStyleHelp">Choose Custom to enter a prompt. Available for LLMs; MyMemory does not support styles.</div>
         <div id="custom-prompt-row" class="row prompt-options hidden">
-          <label id="custom-prompt-label" for="custom-prompt" class="lbl" data-i18n="labelCustomPrompt">カスタム翻訳プロンプト</label>
-          <textarea id="custom-prompt" class="blacklist-input" rows="3" maxlength="2000" data-i18n-placeholder="customPromptPlaceholder" aria-labelledby="custom-prompt-label" aria-describedby="custom-prompt-help" placeholder="例：やさしい言葉で、かわいらしい口調にしてください。"></textarea>
-          <div id="custom-prompt-help" class="switch-desc" data-i18n="customPromptHelp">「カスタム」選択中のみ使用します。最大2,000文字で、入力欄から離れると保存します。ページ・選択範囲・クイック翻訳・画像に共通で適用します。</div>
+          <label id="custom-prompt-label" for="custom-prompt" class="lbl" data-i18n="labelCustomPrompt">Custom translation prompt</label>
+          <textarea id="custom-prompt" class="blacklist-input" rows="3" maxlength="2000" aria-labelledby="custom-prompt-label" aria-describedby="custom-prompt-help" placeholder="For example: Use simple words and an adorable, gentle tone." data-i18n-attr="placeholder:customPromptPlaceholder"></textarea>
+          <div id="custom-prompt-help" class="switch-desc" data-i18n="customPromptHelp">Used only when Custom is selected. Up to 2,000 characters; saved when you leave the field. Applies to pages, selections, quick translation, and images.</div>
         </div>
       </div>
 
@@ -99,32 +101,32 @@
       <div class="opts">
         <div class="switch-field">
           <div class="switch-text">
-            <label class="switch-label" for="sync-settings" data-i18n="optSyncSettings">複数PCで設定を同期</label>
-            <div id="sync-settings-help" class="switch-desc" data-i18n="optSyncSettingsDesc">各PCでONにすると、同じブラウザーアカウントの設定を共有します。APIキーは同期しません。</div>
+            <label class="switch-label" for="sync-settings" data-i18n="optSyncSettings">Sync settings across PCs</label>
+            <div id="sync-settings-help" class="switch-desc" data-i18n="optSyncSettingsDesc">Turn this on on each PC and enable extension sync for the same browser account. Shares languages, service, models, translation styles and instructions, display preferences, and exclusion rules individually; newer update records win conflicts. Existing synced settings take priority when enabled. API keys, caches, and usage stay on this device. Chrome and Firefox cannot sync with each other. Turning this off keeps synced settings and deletion records.</div>
             <div id="sync-settings-status" class="switch-desc" role="status" aria-live="polite"></div>
           </div>
           <input id="sync-settings" type="checkbox" aria-describedby="sync-settings-help">
         </div>
         <div class="switch-field">
           <div class="switch-text">
-            <label class="switch-label" for="auto-translate" data-i18n="optAutoTranslate">全ページ自動翻訳</label>
-            <div class="switch-desc" data-i18n="optAutoTranslateDesc">開いたページを自動で翻訳します。API の利用量が増えるので、必要なときだけ ON にしてください。</div>
+            <label class="switch-label" for="auto-translate" data-i18n="optAutoTranslate">Auto-translate every page</label>
+            <div class="switch-desc" data-i18n="optAutoTranslateDesc">Translates every page you open. This uses more of your API quota, so turn it on only when you need it.</div>
           </div>
           <input id="auto-translate" type="checkbox">
         </div>
         <div class="switch-field">
           <div class="switch-text">
-            <label class="switch-label" for="persistent-cache" data-i18n="optPersistentCache">永続翻訳キャッシュ</label>
-            <div class="switch-desc" data-i18n="optPersistentCacheDesc">ON にするとページの原文と訳文を最大30日間この端末に保存し、ブラウザ再起動後も再利用します。OFF にすると保存済みキャッシュを削除します。</div>
+            <label class="switch-label" for="persistent-cache" data-i18n="optPersistentCache">Persistent translation cache</label>
+            <div class="switch-desc" data-i18n="optPersistentCacheDesc">When on, page source text and translations are stored on this device for up to 30 days and reused after browser restarts. Turning it off deletes the saved cache.</div>
           </div>
           <input id="persistent-cache" type="checkbox">
         </div>
         <div class="switch-field">
           <div class="switch-text">
-            <label class="switch-label" for="show-fab" data-i18n="optShowFab">フローティングボタン</label>
-            <div class="switch-desc" data-i18n="optShowFabDesc">ページ右下に「訳」ボタンを表示します。OFF でもこのポップアップや右クリックから翻訳できます。</div>
+            <label class="switch-label" for="show-fab" data-i18n="optShowFab">Floating button</label>
+            <div class="switch-desc" data-i18n="optShowFabDesc">Show the floating translate button at the bottom-right of pages. When off, you can still translate from this popup or the context menu.</div>
             <div class="sub-field" id="fab-opacity-row">
-              <span class="sub-label" id="fab-opacity-label" data-i18n="optFabOpacity">不透明度</span>
+              <span class="sub-label" id="fab-opacity-label" data-i18n="optFabOpacity">Opacity</span>
               <input id="fab-opacity" aria-labelledby="fab-opacity-label" class="range" type="range" min="20" max="100" step="5" value="100">
               <span class="range-val" id="fab-opacity-val">100%</span>
             </div>
@@ -133,24 +135,24 @@
         </div>
         <div class="switch-field">
           <div class="switch-text">
-            <div class="switch-label" data-i18n="optSelectionTranslate">選択テキスト翻訳</div>
+            <div class="switch-label" data-i18n="optSelectionTranslate">Selection translation</div>
             <div class="switch-desc">
-              <span data-i18n="optSelectionTranslateDesc">テキストを選択して Ctrl+Shift+L または右クリックで翻訳します。表示方法は下で選べます。</span>
-              <button id="sel-shortcut" class="link-btn" type="button" data-i18n="optSelShortcut">ショートカットを変更</button>
+              <span data-i18n="optSelectionTranslateDesc">Select text and press Ctrl+Shift+L (or right-click) to translate. Choose how it appears below.</span>
+              <button id="sel-shortcut" class="link-btn" type="button" data-i18n="optSelShortcut">Change shortcut</button>
             </div>
             <div class="sub-field" id="sel-mode-row">
-              <span class="sub-label" id="sel-mode-label" data-i18n="optSelMode">表示方法</span>
+              <span class="sub-label" id="sel-mode-label" data-i18n="optSelMode">Display</span>
               <select id="sel-mode" class="sel sel-sm" aria-labelledby="sel-mode-label">
-                <option value="bubble" data-i18n="selModeBubble">バブル</option>
-                <option value="inline" data-i18n="selModeInline">インライン（対訳）</option>
+                <option value="bubble" data-i18n="selModeBubble">Bubble</option>
+                <option value="inline" data-i18n="selModeInline">Inline (bilingual)</option>
               </select>
             </div>
           </div>
         </div>
         <div class="switch-field">
           <div class="switch-text">
-            <label class="switch-label" for="show-img-btn" data-i18n="optShowImageBtn">画像翻訳ボタン</label>
-            <div class="switch-desc" data-i18n="optShowImageBtnDesc">画像にカーソルを重ねたときに「訳」ボタンを表示します。</div>
+            <label class="switch-label" for="show-img-btn" data-i18n="optShowImageBtn">Image translate button</label>
+            <div class="switch-desc" data-i18n="optShowImageBtnDesc">Show the "Translate" button when hovering over images.</div>
           </div>
           <input id="show-img-btn" type="checkbox">
         </div>
@@ -162,38 +164,38 @@
       <!-- クイック翻訳: ページ翻訳とは独立した言語設定を使う。 -->
       <div class="qt" id="qt">
         <div class="qt-head">
-          <span class="qt-title" data-i18n="qtTitle">クイック翻訳</span>
-          <span class="qt-note" data-i18n="qtNote">この欄だけ訳す</span>
+          <span class="qt-title" data-i18n="qtTitle">Quick translate</span>
+          <span class="qt-note" data-i18n="qtNote">this box only</span>
           <span class="qt-dir" id="qt-dir" aria-hidden="true"></span>
         </div>
         <div class="qt-body" id="qt-body">
           <div class="row two qt-langs">
             <div class="col">
-              <label class="lbl" for="qt-source" data-i18n="qtSource">翻訳元（クイック）</label>
+              <label class="lbl" for="qt-source" data-i18n="qtSource">Source (quick)</label>
               <select id="qt-source" class="sel"></select>
             </div>
             <!-- 翻訳元⇄翻訳先の入れ替え。翻訳元が auto のときは翻訳先に auto を入れられないため popup.js が無効化する -->
-            <button id="qt-swap" class="swap-btn" type="button" data-i18n-title="qtSwapTitle" data-i18n-aria-label="qtSwapTitle" title="翻訳元と翻訳先を入れ替える" aria-label="翻訳元と翻訳先を入れ替える">⇄</button>
+            <button id="qt-swap" class="swap-btn" type="button" title="Swap source and target languages" aria-label="Swap source and target languages" data-i18n-attr="title:qtSwapTitle;aria-label:qtSwapTitle">⇄</button>
             <div class="col">
-              <label class="lbl" for="qt-target" data-i18n="qtTarget">翻訳先（クイック）</label>
+              <label class="lbl" for="qt-target" data-i18n="qtTarget">Target (quick)</label>
               <select id="qt-target" class="sel"></select>
             </div>
           </div>
-          <p class="switch-desc" data-i18n="qtLanguagesHelp">この欄の言語設定は、ページの自動翻訳・手動翻訳とは別に保存します。</p>
+          <p class="switch-desc" data-i18n="qtLanguagesHelp">These languages are saved separately from automatic and manual page translation.</p>
           <div class="qt-wrap">
-            <textarea class="qt-in" id="qt-in" data-i18n-aria-label="qtInputLabel" aria-label="翻訳するテキスト" rows="3" maxlength="6000" spellcheck="false" placeholder="ここに入力 / 貼り付け"></textarea>
+            <textarea class="qt-in" id="qt-in" aria-label="Text to translate" rows="3" maxlength="6000" spellcheck="false" placeholder="Type or paste here (does not translate the page)" data-i18n-attr="aria-label:qtInputLabel;placeholder:qtPlaceholder"></textarea>
             <div class="qt-mid" aria-hidden="true">
               <span class="qt-arrow">↓</span>
               <span class="qt-spin"></span>
             </div>
-            <div class="qt-out" id="qt-out" data-ph="訳文がここに出ます" aria-live="polite"></div>
+            <div class="qt-out" id="qt-out" data-ph="Translation appears here" aria-live="polite"></div>
             <div class="qt-foot">
               <span class="qt-count" id="qt-count">0 / 5,000</span>
               <span class="grow"></span>
-              <button class="qt-mini" id="qt-speak-in" type="button" data-i18n="qtSpeakIn" data-i18n-title="qtSpeakInTitle" title="原文を読み上げる">🔊 原文</button>
-              <button class="qt-mini" id="qt-speak-out" type="button" data-i18n="qtSpeakOut" data-i18n-title="qtSpeakOutTitle" title="訳文を読み上げる">🔊 訳文</button>
-              <button class="qt-mini" id="qt-clear" type="button" data-i18n="qtClear">クリア</button>
-              <button class="qt-mini copy" id="qt-copy" type="button" data-i18n="qtCopy">コピー</button>
+              <button class="qt-mini" id="qt-speak-in" type="button" data-i18n="qtSpeakIn" title="Speak the source text (click again to stop)" data-i18n-attr="title:qtSpeakInTitle">🔊 Source</button>
+              <button class="qt-mini" id="qt-speak-out" type="button" data-i18n="qtSpeakOut" title="Speak the translation (click again to stop)" data-i18n-attr="title:qtSpeakOutTitle">🔊 Result</button>
+              <button class="qt-mini" id="qt-clear" type="button" data-i18n="qtClear">Clear</button>
+              <button class="qt-mini copy" id="qt-copy" type="button" data-i18n="qtCopy">Copy</button>
             </div>
           </div>
         </div>
@@ -203,9 +205,9 @@
 
     <!-- API設定タブ (サービス選択 + API キー + モデルを統合) -->
     <section class="pane" data-pane="api">
-      <p class="note" data-i18n="optionsLead">キーはこのブラウザ内にのみ保存され、翻訳時に該当サービスの API にだけ送信されます。フォーカスを外すと自動保存します。</p>
+      <p class="note" data-i18n="optionsLead">Enter your own API key for each provider. Keys are stored locally in this browser and are sent only to that provider's API when translating.</p>
 
-      <div id="provider-list" class="provider-list" role="radiogroup" data-i18n-aria-label="providerListLabel" aria-label="翻訳サービス">
+      <div id="provider-list" class="provider-list" role="radiogroup" aria-label="Translation service" data-i18n-attr="aria-label:providerListLabel">
         <!-- OpenAI -->
         <div class="provider-card" data-provider="openai">
           <button class="pc-head" type="button" role="radio" aria-checked="false" data-provider="openai">
@@ -215,12 +217,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-openai" aria-labelledby="pname-openai key-openai" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
-              <button class="toggle" type="button" data-target="key-openai" data-i18n="optShow">表示</button>
+              <input id="key-openai" aria-labelledby="pname-openai key-openai" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-openai" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-openai" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-openai" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -234,12 +236,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-anthropic" aria-labelledby="pname-anthropic key-anthropic" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
-              <button class="toggle" type="button" data-target="key-anthropic" data-i18n="optShow">表示</button>
+              <input id="key-anthropic" aria-labelledby="pname-anthropic key-anthropic" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-anthropic" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-anthropic" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-anthropic" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -253,12 +255,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-gemini" aria-labelledby="pname-gemini key-gemini" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="AIza...">
-              <button class="toggle" type="button" data-target="key-gemini" data-i18n="optShow">表示</button>
+              <input id="key-gemini" aria-labelledby="pname-gemini key-gemini" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-gemini" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-gemini" target="_blank" rel="noopener" data-i18n="optGetKeyFree">無料 API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-gemini" target="_blank" rel="noopener" data-i18n="optGetKeyFree">Get a free API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -272,12 +274,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-xai" aria-labelledby="pname-xai key-xai" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="xai-...">
-              <button class="toggle" type="button" data-target="key-xai" data-i18n="optShow">表示</button>
+              <input id="key-xai" aria-labelledby="pname-xai key-xai" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="xai-..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-xai" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-xai" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-xai" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -291,12 +293,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-openrouter" aria-labelledby="pname-openrouter key-openrouter" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-...">
-              <button class="toggle" type="button" data-target="key-openrouter" data-i18n="optShow">表示</button>
+              <input id="key-openrouter" aria-labelledby="pname-openrouter key-openrouter" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-openrouter" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-openrouter" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-openrouter" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -310,12 +312,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-deepseek" aria-labelledby="pname-deepseek key-deepseek" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
-              <button class="toggle" type="button" data-target="key-deepseek" data-i18n="optShow">表示</button>
+              <input id="key-deepseek" aria-labelledby="pname-deepseek key-deepseek" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-deepseek" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-deepseek" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-deepseek" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -329,12 +331,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-groq" aria-labelledby="pname-groq key-groq" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
-              <button class="toggle" type="button" data-target="key-groq" data-i18n="optShow">表示</button>
+              <input id="key-groq" aria-labelledby="pname-groq key-groq" aria-label="API key" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_..." data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-groq" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-groq" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-groq" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -348,12 +350,12 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-fugu" aria-labelledby="pname-fugu key-fugu" data-i18n-aria-label="ariaApiKey" aria-label="APIキー" type="password" autocomplete="off" spellcheck="false">
-              <button class="toggle" type="button" data-target="key-fugu" data-i18n="optShow">表示</button>
+              <input id="key-fugu" aria-labelledby="pname-fugu key-fugu" aria-label="API key" type="password" autocomplete="off" spellcheck="false" data-i18n-attr="aria-label:ariaApiKey">
+              <button class="toggle" type="button" data-target="key-fugu" data-i18n="optShow">Show</button>
             </div>
             <div class="pc-foot">
-              <a class="hint" id="link-fugu" target="_blank" rel="noopener" data-i18n="optGetKey">API キーを取得 ↗</a>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <a class="hint" id="link-fugu" target="_blank" rel="noopener" data-i18n="optGetKey">Get an API key ↗</a>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -367,11 +369,11 @@
           </button>
           <div class="pc-body">
             <div class="key-row">
-              <input id="key-mymemory" aria-labelledby="pname-mymemory key-mymemory" data-i18n-aria-label="ariaMyMemoryEmail" aria-label="メールアドレス（任意）" type="email" autocomplete="off" spellcheck="false" placeholder="you@example.com (任意)">
+              <input id="key-mymemory" aria-labelledby="pname-mymemory key-mymemory" aria-label="Email address (optional)" type="email" autocomplete="off" spellcheck="false" placeholder="you@example.com (optional)" data-i18n-attr="aria-label:ariaMyMemoryEmail;placeholder:optMyMemoryEmailPlaceholder">
             </div>
             <div class="pc-foot">
-              <span class="hint" data-i18n="optMyMemoryNote">キー不要。メールを入れると無料枠が増えます。</span>
-              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">保存しました</span>
+              <span class="hint" data-i18n="optMyMemoryNote">No key needed. Add an email to raise the free daily limit (anonymous 5k / with email 50k chars/day). NMT engine, max 500 bytes per text.</span>
+              <span class="saved-mark" data-i18n="optSaved" aria-hidden="true">Saved</span>
             </div>
           </div>
         </div>
@@ -379,22 +381,22 @@
 
       <div class="row hidden" id="model-row">
         <div class="model-head">
-          <span class="lbl" data-i18n="labelModel">モデル</span>
-          <button id="refresh-models" class="refresh-btn" type="button" data-i18n-title="modelRefreshTitle" title="最新モデルを取得">
+          <span class="lbl" data-i18n="labelModel">Model</span>
+          <button id="refresh-models" class="refresh-btn" type="button" title="Fetch the latest models (API key required)" data-i18n-attr="title:modelRefreshTitle">
             <span class="refresh-ico" aria-hidden="true">↻</span>
-            <span data-i18n="modelRefresh">更新</span>
+            <span data-i18n="modelRefresh">Refresh</span>
           </button>
         </div>
         <div id="model-list" class="model-list"></div>
         <div id="reasoning-effort-row" class="reasoning-effort hidden">
           <div class="reasoning-effort-head">
-            <label class="lbl" for="reasoning-effort" data-i18n="labelReasoningEffort">推論 effort</label>
+            <label class="lbl" for="reasoning-effort" data-i18n="labelReasoningEffort">Reasoning effort</label>
             <span id="reasoning-effort-model" class="reasoning-effort-model"></span>
           </div>
           <select id="reasoning-effort" class="sel reasoning-effort-select" aria-describedby="reasoning-effort-help"></select>
-          <p id="reasoning-effort-help" class="reasoning-effort-help" data-i18n="reasoningEffortHelp">このモデル専用に保存します。「自動」は翻訳向けの最小値です。高くすると品質と引き換えに遅延・料金が増えます。</p>
+          <p id="reasoning-effort-help" class="reasoning-effort-help" data-i18n="reasoningEffortHelp">Saved for this model only. Auto uses the lowest supported level. Refresh models to update supported levels. Higher levels may increase latency and cost.</p>
         </div>
-        <p id="reasoning-effort-default" class="reasoning-effort-help hidden" data-i18n="reasoningEffortDefault">選択可能な推論深度の情報がないため、API既定を使います。モデルの「更新」で対応情報を再取得できます。</p>
+        <p id="reasoning-effort-default" class="reasoning-effort-help hidden" data-i18n="reasoningEffortDefault">Selectable reasoning levels are unavailable, so the API default is used. Refresh models to update capability information.</p>
       </div>
     </section>
 
@@ -402,13 +404,13 @@
     <section class="pane" data-pane="blacklist">
       <div class="blacklist-card">
         <div class="blacklist-head">
-          <h2 class="blacklist-title" id="blacklist-title" data-i18n="blacklistTitle">自動翻訳ブラックリスト</h2>
+          <h2 class="blacklist-title" id="blacklist-title" data-i18n="blacklistTitle">Auto-translate blacklist</h2>
           <span id="blacklist-save-state" class="blacklist-save-state" aria-live="polite"></span>
         </div>
-        <p class="blacklist-desc" id="blacklist-desc" data-i18n="blacklistDesc">1行に1件入力してください。登録したURLまたはホストでは自動翻訳を行いません。手動翻訳は引き続き利用できます。</p>
-        <button id="blacklist-add-current" class="btn ghost blacklist-current-btn" type="button" data-i18n="blacklistAddCurrentSite">現在のサイトを追加</button>
-        <textarea id="auto-translate-blacklist" aria-labelledby="blacklist-title" aria-describedby="blacklist-desc" class="blacklist-input" rows="11" maxlength="20000" spellcheck="false" autocomplete="off" data-i18n-placeholder="blacklistPlaceholder" placeholder="192.168.*&#10;https://photos.google.com/&#10;x.com"></textarea>
-        <p class="blacklist-help" data-i18n="blacklistHelp">* は任意の文字列に一致します。URLは指定したパス以下、ホスト名はそのホスト全体が対象です。</p>
+        <p class="blacklist-desc" id="blacklist-desc" data-i18n="blacklistDesc">Enter one rule per line. Auto-translate is skipped on matching URLs or hosts, while manual translation remains available.</p>
+        <button id="blacklist-add-current" class="btn ghost blacklist-current-btn" type="button" data-i18n="blacklistAddCurrentSite">Add current site</button>
+        <textarea id="auto-translate-blacklist" aria-labelledby="blacklist-title" aria-describedby="blacklist-desc" class="blacklist-input" rows="11" maxlength="20000" spellcheck="false" autocomplete="off" placeholder="192.168.*&#10;https://photos.google.com/&#10;x.com" data-i18n-attr="placeholder:blacklistPlaceholder"></textarea>
+        <p class="blacklist-help" data-i18n="blacklistHelp">* matches any text. URL rules apply to that path and below; host rules apply to the whole host.</p>
       </div>
     </section>
 

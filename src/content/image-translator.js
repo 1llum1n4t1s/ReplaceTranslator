@@ -54,6 +54,9 @@
   }
 
   const tr = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
+  // 画像ボタンの 1 文字ラベル (訳 / 原 の相当)。言語ごとに _locales で定める
+  const markTranslate = () => tr("imgMarkTranslate", "Tr");
+  const markRevert = () => tr("imgMarkRevert", "Or");
   const MAX_IMAGE_PIXELS = (globalThis.RuntimeLimits && RuntimeLimits.MAX_IMAGE_PIXELS) || 25000000;
 
   function eligible(el) {
@@ -74,10 +77,10 @@
   function setBtnMode(img) {
     if (!btn) return;
     const on = isTranslated(img);
-    btn.textContent = on ? "原" : "訳";
+    btn.textContent = on ? markRevert() : markTranslate();
     btn.ariaLabel = btn.title = on ? (img.closest(".__rt-img-wrap").__rtPartial ?
-      tr("imgPartial", "出力上限に達したため一部のみ翻訳しました。クリックで元に戻します") :
-      tr("imgRevert", "画像の翻訳を消して元に戻す")) : tr("imgBtn", "画像内のテキストを翻訳");
+      tr("imgPartial", "Only part of the image was translated because the output limit was reached. Click to restore the original") :
+      tr("imgRevert", "Remove image translation")) : tr("imgBtn", "Translate text in image");
     btn.classList.toggle("__rt-img-btn-on", on);
   }
 
@@ -90,7 +93,7 @@
     btn.textContent = "×";
     window.setTimeout(() => {
       if (!dead && contextAlive() && btn && target === img && imageRequestIds.get(img) === guard.requestId && !isStaleImg(guard, img)) {
-        btn.textContent = "訳"; btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳");
+        btn.textContent = markTranslate(); btn.ariaLabel = btn.title = tr("imgBtn", "Translate text in image");
       }
     }, 4000);
   }
@@ -100,11 +103,11 @@
     btn = document.createElement("button");
     btn.className = "__rt-img-btn";
     btn.type = "button";
-    btn.textContent = "訳";
+    btn.textContent = markTranslate();
     // 見た目の文字は「訳」「原」「×」「…」の 1 文字だけなので、支援技術向けの名前 (aria-label) は title と同じ文言にする。
     // title を変える箇所では必ず ariaLabel も同時に代入する (ARIA 属性反映: Chrome 81+ / Firefox 119+ で対応し、
     // 本拡張の下限 Chrome 116 / Firefox 142 を満たす)。「…」(処理中) の間は直前の名前を保つ (title と同じ扱い)。
-    btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳");
+    btn.ariaLabel = btn.title = tr("imgBtn", "Translate text in image");
     btn.addEventListener("click", (e) => {
       if (!e.isTrusted) return; // 合成 click を無視 (サイトが勝手に OCR させ、ページ内の機微画像を vision へ送るのを防ぐ)
       e.preventDefault();
@@ -376,17 +379,17 @@
   function imgErrorText(res) {
     const e = res && res.error;
     switch (e) {
-      case "animated": return tr("imgErrAnimated", "アニメーション画像は翻訳できません");
-      case "no_vision": return tr("imgErrNoVision", "この翻訳サービスは画像翻訳に対応していません（API設定で対応サービスとキーを設定してください）");
-      case "no_api_key": return tr("imgErrNoKey", "API キーが未設定です（API設定で入力してください）");
-      case "forbidden_target": return tr("imgErrForbidden", "この画像は取得できませんでした");
-      case "image_too_large": return tr("imgErrTooLarge", "画像が大きすぎて翻訳できません");
-      case "not_image": return tr("imgErrNotImage", "画像として読み取れませんでした");
-      case "output_truncated": return tr("imgErrTruncated", "出力上限に達したため翻訳を完了できませんでした");
-      case "parse": return tr("imgErrParse", "翻訳結果を読み取れませんでした。もう一度お試しください");
-      case "http": return tr("imgErrHttp", "翻訳に失敗しました") + (res && res.status ? "（HTTP " + res.status + "）" : "");
-      case "aborted": return tr("imgErrAborted", "翻訳を中止しました");
-      default: return tr("imgErrGeneric", "翻訳に失敗しました");
+      case "animated": return tr("imgErrAnimated", "Animated images can't be translated");
+      case "no_vision": return tr("imgErrNoVision", "This service does not support image translation (choose a supported service and set its key in API settings)");
+      case "no_api_key": return tr("imgErrNoKey", "API key is not set (enter it in API settings)");
+      case "forbidden_target": return tr("imgErrForbidden", "This image could not be fetched");
+      case "image_too_large": return tr("imgErrTooLarge", "Image is too large to translate");
+      case "not_image": return tr("imgErrNotImage", "Could not read this as an image");
+      case "output_truncated": return tr("imgErrTruncated", "Could not complete the translation because the output limit was reached");
+      case "parse": return tr("imgErrParse", "Could not read the translation result. Please try again");
+      case "http": return tr("imgErrHttp", "Translation failed") + (res && res.status ? " (HTTP " + res.status + ")" : "");
+      case "aborted": return tr("imgErrAborted", "Translation canceled");
+      default: return tr("imgErrGeneric", "Translation failed");
     }
   }
 
@@ -437,11 +440,11 @@
       if (isStaleImg({ myRun, url, requestId }, img)) { inflightImgs.delete(img); if (ownsBtn()) setBtnMode(img); return; }
       chrome.runtime.sendMessage({ action: A.TRANSLATE_IMAGE, imageUrl: url, imageWidth: width, imageHeight: height }, (res) => {
         inflightImgs.delete(img);
-        if (chrome.runtime.lastError) { if (ownsBtn()) btn.textContent = "訳"; return; }
+        if (chrome.runtime.lastError) { if (ownsBtn()) btn.textContent = markTranslate(); return; }
         if (!contextAlive()) { shutdown(); return; } // 応答到着時に失効していたら DOM を触らず停止
         // 復元後の遅延応答 / 削除済み画像は描かない。さらに送信中に src が差し替わった (カルーセル/レスポンシブ/
         // lazy placeholder) 場合は、古い url の OCR を別画像に重ねないよう描画をスキップする (ボタンは戻して再実行可能に)。
-        if (myRun !== imgRunId || imageRequestIds.get(img) !== requestId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (ownsBtn()) btn.textContent = "訳"; return; }
+        if (myRun !== imgRunId || imageRequestIds.get(img) !== requestId || !img.isConnected || (img.currentSrc || img.src) !== url) { if (ownsBtn()) btn.textContent = markTranslate(); return; }
         // 切り分けログ (localStorage __rt_debug=1 のときだけ): vision が読んだ原文(orig)と訳文(trans)を出す。
         // orig が既に崩れていれば vision の読み取り段、orig 正常で trans 崩れなら翻訳段、と一目で確定できる。
         if (res && res.ok && Array.isArray(res.blocks)) {
@@ -457,7 +460,7 @@
           if (ownsBtn()) {
             btn.ariaLabel = btn.title = imgErrorText(res);
             btn.textContent = "×";
-            window.setTimeout(() => { if (btn && target === img) { btn.style.display = "none"; btn.textContent = "訳"; btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳"); } }, 2000);
+            window.setTimeout(() => { if (btn && target === img) { btn.style.display = "none"; btn.textContent = markTranslate(); btn.ariaLabel = btn.title = tr("imgBtn", "Translate text in image"); } }, 2000);
           }
           return;
         }
@@ -471,16 +474,16 @@
               if (wrap) wrap.__rtPartial = !!res.partial;
               if (ownsBtn()) setBtnMode(img);
             }) // 翻訳済み → ボタンを「原」に切替
-            .catch(() => { if (ownsBtn()) btn.textContent = "訳"; });   // 画像が消えていた等で描画失敗 → 無視
+            .catch(() => { if (ownsBtn()) btn.textContent = markTranslate(); });   // 画像が消えていた等で描画失敗 → 無視
         } else if (ownsBtn()) {
           // 「×」表示。完全な応答の空結果は文字無し/全ロゴ(正常)。打ち切り・不正応答は失敗。
           // 失敗時は理由を title(ホバーで表示)に載せ、原因不明の無言失敗を防ぐ(ページ翻訳の errorText 相当)。
           // 失敗は読めるよう「×」を長め(4s)に保持し、文字無しは短く(1.5s)戻す。
           const failed = !(res && res.ok) || res.partial;
-          btn.ariaLabel = btn.title = failed ? imgErrorText(res?.partial ? { error: "output_truncated" } : res) : tr("imgNoText", "翻訳できる文字が見つかりませんでした");
+          btn.ariaLabel = btn.title = failed ? imgErrorText(res?.partial ? { error: "output_truncated" } : res) : tr("imgNoText", "No translatable text found");
           btn.textContent = "×";
           window.setTimeout(() => {
-            if (myRun === imgRunId && ownsBtn()) { btn.textContent = "訳"; btn.ariaLabel = btn.title = tr("imgBtn", "画像内のテキストを翻訳"); }
+            if (myRun === imgRunId && ownsBtn()) { btn.textContent = markTranslate(); btn.ariaLabel = btn.title = tr("imgBtn", "Translate text in image"); }
           }, failed ? 4000 : 1500);
         }
       });

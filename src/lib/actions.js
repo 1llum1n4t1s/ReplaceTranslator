@@ -39,7 +39,10 @@
   globalThis.ExtUtil = Object.freeze({
     // i18n 文言取得。取得失敗/未定義キーは fallback (fab/image-translator/selection-translator/popup で共有)
     tr(key, fallback) {
-      try { return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback; } catch (_e) { return fallback; }
+      try {
+        if (globalThis.Localizer) return globalThis.Localizer.t(key, undefined, fallback);
+        return (chrome.i18n && chrome.i18n.getMessage(key)) || fallback;
+      } catch (_e) { return fallback; }
     },
     // 拡張 context が生きているか (リロード/更新で置き去りになった旧 content script の検出)
     contextAlive(marker, owner) {

@@ -8,6 +8,9 @@ import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 const JSZip = createRequire(require.resolve('web-ext'))('jszip');
 
+// 対応する UI 言語 (_locales の 9 ディレクトリ)。en は default_locale。
+const LOCALES = ['en', 'ja', 'zh_CN', 'zh_TW', 'ko', 'es', 'fr', 'de', 'pt_BR'];
+
 export async function verifyReleasePackage(file, variant, version, sourceDir) {
   if (!['chrome', 'firefox'].includes(variant) || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid release target');
   const bytes = fs.readFileSync(file);
@@ -26,7 +29,8 @@ export async function verifyReleasePackage(file, variant, version, sourceDir) {
   if (manifest.version !== version) throw new Error(`Wrong package version: ${manifest.version}`);
   if (variant === 'chrome' ? (!manifest.background?.service_worker || manifest.background.scripts) :
     (manifest.background?.service_worker || !manifest.background?.scripts?.length)) throw new Error('Wrong background variant');
-  const required = ['_locales/en/messages.json', '_locales/ja/messages.json', manifest.action?.default_popup,
+  if (manifest.default_locale !== 'en') throw new Error('default_locale must be en');
+  const required = [...LOCALES.map(locale => `_locales/${locale}/messages.json`), 'src/shared/ui-localizer.js', manifest.action?.default_popup,
     ...Object.values(manifest.icons || {}), ...Object.values(manifest.action?.default_icon || {}),
     ...(manifest.background.scripts || [manifest.background.service_worker]),
     ...(manifest.content_scripts || []).flatMap(script => [...(script.js || []), ...(script.css || [])])];

@@ -17,6 +17,7 @@ const ACTIONS_GLOBALS = {
   // src/lib/*.js が globalThis に公開する定数。
   // 新規 globalThis 公開を追加したら本リストにも追加すること。
   Actions: "readonly",          // src/lib/actions.js — メッセージアクション定数
+  Localizer: "readonly",        // src/shared/ui-localizer.js — 共通 i18n モジュール (Localizer.t / localizeDocument 等)
   ExtUtil: "readonly",          // src/lib/actions.js — 共有小物 (tr / contextAlive / claimScript)
   ImageRequestPolicy: "readonly", // src/lib/translation-core.js — 画像URLのSSRF境界
   MessagePolicy: "readonly",    // src/lib/translation-core.js — runtime message送信元/対象tab境界

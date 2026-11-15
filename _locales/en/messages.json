@@ -173,5 +173,13 @@
   "qtError": { "message": "Could not translate" },
   "qtTooLong": { "message": "Over 5,000 characters" },
   "qtLimit": { "message": "Too long for this provider — shorten it or pick an LLM provider" },
-  "qtAuto": { "message": "Auto" }
+  "qtAuto": { "message": "Auto" },
+  "imgMarkTranslate": { "message": "Tr" },
+  "imgMarkRevert": { "message": "Or" },
+  "optMyMemoryEmailPlaceholder": { "message": "you@example.com (optional)" },
+  "languageAuto": { "message": "Auto (browser)" },
+  "languageSelectLabel": { "message": "Language" },
+  "languageSelectTitle": { "message": "Language. Open pages need a reload to update." },
+  "kagayoiSupportContact": { "message": "Contact support" },
+  "kagayoiSupportRate": { "message": "Please rate us!" }
 }

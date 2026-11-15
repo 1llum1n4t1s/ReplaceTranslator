@@ -19,7 +19,7 @@
 - `icons/` — `icon.svg`（原本）+ commit 済み `icon{16,48,128}.png`
 - `_locales/{en,ja}/messages.json` — i18n
 - `test/` — Bun の node:test 互換テスト（`bun test`。共有ヘルパーは `_source.js` / `_load-actions.js` / `_worker-harness.js`）
-- `webstore/` — ストア掲載素材（`*.html` テンプレ + `generate-screenshots.js`(puppeteer) → `images/{ja,en}/`、CWS/AMO listing テキスト）
+- `webstore/` — ストア掲載素材（共通キット `vitrina/` + `store-assets.json` + `fixtures/` + `store-assets.steps.mjs` → `images/<locale>/`（9言語）、CWS/AMO listing テキスト）
 - `scripts/New-AmoMetadata.mjs` — AMO listing メタデータ（`amo-metadata.json`）生成スクリプト
 
 ## セットアップ
@@ -51,7 +51,8 @@ powershell -File zip.ps1         # 単一 manifest.json から Chrome zip + Fire
 ### ストア掲載スクリーンショット
 ```
 bun run --cwd webstore deps # 隔離packageのbun.lockから依存を復元
-bun webstore/generate-screenshots.js    # → webstore/images/{ja,en}/ にスクショ5枚(1280x800)+プロモ小(440x280)+マーキー(1400x560)
+bun run generate-screenshots    # → webstore/images/<locale>/ に9言語×スクショ5枚(1280x800)、webstore/images/ にタイル小(440x280)+マーキー(1400x560)
+bun webstore/vitrina/vitrina.mjs verify # 枚数・寸法・アルファ無し・命名の検証
 ```
 
 ## リリース

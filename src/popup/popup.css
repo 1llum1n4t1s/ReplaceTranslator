@@ -65,6 +65,20 @@
   --display: "Replace Translator Sans JP", "Yu Gothic", "Hiragino Kaku Gothic ProN", "Segoe UI", system-ui, sans-serif;
   --sans: "Replace Translator Sans JP", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
+/* 同梱フォントに無い字（全角の句読点・引用符など）が日本語向けの Yu Gothic UI で描かれないよう、
+   中国語・韓国語の UI ではその言語向けのシステムフォントを先に当てる（<html lang> は ui-localizer が設定） */
+:root:lang(zh-CN) {
+  --display: "Replace Translator Sans JP", "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --sans: "Replace Translator Sans JP", "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+:root:lang(zh-TW) {
+  --display: "Replace Translator Sans JP", "PingFang TC", "Microsoft JhengHei UI", "Segoe UI", system-ui, sans-serif;
+  --sans: "Replace Translator Sans JP", "PingFang TC", "Microsoft JhengHei UI", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+:root:lang(ko) {
+  --display: "Replace Translator Sans JP", "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+  --sans: "Replace Translator Sans JP", "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #16181d;
@@ -140,13 +154,21 @@ body {
   line-height: 1.2;
 }
 .hdr-sub { margin: 3px 0 0; font-size: 11px; color: var(--ink-soft); letter-spacing: .04em; }
+/* UI 言語の切替 (ヘッダー右)。幅は内容に合わせ、長い言語名でもタイトル側を押し潰さない */
+.hdr-text { flex: 1; min-width: 0; }
+.hdr-lang {
+  flex: 0 0 auto; max-width: 118px; margin-left: auto; padding: 5px 3px 5px 5px;
+  border: 1px solid var(--hair); border-radius: var(--r-sm);
+  background: var(--paper-2); color: var(--ink); font-size: 10px; font-family: var(--sans);
+}
+.hdr-lang:focus { outline: none; border-color: var(--coral); box-shadow: 0 0 0 3px var(--wash); }
 
 /* ---- タブ (ヘアラインの上を朱のインクが滑る) ---- */
 .tabs {
   position: relative;
   display: flex;
   gap: 2px;
-  padding: 0 14px;
+  padding: 0 8px;
   margin-bottom: 2px;
   animation: fadeDown .4s .05s var(--ease) both;
 }
@@ -159,9 +181,9 @@ body {
   flex: 1;
   appearance: none;
   background: none; border: none; cursor: pointer;
-  padding: 9px 7px 11px;
+  padding: 9px 5px 11px;
   font-family: var(--display);
-  font-size: 12px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
+  font-size: 11.5px; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
   color: var(--ink-soft);
   border-radius: var(--r-sm) var(--r-sm) 0 0;
   transition: color .18s var(--ease), background .18s var(--ease);
@@ -272,6 +294,8 @@ body {
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
 .sel:focus { outline: none; border-color: var(--coral); box-shadow: 0 0 0 3px var(--wash), var(--shadow-sm); }
+/* 翻訳元/翻訳先の 2 列セレクトは列が狭い。fr「Détecter la langue」・de「Sprache erkennen」が切れないよう、余白と字を少し詰める */
+.row.two .sel { padding: 10px 6px 10px 9px; font-size: 12.5px; }
 
 .prompt-options textarea { display: block; width: 100%; min-height: 90px; margin-bottom: 6px; font-family: var(--sans); }
 /* クイック翻訳は中央列に入れ替えボタンを置くため、矢印用の細い列 (--swap-col) より広げる */

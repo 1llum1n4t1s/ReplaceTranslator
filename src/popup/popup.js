@@ -10,34 +10,18 @@
  * モデルは GET_MODELS で動的取得し、選択中が消えていれば background がマイグレーションする。
  */
 
+Localizer.applyDocumentLang(); // <html lang> を同期で合わせる (module script の共有サポート部品より前に実行)
+
 (function () {
   const $ = (id) => document.getElementById(id);
   const state = { settings: SettingsSchema.normalize({}) };
   const msg = ExtUtil.tr; // i18n 取得 (actions.js の共有実装)
 
   function applyI18n() {
-    document.querySelectorAll("[data-i18n]").forEach((el) => {
-      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n"));
-      if (m) el.textContent = m;
-    });
-    document.querySelectorAll("[data-i18n-title]").forEach((el) => {
-      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-title"));
-      if (m) el.title = m;
-    });
-    document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
-      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-placeholder"));
-      if (m) el.placeholder = m;
-    });
-    // 可視テキストが無い操作部品のアクセシブル名 (aria-label) も UI 言語に合わせる。
-    // 可視テキストがある部品は HTML 側で aria-labelledby を使い、ここでは扱わない。
-    document.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
-      const m = chrome.i18n.getMessage(el.getAttribute("data-i18n-aria-label"));
-      if (m) el.setAttribute("aria-label", m);
-    });
-    // <html lang> は popup.html の "ja" 固定のまま変えない。同じ文書に載る共有サポート部品
-    // (src/shared/kagayoi-support-*.js) が documentElement.lang で自身の表示言語を決めるため、ここで
-    // 書き換えると英語 UI でサポート欄の言語が変わる (しかも init は DOMContentLoaded 後なので、先に接続済みの
-    // フッターと後から開くポップアップで言語が食い違う)。変更する場合は共有部品の挙動と合わせて判断する。
+    // data-i18n / data-i18n-attr の置換は共通モジュール (ui-localizer.js) が行う。
+    // <html lang> は applyDocumentLang() が選択言語に合わせる (共有サポート部品 src/shared/kagayoi-support-*.js が
+    // documentElement.lang で表示言語を決めるため、module script より前の classic script 先頭で確定させる)。
+    Localizer.localizeDocument();
   }
 
   // ---- タブ ----
@@ -471,7 +455,7 @@
     const autoTranslateBlacklistChanges = {
       add: submitted.filter(rule => !before.has(rule)), remove: blacklistBaseline.filter(rule => !after.has(rule)),
     };
-    $("blacklist-save-state").textContent = msg("blacklistSaving", "保存中…");
+    $("blacklist-save-state").textContent = msg("blacklistSaving", "Saving…");
     const saved = await save({ autoTranslateBlacklistChanges }, () => {
       // blur後だけ正規化済みの表示へ揃える。入力中はカーソル位置を動かさない。
       if (document.activeElement !== input && input.value === submittedText) {
@@ -481,7 +465,7 @@
       } else {
         blacklistBaseline = submitted;
       }
-      $("blacklist-save-state").textContent = msg("blacklistSaved", "保存しました");
+      $("blacklist-save-state").textContent = msg("blacklistSaved", "Saved");
     });
     if (!saved) $("blacklist-save-state").textContent = msg("settingsSaveFailed", "Could not save settings. Check browser sync and storage limits, then try again.");
     return saved;
@@ -566,7 +550,7 @@
 
   // ---- クイック翻訳 (専用の翻訳元⇄翻訳先で TRANSLATE_BATCH に 1 件投げる) ----
   function langShort(coderef) {
-    if (coderef === "auto") return msg("qtAuto", "自動");
+    if (coderef === "auto") return msg("qtAuto", "Auto");
     const l = Lang.get(coderef);
     return l ? l.native : coderef;
   }
@@ -579,8 +563,8 @@
       const isAuto = state.settings.quickSourceLang === "auto";
       swapBtn.disabled = isAuto;
       const label = isAuto
-        ? msg("qtSwapAutoTitle", "翻訳元が「自動検出」のときは入れ替えできません")
-        : msg("qtSwapTitle", "翻訳元と翻訳先を入れ替える");
+        ? msg("qtSwapAutoTitle", "Cannot swap while the source language is set to auto-detect")
+        : msg("qtSwapTitle", "Swap source and target languages");
       swapBtn.title = label;
       swapBtn.setAttribute("aria-label", label);
     }
@@ -597,7 +581,7 @@
     // 古い表示タイマーが新しい状態 (別の訳文・後続のコピー) を「✓ コピー」へ書き換えないようにする
     // (選択バブル selection-translator.js の onCopy と同じ方式)。
     let copySeq = 0;
-    const copyLabel = () => msg("qtCopy", "コピー");
+    const copyLabel = () => msg("qtCopy", "Copy");
     // コピーボタンを通常表示へ戻し、進行中のコピー完了・表示タイマーを無効化する。
     function resetCopy() {
       copySeq++;
@@ -607,8 +591,8 @@
       copyBtn.textContent = copyLabel();
     }
 
-    inEl.placeholder = msg("qtPlaceholder", "ここに入力 / 貼り付け（このページは翻訳しません）");
-    outEl.setAttribute("data-ph", msg("qtOutPlaceholder", "訳文がここに出ます"));
+    inEl.placeholder = msg("qtPlaceholder", "Type or paste here (does not translate the page)");
+    outEl.setAttribute("data-ph", msg("qtOutPlaceholder", "Translation appears here"));
 
     function setCount() {
       const n = inEl.value.length;
@@ -625,7 +609,7 @@
       const myReq = ++reqId;
       const text = inEl.value.trim();
       if (!text) { qt.classList.remove("busy"); render(""); return; }
-      if (text.length > MAX) { qt.classList.remove("busy"); render(msg("qtTooLong", "5000文字を超えています"), true); return; }
+      if (text.length > MAX) { qt.classList.remove("busy"); render(msg("qtTooLong", "Over 5,000 characters"), true); return; }
       qt.classList.add("busy");
       // 直前のカード操作 (provider 切替 / 言語変更) の save が storage に確定してから送る。
       // background は保管値で翻訳するため、await せず Ctrl+Enter で debounce を飛ばすと古い設定で訳す恐れがある。
@@ -635,11 +619,11 @@
       chrome.runtime.sendMessage({ action: Actions.TRANSLATE_BATCH, texts: [text], quick: true }, (res) => {
         if (myReq !== reqId) return; // 入力が進んで別リクエストになっていたら破棄
         qt.classList.remove("busy");
-        if (chrome.runtime.lastError) { render(msg("qtError", "翻訳できませんでした"), true); return; }
+        if (chrome.runtime.lastError) { render(msg("qtError", "Could not translate"), true); return; }
         if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) render(res.translations[0]);
-        else if (res && res.error === "no_api_key") render(msg("qtNoKey", "このサービスの API キーが未設定です"), true);
-        else if (res && res.error === "too_long") render(msg("qtLimit", "このサービスには長すぎます（短くするか LLM プロバイダを選んでください）"), true);
-        else render(msg("qtError", "翻訳できませんでした"), true);
+        else if (res && res.error === "no_api_key") render(msg("qtNoKey", "No API key set for this provider"), true);
+        else if (res && res.error === "too_long") render(msg("qtLimit", "Too long for this provider — shorten it or pick an LLM provider"), true);
+        else render(msg("qtError", "Could not translate"), true);
       });
     }
     function schedule() {
@@ -739,7 +723,7 @@
       try { await navigator.clipboard.writeText(t); } catch (_e) { return; } // 同期例外・reject・clipboard 不在とも失敗扱い
       if (my !== copySeq) return; // 待機中に訳文が変わった / 後続のコピーが始まった
       copyBtn.classList.add("done");
-      copyBtn.textContent = msg("qtCopied", "✓ コピー");
+      copyBtn.textContent = msg("qtCopied", "✓ Copied");
       copyBtn._t = window.setTimeout(() => {
         if (my !== copySeq) return; // 前回のタイマーは新しいコピー表示を消さない
         copyBtn.classList.remove("done");
@@ -884,7 +868,7 @@
     $("show-img-btn").addEventListener("change", (e) => save({ showImageButton: e.target.checked }));
     $("auto-translate-blacklist").addEventListener("input", () => {
       settingsDrafts.add("auto-translate-blacklist");
-      $("blacklist-save-state").textContent = msg("blacklistSaving", "保存中…");
+      $("blacklist-save-state").textContent = msg("blacklistSaving", "Saving…");
       if (blacklistSaveTimer) window.clearTimeout(blacklistSaveTimer);
       blacklistSaveTimer = window.setTimeout(saveBlacklist, 450);
     });
@@ -915,7 +899,7 @@
         const inp = document.getElementById(btn.getAttribute("data-target"));
         const showing = inp.type === "text";
         inp.type = showing ? "password" : "text";
-        btn.textContent = msg(showing ? "optShow" : "optHide", showing ? "表示" : "隠す");
+        btn.textContent = msg(showing ? "optShow" : "optHide", showing ? "Show" : "Hide");
       });
     });
 
@@ -931,5 +915,10 @@
     });
   }
 
-  document.addEventListener("DOMContentLoaded", init);
+  document.addEventListener("DOMContentLoaded", async () => {
+    await Localizer.ready;         // 保存済みの UI 言語の読み込みと getMessage の差し替えを待つ
+    await Localizer.ensureFresh(); // 拡張の更新後に辞書が古ければ作り直す
+    init();
+    Localizer.mountLanguageSelect($("uiLanguage")); // 言語切替 (storage.local に保存し、変更後は再読み込み)
+  });
 })();

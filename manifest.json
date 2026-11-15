@@ -34,7 +34,7 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["src/lib/actions.js", "src/content/fab.js", "src/content/image-translator.js"],
+      "js": ["src/shared/ui-localizer.js", "src/lib/actions.js", "src/content/fab.js", "src/content/image-translator.js"],
       "css": ["src/content/fab.css", "src/content/image-translator.css"],
       "run_at": "document_idle"
     }

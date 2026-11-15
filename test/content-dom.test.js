@@ -210,7 +210,7 @@ test("画像ロード失敗の旧エラータイマーは再試行・復元・�
       img, btn, imageRequestIds: ids, dead: false, contextAlive: () => alive,
       imgErrorText: () => "error", tr: (_key, fallback) => fallback,
       window: { setTimeout: fn => { timer = fn; } }, setRestore: fn => { restore = fn; },
-    }, 'let imgRunId = 0; const target = img; setRestore(() => { imgRunId++; });');
+    }, 'let imgRunId = 0; const target = img; const markTranslate = () => tr("imgMarkTranslate", "訳"); setRestore(() => { imgRunId++; });');
     api.showImageError(img, "renderer_load");
     if (change === "retry") ids.set(img, 2);
     if (change === "restore") restore();
@@ -264,18 +264,18 @@ test("選択翻訳のコピーは成功時だけ表示し、古い完了やタ�
       copy: () => onCopy({ stopPropagation() {} }), setState, removeBubble,
     };
   })()`, { navigator, window: { setTimeout: (fn) => { timers.push(fn); return timers.length; } }, clearTimeout() {} });
-  const button = () => ({ textContent: "コピー", style: {}, classList: { add() {}, remove() {} } });
+  const button = () => ({ textContent: "Copy", style: {}, classList: { add() {}, remove() {} } });
   let btn = button();
   api.open(btn);
   navigator.clipboard = { writeText() { throw new Error("denied"); } };
   await api.copy();
-  assert.equal(btn.textContent, "コピー");
+  assert.equal(btn.textContent, "Copy");
   navigator.clipboard = { writeText: () => Promise.reject(new Error("denied")) };
   await api.copy();
-  assert.equal(btn.textContent, "コピー");
+  assert.equal(btn.textContent, "Copy");
   delete navigator.clipboard;
   await api.copy();
-  assert.equal(btn.textContent, "コピー");
+  assert.equal(btn.textContent, "Copy");
 
   let resolveOld;
   navigator.clipboard = { writeText: () => new Promise((resolve) => { resolveOld = resolve; }) };
@@ -283,7 +283,7 @@ test("選択翻訳のコピーは成功時だけ表示し、古い完了やタ�
   api.setState("result", "新しい訳文");
   resolveOld();
   await old;
-  assert.equal(btn.textContent, "コピー", "再翻訳前のコピー完了を無視する");
+  assert.equal(btn.textContent, "Copy", "再翻訳前のコピー完了を無視する");
 
   const beforeClose = api.copy();
   api.removeBubble();
@@ -291,7 +291,7 @@ test("選択翻訳のコピーは成功時だけ表示し、古い完了やタ�
   api.open(btn);
   resolveOld();
   await beforeClose;
-  assert.equal(btn.textContent, "コピー", "閉じたバブルの完了は新バブルに影響しない");
+  assert.equal(btn.textContent, "Copy", "閉じたバブルの完了は新バブルに影響しない");
 
   const pending = [];
   navigator.clipboard = { writeText: () => new Promise((resolve) => { pending.push(resolve); }) };
@@ -299,20 +299,20 @@ test("選択翻訳のコピーは成功時だけ表示し、古い完了やタ�
   const second = api.copy();
   pending[0]();
   await first;
-  assert.equal(btn.textContent, "コピー", "古いコピーの完了は新しい操作の完了を示さない");
+  assert.equal(btn.textContent, "Copy", "古いコピーの完了は新しい操作の完了を示さない");
   pending[1]();
   await second;
-  assert.equal(btn.textContent, "✓ コピー");
+  assert.equal(btn.textContent, "✓ Copied");
 
   navigator.clipboard = { writeText: () => Promise.resolve() };
   await api.copy();
-  assert.equal(btn.textContent, "✓ コピー");
+  assert.equal(btn.textContent, "✓ Copied");
   const oldTimer = timers.at(-1);
   await api.copy();
   oldTimer();
-  assert.equal(btn.textContent, "✓ コピー", "前回のタイマーは新しいコピー表示を消さない");
+  assert.equal(btn.textContent, "✓ Copied", "前回のタイマーは新しいコピー表示を消さない");
   timers.at(-1)();
-  assert.equal(btn.textContent, "コピー");
+  assert.equal(btn.textContent, "Copy");
 });
 
 test("ページ上限の未翻訳ノードは強参照せず、更新と復元後に再評価する", () => {
@@ -585,11 +585,12 @@ test("画像の旧エラー・空結果タイマーは、再翻訳の一部成�
     const btn = { textContent: "訳", title: "", classList: { toggle: () => {} } };
     const api = loadImageFunctions(["translateImg", "setBtnMode", "isTranslated", "isStaleImg", "imgErrorText"], {
       img, btn, chrome: { runtime: { sendMessage: (_msg, cb) => cb(state.response) } },
-      window: { setTimeout: fn => timers.push(fn) }, tr: (key, fallback) => key === "imgPartial" ? "partial" : fallback,
+      window: { setTimeout: fn => timers.push(fn) }, tr: (key, fallback) => key === "imgPartial" ? "partial" : key === "imgMarkRevert" ? "原" : key === "imgMarkTranslate" ? "訳" : fallback,
       contextAlive: () => true, dbg: () => {}, debugEnabled: () => false, filterBlocks: blocks => blocks,
       renderTranslated: async () => { state.translated = true; },
       loadRenderer: async () => ({ filterBlocks: blocks => blocks, renderTranslated: async () => { state.translated = true; } }), dead: false,
     }, `let imgRunId = 0, imageRequestSeq = 0; const target = img, MAX_IMAGE_PIXELS = 25000000;
+      const markTranslate = () => tr("imgMarkTranslate", "Tr"), markRevert = () => tr("imgMarkRevert", "Or");
       const imageRequestIds = new WeakMap(), inflightImgs = new WeakSet(), A = { TRANSLATE_IMAGE: "TRANSLATE_IMAGE" };`);
     await api.translateImg(img);
     assert.equal(timers.length, 1);

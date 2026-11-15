@@ -9,10 +9,11 @@
     "ci:install": "bun install --frozen-lockfile",
     "test": "bun test",
     "lint": "bun --no-env-file --no-install --bun run eslint src/ test/",
-    "test:dependencies": "bun test ./scripts/dependency-security.test.cjs"
+    "test:dependencies": "bun test ./scripts/dependency-security.test.cjs",
+    "generate-screenshots": "bun webstore/vitrina/vitrina.mjs generate"
   },
   "devDependencies": {
-    "@kagayoi/support-extension": "1.0.10",
+    "@kagayoi/support-extension": "1.0.12",
     "eslint": "^10.14.0",
     "globals": "^17.14.0",
     "web-ext": "^10.8.0"

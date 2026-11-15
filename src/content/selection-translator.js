@@ -49,20 +49,20 @@
   // 全 SW error 種別を網羅する: 漏れがあると generic「エラー」に倒れて原因が分からなくなる
   // (parse/incomplete/build/empty などは LLM 応答が JSON 崩れ・要素数不一致のときの SW 自己診断種別)。
   function selErrorText(res) {
-    const generic = tr("statusError", "エラー");
+    const generic = tr("statusError", "Error");
     if (!res || typeof res !== "object") return generic;
     const e = res.error;
-    if (e === "no_api_key") return tr("statusNoKey", "API キーが未設定です");
-    if (e === "network" || e === "runtime" || e === "context") return tr("statusNetwork", "ネットワークエラー");
+    if (e === "no_api_key") return tr("statusNoKey", "API key is not set for this service");
+    if (e === "network" || e === "runtime" || e === "context") return tr("statusNetwork", "Network error — check your connection");
     if (e === "http") {
-      if (res.status === 401 || res.status === 403) return tr("statusBadKey", "API キーが無効か権限がありません");
-      if (res.status === 429) return tr("statusQuotaDaily", "API の利用上限に達しました");
+      if (res.status === 401 || res.status === 403) return tr("statusBadKey", "API key is invalid or unauthorized");
+      if (res.status === 429) return tr("statusQuotaDaily", "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider (e.g. Groq).");
       return `HTTP ${res.status || ""}`.trim();
     }
     // MyMemory 共有キーの quota 枯渇 (本文 200 でも responseStatus に 403/429 が入る) は http 429 と同じ表現に倒す。
-    if (e === "quota") return tr("statusQuotaDaily", "API の利用上限に達しました");
+    if (e === "quota") return tr("statusQuotaDaily", "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider (e.g. Groq).");
     // バッチ非対応プロバイダで 1 テキストが上限超過。クイック翻訳と同じ文言で長さ起因と明示する。
-    if (e === "too_long") return tr("qtLimit", "このサービスには長すぎます（短くするか LLM プロバイダを選んでください）");
+    if (e === "too_long") return tr("qtLimit", "Too long for this provider — shorten it or pick an LLM provider");
     return generic;
   }
 
@@ -162,7 +162,7 @@
     copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "__rt-sel-copy";
-    copyBtn.textContent = tr("selCopy", "コピー");
+    copyBtn.textContent = tr("selCopy", "Copy");
     copyBtn.addEventListener("click", onCopy);
     foot.appendChild(copyBtn);
 
@@ -194,7 +194,7 @@
     bubble.title = (kind === "error" && hint) ? hint : "";
     if (copyBtn) {
       copyBtn.style.display = (kind === "result" && text) ? "" : "none";
-      copyBtn.textContent = tr("selCopy", "コピー");
+      copyBtn.textContent = tr("selCopy", "Copy");
       copyBtn.classList.remove("__rt-sel-copied");
       if (copyBtn._t) { clearTimeout(copyBtn._t); copyBtn._t = 0; }
     }
@@ -229,15 +229,15 @@
     const button = copyBtn;
     const my = ++copySeq;
     if (button._t) { clearTimeout(button._t); button._t = 0; }
-    button.textContent = tr("selCopy", "コピー");
+    button.textContent = tr("selCopy", "Copy");
     button.classList.remove("__rt-sel-copied");
     try { await navigator.clipboard.writeText(t); } catch (_e) { return; }
     if (my !== copySeq || button !== copyBtn) return;
-    button.textContent = tr("selCopied", "✓ コピー");
+    button.textContent = tr("selCopied", "✓ Copied");
     button.classList.add("__rt-sel-copied");
     button._t = window.setTimeout(() => {
       if (my !== copySeq || button !== copyBtn) return;
-      button.textContent = tr("selCopy", "コピー");
+      button.textContent = tr("selCopy", "Copy");
       button.classList.remove("__rt-sel-copied");
       button._t = 0;
     }, 1300);
@@ -282,8 +282,8 @@
     xBtn.type = "button";
     xBtn.className = "__rt-sel-inline-x";
     xBtn.textContent = "×"; // ×
-    xBtn.setAttribute("aria-label", tr("selClose", "閉じる"));
-    xBtn.title = tr("selClose", "閉じる");
+    xBtn.setAttribute("aria-label", tr("selClose", "Close"));
+    xBtn.title = tr("selClose", "Close");
     xBtn.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); closeInline(host); });
     host.append(textEl, xBtn);
     host.__rtText = textEl;
@@ -368,7 +368,7 @@
   function triggerInline(text, sel) {
     const host = insertInline(sel);
     if (!host) return;
-    setInlineState(host, "loading", tr("selTranslating", "翻訳中…"));
+    setInlineState(host, "loading", tr("selTranslating", "Translating…"));
     sendBatch(text, (res) => {
       if (dead || !host.isConnected) return; // 待つ間に × / 復元 / リロードで消えたら破棄
       if (res && res.ok && Array.isArray(res.translations) && res.translations[0]) {
@@ -477,7 +477,7 @@
       if (!rectFor(sel)) { removeBubble(); return; }
       reqId++; // 進行中の応答があれば捨てる (この操作が最新の意図)
       ensureBubble();
-      setState("error", tr("qtTooLong", "5,000 文字を超えています"));
+      setState("error", tr("qtTooLong", "Over 5,000 characters"));
       return;
     }
     // インラインモード: 選択ブロックの直後に対訳を差し込む (rect は不要。累積保持なので選択解除でも消さない)。
@@ -486,7 +486,7 @@
     if (!text) { removeBubble(); return; } // 選択が無ければ何もしない (右クリック経路は選択時のみ出る)
     if (!rectFor(sel)) { removeBubble(); return; }
     ensureBubble();
-    setState("loading", tr("selTranslating", "翻訳中…"));
+    setState("loading", tr("selTranslating", "Translating…"));
     const my = ++reqId;
     sendBatch(text, (res) => {
       if (my !== reqId || dead) return; // 待つ間に閉じた/再トリガーされたら破棄

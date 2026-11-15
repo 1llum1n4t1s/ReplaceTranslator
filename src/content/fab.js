@@ -34,7 +34,7 @@
       if (seq !== sendSeq) return;
       if (msg && msg.action === A.TRANSLATE_PAGE) {
         state = "off";
-        errText = tr("fabError", "翻訳を開始できませんでした");
+        errText = tr("fabError", "Translation failed");
         render();
       }
     };
@@ -111,19 +111,19 @@
   // 翻訳エラーの理由を FAB の title 用に短くまとめる。popup の errorText と同じ i18n キーを再利用し、
   // detail({error,status,provider}) からキー無効/quota/通信/HTTP を出し分ける (popup を開かなくても原因が読める)。
   function errSummary(detail) {
-    const base = tr("fabError", "翻訳に失敗しました");
+    const base = tr("fabError", "Translation failed");
     if (!detail || typeof detail !== "object") return base;
     const prov = detail.provider ? `${detail.provider}: ` : "";
     let why = "";
-    if (detail.error === "no_api_key") why = tr("statusNoKey", "API キーが未設定です");
-    else if (detail.error === "network") why = tr("statusNetwork", "ネットワークエラー");
+    if (detail.error === "no_api_key") why = tr("statusNoKey", "API key is not set for this service");
+    else if (detail.error === "network") why = tr("statusNetwork", "Network error — check your connection");
     else if (detail.error === "http") {
-      if (detail.status === 401 || detail.status === 403) why = tr("statusBadKey", "API キーが無効か権限がありません");
-      else if (detail.status === 429) why = tr("statusQuotaDaily", "API の利用上限に達しました");
+      if (detail.status === 401 || detail.status === 403) why = tr("statusBadKey", "API key is invalid or unauthorized");
+      else if (detail.status === 429) why = tr("statusQuotaDaily", "API quota reached (free daily limit or out of credit). Wait, upgrade, or switch provider (e.g. Groq).");
       else why = `HTTP ${detail.status || ""}`;
     }
-    if (why) return `${base}（${prov}${why}）`;
-    return prov ? `${base}（${prov.replace(/: $/, "")}）` : base;
+    if (why) return `${base} (${prov}${why})`;
+    return prov ? `${base} (${prov.replace(/: $/, "")})` : base;
   }
 
   function render() {
@@ -136,14 +136,14 @@
     // アイコンの出し分けは fab.css が .__rt-on で行う (文字は描かない)。ここでは説明文だけ更新する。
     // loading 中もクリックで中止できる (fab.css の pointer-events を殺さない方針) ので、その旨を伝える。
     let base;
-    if (isLoading) base = tr("fabCancel", "翻訳中…（クリックで中止）");
-    else if (isOn) base = tr("fabRestore", "原文に戻す");
-    else base = tr("fabTranslate", "ページを翻訳");
+    if (isLoading) base = tr("fabCancel", "Translating… (click to cancel)");
+    else if (isOn) base = tr("fabRestore", "Restore original");
+    else base = tr("fabTranslate", "Translate this page");
     // エラー時は失敗理由を title/aria に出す (popup を開かなくてもホバーで原因が読める = 無言失敗の可視化)。
     // partial は成功扱い (state=on のまま)。__rt-error を併用すると .__rt-on の朱地に --ink が朱で
     // 上書きされアイコンが消えるため、注記は title/aria にだけ載せる
-    const label = isErr ? errText : (partialText ? `${base}（${partialText}）` : base);
-    fab.title = (isErr || isLoading) ? label : `${label}${tr("fabDragHint", "（ドラッグで移動）")}`;
+    const label = isErr ? errText : (partialText ? `${base} (${partialText})` : base);
+    fab.title = (isErr || isLoading) ? label : `${label}${tr("fabDragHint", " (drag to move)")}`;
     fab.setAttribute("aria-label", label);
     fab.setAttribute("aria-pressed", isOn ? "true" : "false");
   }
@@ -260,7 +260,7 @@
     if (!m || m.action !== A.TRANSLATION_PROGRESS) return;
     sendSeq += 1; // progress は send() の応答より強い最新状態。遅着した抑止/失敗応答を無効化する
     if (m.state === "progress") { errText = ""; partialText = ""; state = "loading"; render(); }
-    else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "一部を翻訳できませんでした") : ""; state = "on"; render(); }
+    else if (m.state === "done") { errText = ""; partialText = m.partial ? tr("statusPartial", "Some text could not be translated (input limit, rate limit, or overload). Shorten it or wait a bit and retry.") : ""; state = "on"; render(); }
     else if (m.state === "error") { errText = errSummary(m.detail); partialText = ""; state = "off"; render(); } // 失敗理由を title に出す
     else if (m.state === "restored") { errText = ""; partialText = ""; state = "off"; render(); }
     else if (m.state === "skipped") { errText = ""; partialText = ""; state = "off"; render(); } // ページ言語=翻訳先 → 訳すものが無いので未翻訳状態へ戻す
@@ -373,19 +373,26 @@
 
   // 非機密フラグを読んでから DOM に載せる (showFab=OFF 設定でのチラつき防止)。
   // グローバル翻訳 ON (autoTranslate) なら開いたページを自動で翻訳する (FAB 非表示でも独立して動く)。
-  try {
-    chrome.storage.local.get(CFLAGS_KEY, (d) => {
-      if (!contextAlive()) return;
-      const f = d && d[CFLAGS_KEY];
-      applyVisibility(f);
-      mount();
-      if (f && f.autoTranslate) {
-        state = "loading";
-        render();
-        send({ action: A.TRANSLATE_PAGE });
-      }
-    });
-  } catch (_e) { mount(); }
+  // 注入 UI は Localizer.ready の後に作る (言語の読み込み前だとブラウザ標準の言語で一瞬出るため)。
+  const localizerReady = (globalThis.Localizer && globalThis.Localizer.ready) || Promise.resolve();
+  localizerReady.catch(() => {}).then(() => {
+    try {
+      chrome.storage.local.get(CFLAGS_KEY, (d) => {
+        if (!contextAlive()) return;
+        const f = d && d[CFLAGS_KEY];
+        applyVisibility(f);
+        mount();
+        render(); // 選択言語の文言で title / aria-label を確定する
+        if (f && f.autoTranslate) {
+          state = "loading";
+          render();
+          send({ action: A.TRANSLATE_PAGE });
+        }
+      });
+    } catch (_e) { mount(); }
+  });
+  // popup で UI 言語を変えたら、開いているページの FAB の文言も更新する
+  try { if (globalThis.Localizer) globalThis.Localizer.onChange(() => { if (contextAlive()) render(); }); } catch (_e) { /* noop */ }
 
   // popup でトグルされたら開いているページにも即時反映する
   try {
