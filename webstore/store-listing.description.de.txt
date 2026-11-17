@@ -1,0 +1,36 @@
+Eine Erweiterung, die die aktuell angezeigte Webseite mit dem Cloud-LLM Ihrer Wahl direkt an Ort und Stelle übersetzt. Wie die integrierte Seitenübersetzung von Chrome ersetzt sie den Originaltext durch die Übersetzung und stellt das Original mit einem Klick wieder her. Durch den Einsatz großer Sprachmodelle erhalten Sie natürliche Übersetzungen, die den Kontext berücksichtigen.
+
+【Hauptfunktionen】
+・Übersetzung durch Ersetzen an Ort und Stelle — ersetzt den Originaltext der Seite durch die Übersetzung und stellt per Umschalter das Original wieder her
+・Mehrere LLM-Anbieter — wechseln Sie zwischen Anbietern wie OpenAI / Anthropic / Google Gemini / xAI (mit Ihrem eigenen API-Schlüssel)
+・Denkaufwand pro Modell — merkt sich reasoning effort / thinking budget für jedes unterstützte Modell. Die automatische Einstellung nutzt den für Übersetzungen passenden Mindestwert
+・Ohne Schlüssel ausprobieren — MyMemory (kostenlose NMT) funktioniert ohne Registrierung und ohne Schlüssel (für kurze Texte, sofort testbar)
+・Gezielte Übersetzung gemischter Sprachen — was bereits in der Zielsprache vorliegt, bleibt unverändert; nur die beigemischten anderen Sprachen werden übersetzt
+・Optionale Synchronisierung der Einstellungen — teilen Sie Sprachen, Modelle, Anzeigeeinstellungen und die Ausnahmenliste über die Browser-Synchronisierung auf mehreren PCs. Standardmäßig deaktiviert; API-Schlüssel, Originaltexte und Übersetzungen werden nicht synchronisiert
+・Ausnahmenliste für die automatische Übersetzung — beenden Sie die automatische Übersetzung nur auf Websites, die per URL, Host oder Platzhalter angegeben sind
+・Unterstützung für Endlos-Scrollen / SPA — auch später nachgeladene Inhalte werden automatisch übersetzt
+・Übersetzungsstile — wählen Sie Stile wie niedlich oder förmlich. Der zusätzliche Prompt gilt nur bei „Eigener“
+・Umschreibmodus — übersetzt nicht nur, sondern schreibt auch Sätze, die bereits in der Zielsprache verfasst sind, in einem gewählten Stil um, etwa sanft, förmlich oder im Kansai-Dialekt (nur mit LLM)
+・Übersetzung markierten Texts — übersetzen Sie markierten Text mit Ctrl+Shift+L (Command+Shift+L auf dem Mac) oder über das Kontextmenü. Die Anzeige erfolgt wahlweise als Sprechblase oder inline (zweisprachig neben dem Original)
+・Schnellübersetzung — übersetzen Sie kurze Texte auf einem eigenen Tab. Quell- und Zielsprache lassen sich getrennt von der Seitenübersetzung einstellen. Die Übersetzung kann kopiert und Original sowie Übersetzung können vorgelesen werden
+・Übersetzungs-Cache — gleicher Text im gleichen Kontext wird aus dem Cache auf dem Gerät wiederverwendet, um API-Nutzung zu sparen. Der persistente Cache, der auch nach einem Neustart des Browsers erhalten bleibt (bis zu 30 Tage), wird nur gespeichert, wenn Sie ihn aktivieren
+・Übersetzung von Text in Bildern (experimentell, LLM mit Vision-Unterstützung)
+・Datenschutz zuerst — API-Schlüssel werden lokal im Browser gespeichert. Text wird nur an die API des von Ihnen gewählten Anbieters gesendet
+
+【Zu den API-Schlüsseln】
+Gemäß den Nutzungsbedingungen der einzelnen Anbieter arbeitet diese Erweiterung ausschließlich mit API-Schlüsseln (API-Tokens). Die Anmeldung über kostenpflichtige Tarife der Chat-Dienste wird nicht übernommen, da dies gegen die Bedingungen verstieße. Zum kostenlosen Ausprobieren empfehlen wir einen Anbieter mit kostenlosem Kontingent oder MyMemory, das keinen Schlüssel benötigt.
+
+【So geht’s】
+1. Aus dem Chrome Web Store installieren
+2. Auf das Erweiterungssymbol in der Symbolleiste klicken und im Tab „API-Einstellungen“ den API-Schlüssel des gewünschten Anbieters eingeben (MyMemory benötigt keinen Schlüssel)
+3. Im Tab „Übersetzen“ Quell- und Zielsprache wählen und auf „Übersetzen“ klicken. Zum Zurückwechseln auf „Zurücksetzen“ klicken
+4. Sie können auch über die schwebende Schaltfläche unten rechts auf der Seite oder das Kontextmenü übersetzen bzw. zurücksetzen
+5. Im Tab „Ausnahmen“ oder über das Kontextmenü lassen sich Websites hinzufügen oder entfernen, die nicht automatisch übersetzt werden sollen
+6. Ein LLM mit Vision-Unterstützung wählen, den Mauszeiger über ein Bild bewegen und auf die Schaltfläche „Übersetzen“ klicken, um den Text im Bild zu übersetzen (experimentell). Die Anzeige der Bildschaltfläche stellen Sie im Tab „Übersetzen“ ein
+
+【Datenschutz】
+・Der Entwickler der Erweiterung erhebt, speichert und empfängt keine Daten (keine Analyse, kein Tracking)
+・API-Schlüssel werden ausschließlich in Ihrem Browser (chrome.storage.local) gespeichert
+・Der zu übersetzende Text (bei der Bildübersetzung das Bild) wird nur an die API des von Ihnen gewählten Anbieters gesendet
+・Es wird nichts an die Server des Entwicklers gesendet
+・Einzelheiten finden Sie in der Datenschutzerklärung

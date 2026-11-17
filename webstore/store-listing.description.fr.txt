@@ -1,0 +1,36 @@
+Une extension qui traduit sur place la page web que vous consultez, avec le LLM cloud de votre choix. Comme la traduction de pages intégrée à Chrome, elle remplace le texte d’origine par la traduction et permet de revenir à l’original en un clic. Grâce aux grands modèles de langage, vous obtenez des traductions naturelles qui tiennent compte du contexte.
+
+【Fonctions principales】
+・Traduction par remplacement sur place — remplace le texte d’origine de la page par la traduction, avec un bouton bascule pour rétablir l’original
+・Compatible avec plusieurs LLM — passez d’un fournisseur à l’autre, comme OpenAI / Anthropic / Google Gemini / xAI (avec votre propre clé d’API)
+・Raisonnement par modèle — mémorise le reasoning effort / thinking budget de chaque modèle pris en charge. Le réglage automatique utilise la valeur minimale adaptée à la traduction
+・Essai sans clé — MyMemory (NMT gratuit) fonctionne sans inscription ni clé (pour les textes courts, utilisable immédiatement)
+・Traduction ciblée des langues mélangées — ce qui est déjà dans la langue cible reste tel quel et seules les autres langues mélangées sont traduites
+・Synchronisation des paramètres facultative — partagez les langues, les modèles, les paramètres d’affichage et la liste d’exclusions entre plusieurs PC grâce à la synchronisation du navigateur. Désactivée par défaut ; les clés d’API, les textes d’origine et les traductions ne sont pas synchronisés
+・Liste d’exclusions de la traduction automatique — désactivez la traduction automatique uniquement pour les sites indiqués par URL, hôte ou caractère générique
+・Compatible avec le défilement infini / les SPA — le contenu chargé ensuite est lui aussi traduit automatiquement
+・Styles de traduction — choisissez un style mignon, formel, etc. Le prompt supplémentaire ne s’applique qu’avec « Personnalisé »
+・Mode réécriture — en plus de traduire, réécrit les phrases déjà rédigées dans la langue cible avec un style de réécriture, comme adouci, formel ou dialecte du Kansai (LLM uniquement)
+・Traduction du texte sélectionné — traduisez le texte sélectionné avec Ctrl+Shift+L (Command+Shift+L sur Mac) ou depuis le menu contextuel. Affichage au choix en bulle ou en ligne (bilingue)
+・Traduction rapide — traduisez des textes courts dans un onglet dédié. Les langues source et cible sont distinctes de celles de la traduction de page. Vous pouvez aussi copier la traduction et écouter le texte d’origine et la traduction
+・Cache de traduction — un même texte dans le même contexte est réutilisé depuis le cache de l’appareil pour économiser l’usage de l’API. Le cache persistant, conservé après le redémarrage du navigateur (30 jours maximum), n’est enregistré que si vous l’activez
+・Traduction du texte dans les images (expérimental, LLM compatibles vision)
+・Confidentialité avant tout — les clés d’API restent stockées localement dans le navigateur. Le texte n’est envoyé qu’à l’API du fournisseur que vous avez choisi
+
+【À propos des clés d’API】
+Conformément aux conditions d’utilisation de chaque éditeur, cette extension fonctionne uniquement avec des clés d’API (jetons d’API). Elle ne réutilise pas la connexion aux formules payantes des services de chat, ce qui enfreindrait ces conditions. Pour l’essayer d’abord gratuitement, nous recommandons un fournisseur proposant un quota gratuit ou MyMemory, qui ne nécessite aucune clé.
+
+【Mode d’emploi】
+1. Installez l’extension depuis le Chrome Web Store
+2. Cliquez sur l’icône de l’extension dans la barre d’outils et, dans l’onglet « Paramètres API », saisissez la clé d’API du fournisseur à utiliser (MyMemory ne nécessite pas de clé)
+3. Dans l’onglet « Traduire », choisissez la langue source et la langue cible, puis cliquez sur « Traduire ». Pour revenir à l’original, cliquez sur « Rétablir »
+4. Vous pouvez aussi traduire ou rétablir avec le bouton flottant en bas à droite de la page ou depuis le menu contextuel
+5. Dans l’onglet « Exclusions » ou depuis le menu contextuel, vous pouvez ajouter ou retirer les sites à ne pas traduire automatiquement
+6. Choisissez un LLM compatible vision, survolez une image et cliquez sur le bouton de traduction pour traduire le texte de l’image (expérimental). L’affichage du bouton d’image se règle dans l’onglet « Traduire »
+
+【Confidentialité】
+・Le développeur de l’extension ne collecte, ne stocke et ne reçoit aucune donnée (ni analyse ni suivi)
+・Les clés d’API sont stockées uniquement dans votre navigateur (chrome.storage.local)
+・Le texte à traduire (ou l’image, pour la traduction d’images) est envoyé uniquement à l’API du fournisseur que vous avez choisi
+・Rien n’est jamais envoyé aux serveurs du développeur
+・Pour en savoir plus, consultez la politique de confidentialité

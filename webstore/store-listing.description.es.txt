@@ -1,0 +1,36 @@
+Una extensión que traduce en el propio sitio la página web que está viendo, con el LLM en la nube que usted elija. Como la traducción de páginas integrada de Chrome, sustituye el texto original por la traducción y permite volver al original con un solo clic. Al usar modelos de lenguaje de gran tamaño, obtiene traducciones naturales que tienen en cuenta el contexto.
+
+【Funciones principales】
+・Traducción con sustitución en el lugar — sustituye el texto original de la página por la traducción y permite volver al original con un interruptor
+・Compatible con varios LLM — cambie entre proveedores como OpenAI / Anthropic / Google Gemini / xAI (con su propia clave de API)
+・Razonamiento por modelo — recuerda el reasoning effort / thinking budget de cada modelo compatible. El ajuste automático usa el valor mínimo adecuado para traducir
+・Pruebe sin clave — MyMemory (NMT gratuito) funciona sin registro ni clave (para textos cortos; se puede probar al instante)
+・Traducción precisa de idiomas mezclados — lo que ya está en el idioma de destino se deja tal cual y solo se traducen los demás idiomas mezclados
+・Sincronización de ajustes opcional — comparta idiomas, modelos, ajustes de visualización y la lista de exclusiones entre varios PC mediante la sincronización del navegador. Está desactivada de forma predeterminada; las claves de API, el texto original y las traducciones no se sincronizan
+・Lista de exclusiones de traducción automática — detenga la traducción automática solo en los sitios indicados por URL, host o comodín
+・Compatible con desplazamiento infinito / SPA — también se traduce automáticamente el contenido que se carga después
+・Estilos de traducción — elija estilos como adorable o formal. El prompt adicional solo se aplica con "Personalizado"
+・Modo de reescritura — además de traducir, reescribe las frases que ya están en el idioma de destino con un estilo de reescritura, como suave, formal o dialecto de Kansai (solo con LLM)
+・Traducción de texto seleccionado — traduzca el texto seleccionado con Ctrl+Shift+L (Command+Shift+L en Mac) o desde el menú contextual. Puede elegir entre mostrarlo en un globo o en línea (junto al original)
+・Traducción rápida — traduzca textos cortos en una pestaña dedicada. Admite idiomas de origen y destino distintos de los de la traducción de páginas. También puede copiar la traducción y escuchar el texto original y la traducción
+・Caché de traducciones — el mismo texto en el mismo contexto se reutiliza desde la caché del dispositivo para ahorrar uso de la API. La caché persistente, que se conserva tras reiniciar el navegador (hasta 30 días), solo se guarda si la activa
+・Traducción de texto en imágenes (experimental, LLM compatibles con vision)
+・Privacidad ante todo — las claves de API se guardan localmente en el navegador. El texto solo se envía a la API del proveedor que haya elegido
+
+【Sobre las claves de API】
+Conforme a las condiciones de uso de cada empresa, esta extensión funciona únicamente con claves de API (tokens de API). No reutiliza el inicio de sesión de los planes de pago de los servicios de chat, ya que infringiría esas condiciones. Para probarla primero gratis, recomendamos un proveedor con nivel gratuito o MyMemory, que no requiere clave.
+
+【Cómo se usa】
+1. Instale la extensión desde Chrome Web Store
+2. Haga clic en el icono de la extensión en la barra de herramientas e introduzca, en la pestaña "Ajustes de API", la clave de API del proveedor que vaya a usar (MyMemory no requiere clave)
+3. En la pestaña "Traducir", elija el idioma de origen y el de destino y haga clic en "Traducir". Para volver al original, haga clic en "Restaurar"
+4. También puede traducir o restaurar con el botón flotante de la esquina inferior derecha de la página o desde el menú contextual
+5. En la pestaña "Exclusiones" o desde el menú contextual puede añadir o quitar los sitios que no deben traducirse automáticamente
+6. Elija un LLM compatible con vision, sitúe el cursor sobre una imagen y haga clic en el botón de traducir para traducir el texto de la imagen (experimental). La visibilidad del botón de imagen se configura en la pestaña "Traducir"
+
+【Privacidad】
+・El desarrollador de la extensión no recopila, almacena ni recibe datos (sin análisis ni seguimiento)
+・Las claves de API se guardan únicamente en su navegador (chrome.storage.local)
+・El texto que se va a traducir (o la imagen, al traducir imágenes) se envía únicamente a la API del proveedor que haya elegido
+・No se envía nada a los servidores del desarrollador
+・Para más información, consulte la política de privacidad

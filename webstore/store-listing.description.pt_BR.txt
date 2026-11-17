@@ -1,0 +1,36 @@
+Uma extensão que traduz no próprio lugar a página da web que você está vendo, usando o LLM em nuvem de sua escolha. Como a tradução de páginas integrada do Chrome, ela substitui o texto original pela tradução e permite voltar ao original com um clique. Com o uso de modelos de linguagem de grande porte, você obtém traduções naturais que levam o contexto em conta.
+
+【Principais recursos】
+・Tradução por substituição no lugar — substitui o texto original da página pela tradução e permite voltar ao original com uma alternância
+・Compatível com vários LLMs — alterne entre provedores como OpenAI / Anthropic / Google Gemini / xAI (com a sua própria chave de API)
+・Raciocínio por modelo — memoriza o reasoning effort / thinking budget de cada modelo compatível. O ajuste automático usa o valor mínimo adequado para tradução
+・Teste sem chave — o MyMemory (NMT gratuito) funciona sem cadastro e sem chave (para textos curtos, pronto para testar na hora)
+・Tradução pontual de idiomas misturados — o que já está no idioma de destino fica como está, e só os outros idiomas misturados são traduzidos
+・Sincronização de configurações opcional — compartilhe idiomas, modelos, configurações de exibição e a lista de exclusões entre vários PCs pela sincronização do navegador. Vem desativada por padrão; chaves de API, textos originais e traduções não são sincronizados
+・Lista de exclusões da tradução automática — interrompa a tradução automática apenas nos sites indicados por URL, host ou curinga
+・Compatível com rolagem infinita / SPA — o conteúdo carregado depois também é traduzido automaticamente
+・Estilos de tradução — escolha estilos como fofo ou formal. O prompt adicional só vale com "Personalizado"
+・Modo de reescrita — além de traduzir, reescreve frases que já estão no idioma de destino em um estilo de reescrita, como suave, formal ou dialeto de Kansai (somente com LLM)
+・Tradução de texto selecionado — traduza o texto selecionado com Ctrl+Shift+L (Command+Shift+L no Mac) ou pelo menu de contexto. A exibição pode ser em balão ou em linha (original e tradução lado a lado)
+・Tradução rápida — traduza textos curtos em uma aba dedicada. Os idiomas de origem e de destino são independentes dos da tradução de páginas. Também é possível copiar a tradução e ouvir o texto original e a tradução
+・Cache de tradução — o mesmo texto no mesmo contexto é reaproveitado do cache no dispositivo para economizar o uso da API. O cache persistente, que continua após reiniciar o navegador (até 30 dias), só é salvo se você o ativar
+・Tradução de texto em imagens (experimental, LLMs compatíveis com vision)
+・Privacidade em primeiro lugar — as chaves de API ficam armazenadas localmente no navegador. O texto é enviado somente à API do provedor que você escolheu
+
+【Sobre as chaves de API】
+Em conformidade com os termos de uso de cada empresa, esta extensão funciona somente com chaves de API (tokens de API). Ela não reaproveita o login dos planos pagos dos serviços de chat, pois isso violaria esses termos. Para testar primeiro de graça, recomendamos um provedor com nível gratuito ou o MyMemory, que não exige chave.
+
+【Como usar】
+1. Instale pela Chrome Web Store
+2. Clique no ícone da extensão na barra de ferramentas e, na aba "Configurações da API", informe a chave de API do provedor que vai usar (o MyMemory não exige chave)
+3. Na aba "Traduzir", escolha o idioma de origem e o de destino e clique em "Traduzir". Para voltar ao original, clique em "Restaurar"
+4. Você também pode traduzir ou restaurar pelo botão flutuante no canto inferior direito da página ou pelo menu de contexto
+5. Na aba "Exclusões" ou pelo menu de contexto, você pode adicionar ou remover os sites que não devem ser traduzidos automaticamente
+6. Escolha um LLM compatível com vision, passe o cursor sobre uma imagem e clique no botão de traduzir para traduzir o texto da imagem (experimental). A exibição do botão de imagem é configurada na aba "Traduzir"
+
+【Privacidade】
+・O desenvolvedor da extensão não coleta, não armazena e não recebe dados (sem análise e sem rastreamento)
+・As chaves de API são armazenadas somente no seu navegador (chrome.storage.local)
+・O texto a ser traduzido (ou a imagem, na tradução de imagens) é enviado somente à API do provedor que você escolheu
+・Nada é enviado aos servidores do desenvolvedor
+・Para mais detalhes, consulte a política de privacidade
