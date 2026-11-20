@@ -11,7 +11,7 @@ ReplaceTranslator は、利用者が選んだクラウド LLM または無料 NM
 - APIキーと認証付き通信は Service Worker が所有する。content script はページ文脈で動くが、APIキーを受け取らない。
 - `src/shared/` の問い合わせ・評価UIは `@kagayoi/support-extension` から同期して拡張へ同梱する。問い合わせ内容は利用者の明示送信時だけ Kagayoi Support API へ送る。
 - `../vps-web/lp/replacetranslator/` はVPSから配信するランディングページとプライバシーページであり、翻訳処理や拡張機能の配布には関与しない。
-- Chrome Web Store / Firefox AMO が拡張機能を配布する。GitHub Actions は `release/<version>` ブランチを契機に検証、パッケージ生成、各ストアへの提出を行う。
+- Chrome Web Store / Firefox AMO が拡張機能を配布する。GitHub Actions は `main` のコミットに付けた軽量タグ `v<version>` の push を契機に検証、パッケージ生成、各ストアへの提出を行う。
 
 ## 主要コンポーネント
 
